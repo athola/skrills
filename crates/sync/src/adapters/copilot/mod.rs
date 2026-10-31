@@ -1,11 +1,12 @@
 //! Copilot adapter for reading/writing Copilot CLI configuration.
 //!
-//! ## Path Resolution (XDG-compliant)
+//! ## Path Resolution
 //!
-//! The adapter follows the XDG Base Directory Specification:
-//! 1. If `XDG_CONFIG_HOME` is set → `$XDG_CONFIG_HOME/copilot`
-//! 2. If unset → `~/.config/copilot` (XDG default)
-//! 3. Fallback → `~/.copilot` (legacy location)
+//! The directory Copilot CLI reads:
+//! 1. `COPILOT_HOME`, when set
+//! 2. An existing XDG `copilot` directory (`$XDG_CONFIG_HOME/copilot`, or
+//!    `~/.config/copilot` off macOS), kept so earlier syncs are not orphaned
+//! 3. `~/.copilot`
 //!
 //! ## Key differences from Codex:
 //! - MCP servers: Stored in `mcp-config.json` (NOT in `config.json`)
@@ -40,12 +41,8 @@ pub struct CopilotAdapter {
 }
 
 impl CopilotAdapter {
-    /// Creates a new CopilotAdapter using XDG-compliant path resolution.
-    ///
-    /// Path precedence:
-    /// 1. `$XDG_CONFIG_HOME/copilot` (if XDG_CONFIG_HOME is set)
-    /// 2. `~/.config/copilot` (XDG default)
-    /// 3. `~/.copilot` (legacy fallback)
+    /// Creates a new CopilotAdapter rooted where Copilot CLI reads (see the
+    /// module docs for the lookup).
     pub fn new() -> Result<Self> {
         let root = paths::resolve_config_root()?;
         Ok(Self {
@@ -63,7 +60,7 @@ impl CopilotAdapter {
     }
 
     /// Attach a [`KillSwitch`](skrills_snapshot::KillSwitch) so that mutating
-    /// operations refuse with [`SyncError::TokenBudgetExceeded`](crate::SyncError)
+    /// operations refuse with [`SyncError::KillSwitchEngaged`](crate::SyncError)
     /// when the cold-window engine has engaged it (FR12).
     #[must_use]
     pub fn with_kill_switch(mut self, switch: skrills_snapshot::KillSwitch) -> Self {

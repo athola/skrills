@@ -32,10 +32,7 @@ impl UnpaywallClient {
     pub async fn find_pdf_url(&self, doi: &str) -> TomeResult<Option<String>> {
         let resp = self
             .http
-            .get(format!(
-                "{BASE_URL}/{}",
-                url::form_urlencoded::byte_serialize(doi.as_bytes()).collect::<String>()
-            ))
+            .get(format!("{BASE_URL}/{}", super::crossref::encode_doi(doi)))
             .query(&[("email", &self.email)])
             .send()
             .await?;

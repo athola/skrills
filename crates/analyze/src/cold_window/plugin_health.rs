@@ -141,12 +141,15 @@ impl PluginHealthCollector {
         // when the plugin couldn't even be inspected. Push each per-entry
         // failure onto `output.malformed`.
         let mut plugin_dirs: Vec<PathBuf> = Vec::new();
-        for entry in entries {
+        for (index, entry) in entries.enumerate() {
             let entry = match entry {
                 Ok(e) => e,
                 Err(err) => {
+                    // An unreadable entry has no name; the index keeps each
+                    // one's alert fingerprint distinct, so none is hidden
+                    // behind another.
                     output.malformed.push(MalformedPlugin {
-                        plugin_name: "<plugin-entry>".to_string(),
+                        plugin_name: format!("<plugin-entry-{index}>"),
                         error_message: format!("plugin entry unreadable: {err}"),
                     });
                     continue;
@@ -166,8 +169,8 @@ impl PluginHealthCollector {
                         .path()
                         .file_name()
                         .and_then(|n| n.to_str())
-                        .unwrap_or("<plugin-entry>")
-                        .to_string();
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("<plugin-entry-{index}>"));
                     output.malformed.push(MalformedPlugin {
                         plugin_name,
                         error_message: format!("plugin file_type unreadable: {err}"),

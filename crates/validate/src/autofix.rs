@@ -4,7 +4,7 @@
 //! to make skills compatible with Codex CLI, Copilot CLI, and Cursor.
 
 use crate::codex::{MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH};
-use crate::frontmatter::{generate_frontmatter, has_frontmatter, parse_frontmatter};
+use crate::frontmatter::{generate_frontmatter, has_frontmatter, parse_frontmatter, yaml_scalar};
 use std::fs;
 use std::path::Path;
 
@@ -61,10 +61,19 @@ pub fn derive_name_from_path(path: &Path) -> String {
 ///
 /// Looks for the first paragraph or heading to use as a description.
 pub fn derive_description_from_content(content: &str) -> String {
-    let lines: Vec<&str> = content.lines().collect();
+    let mut in_fence = false;
 
-    for line in lines.iter() {
+    for line in content.lines() {
         let trimmed = line.trim();
+
+        // Skip fenced code blocks, fence lines included.
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
 
         // Skip empty lines and headings
         if trimmed.is_empty() {
@@ -80,8 +89,8 @@ pub fn derive_description_from_content(content: &str) -> String {
             continue;
         }
 
-        // Skip code blocks
-        if trimmed.starts_with("```") || trimmed.starts_with("    ") {
+        // Skip indented code blocks
+        if line.starts_with("    ") || line.starts_with('\t') {
             continue;
         }
 
@@ -92,11 +101,13 @@ pub fn derive_description_from_content(content: &str) -> String {
     "A skill file".to_string()
 }
 
+/// Codex and the Agent Skills spec count the limit in characters, so the cut
+/// is made on a character boundary rather than a byte offset.
 fn truncate_description(desc: &str) -> String {
-    if desc.len() <= MAX_DESCRIPTION_LENGTH {
+    if desc.chars().count() <= MAX_DESCRIPTION_LENGTH {
         desc.to_string()
     } else {
-        let mut truncated = desc[..MAX_DESCRIPTION_LENGTH - 3].to_string();
+        let mut truncated: String = desc.chars().take(MAX_DESCRIPTION_LENGTH - 3).collect();
         truncated.push_str("...");
         truncated
     }
@@ -105,18 +116,27 @@ fn truncate_description(desc: &str) -> String {
 /// Normalize a name to kebab-case.
 pub fn to_kebab_case(name: &str) -> String {
     name.chars()
-        .map(|c| {
-            if c.is_alphanumeric() {
-                c.to_ascii_lowercase()
+        .flat_map(|c| {
+            let mapped: Vec<char> = if c.is_alphanumeric() {
+                c.to_lowercase().collect()
             } else {
-                '-'
-            }
+                vec!['-']
+            };
+            mapped
         })
         .collect::<String>()
         .split('-')
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+/// Kebab-cases `name`, or returns `"skill"` when nothing usable is left.
+fn kebab_or_default(name: &str) -> String {
+    match to_kebab_case(name) {
+        k if k.is_empty() => "skill".to_string(),
+        k => k,
+    }
 }
 
 /// Scaffold body sections when content is too short.
@@ -202,8 +222,12 @@ pub fn autofix_frontmatter(
                 .or(options.suggested_description.clone())
                 .unwrap_or_else(|| derive_description_from_content(&parsed.content));
 
-            // Normalize name to kebab-case
-            let kebab = to_kebab_case(&name);
+            // Normalize name to kebab-case; a name with no letters or digits
+            // would become empty (YAML null), so fall back to the path.
+            let kebab = match to_kebab_case(&name) {
+                k if k.is_empty() => kebab_or_default(&derive_name_from_path(path)),
+                k => k,
+            };
             let name_normalized = kebab != name;
             let name = if name_normalized {
                 changes.push(format!("Normalized name to kebab-case: {kebab}"));
@@ -226,10 +250,10 @@ pub fn autofix_frontmatter(
                 name
             };
 
-            let description = if description.len() > MAX_DESCRIPTION_LENGTH {
+            let description = if description.chars().count() > MAX_DESCRIPTION_LENGTH {
                 changes.push(format!(
                     "Truncated description from {} to {} chars",
-                    description.len(),
+                    description.chars().count(),
                     MAX_DESCRIPTION_LENGTH
                 ));
                 modified = true;
@@ -256,21 +280,36 @@ pub fn autofix_frontmatter(
             }
 
             if modified {
-                format!("{}{}", generate_frontmatter(&name, &description), body)
+                let other_keys = parsed
+                    .raw_frontmatter
+                    .as_deref()
+                    .map(without_identity_keys)
+                    .unwrap_or_default();
+                format!(
+                    "---\nname: {}\ndescription: {}\n{other_keys}---\n{body}",
+                    yaml_scalar(&name),
+                    yaml_scalar(&description)
+                )
             } else {
                 content.to_string()
             }
         } else {
-            content.to_string()
+            return Err(
+                "Frontmatter opens with `---` but has no closing `---` line; fix it by hand"
+                    .to_string(),
+            );
         }
     } else {
         // No frontmatter - add it
-        let name = to_kebab_case(
+        let name = match to_kebab_case(
             &options
                 .suggested_name
                 .clone()
                 .unwrap_or_else(|| derive_name_from_path(path)),
-        );
+        ) {
+            k if k.is_empty() => kebab_or_default(&derive_name_from_path(path)),
+            k => k,
+        };
 
         let description = options
             .suggested_description
@@ -298,16 +337,50 @@ pub fn autofix_frontmatter(
     if modified && options.write_changes {
         // Create backup if requested
         if options.create_backup {
-            let backup_path = path.with_extension("md.bak");
-            fs::copy(path, &backup_path).map_err(|e| format!("Failed to create backup: {e}"))?;
+            // `<name>.bak`, never replaced: a re-run must not overwrite the
+            // original with an already-fixed copy.
+            let mut backup_name = path.as_os_str().to_owned();
+            backup_name.push(".bak");
+            let backup_path = std::path::PathBuf::from(backup_name);
+            if !backup_path.exists() {
+                fs::copy(path, &backup_path)
+                    .map_err(|e| format!("Failed to create backup: {e}"))?;
+            }
             result.backup_path = Some(backup_path);
         }
 
-        write_atomically(path, &new_content)
+        // Write through a symlink (synced skills are links) instead of
+        // replacing the link with a regular file.
+        let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        write_atomically(&target, &new_content)
             .map_err(|e| format!("Failed to write changes: {e}"))?;
     }
 
     Ok(result)
+}
+
+/// Returns the frontmatter block without its top-level `name` and
+/// `description` entries, so autofix can write fresh ones and leave every
+/// other key, and its comments, as the author wrote them. An entry runs from
+/// its key line through the indented or blank lines that continue it.
+fn without_identity_keys(raw_yaml: &str) -> String {
+    let mut kept = String::new();
+    let mut skipping = false;
+    for line in raw_yaml.lines() {
+        let continues_entry = line.trim().is_empty() || line.starts_with([' ', '\t']);
+        if skipping && continues_entry {
+            continue;
+        }
+        skipping = ["name", "description"].iter().any(|key| {
+            line.strip_prefix(key)
+                .is_some_and(|rest| rest.trim_start().starts_with(':'))
+        });
+        if !skipping {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+    }
+    kept
 }
 
 /// Replaces `path` with `content` so a reader sees either the old file or the
@@ -582,5 +655,186 @@ mod tests {
             backup_content, content,
             "Backup should contain the original content"
         );
+    }
+
+    const LONG_BODY: &str =
+        "Lots of content here to avoid scaffolding. This body has enough words \
+         to pass the minimum threshold for body completeness checks, and then a few more words.";
+
+    #[test]
+    fn autofix_truncates_multibyte_description_on_a_char_boundary() {
+        // 'é' is two bytes, so byte index 497 falls inside a character.
+        let desc = "é".repeat(MAX_DESCRIPTION_LENGTH + 100);
+        let content = format!("---\nname: s\ndescription: {desc}\n---\n\n{LONG_BODY}");
+        let result = autofix_frontmatter(
+            Path::new("/t/s/SKILL.md"),
+            &content,
+            &AutofixOptions::default(),
+        )
+        .unwrap();
+        let fm = parse_frontmatter(&result.content)
+            .unwrap()
+            .frontmatter
+            .unwrap();
+        let fixed = fm.description.unwrap();
+        assert_eq!(fixed.chars().count(), MAX_DESCRIPTION_LENGTH);
+        assert!(fixed.ends_with("..."));
+    }
+
+    #[test]
+    fn autofix_leaves_a_cjk_description_within_the_char_limit_alone() {
+        let desc = "あ".repeat(400); // 1,200 bytes but 400 characters
+        let content = format!("---\nname: s\ndescription: {desc}\n---\n\n{LONG_BODY}");
+        let result = autofix_frontmatter(
+            Path::new("/t/s/SKILL.md"),
+            &content,
+            &AutofixOptions::default(),
+        )
+        .unwrap();
+        let fm = parse_frontmatter(&result.content)
+            .unwrap()
+            .frontmatter
+            .unwrap();
+        assert_eq!(fm.description.as_deref(), Some(desc.as_str()));
+        assert!(
+            !result
+                .changes
+                .iter()
+                .any(|c| c.starts_with("Truncated description")),
+            "changes: {:?}",
+            result.changes
+        );
+    }
+
+    #[test]
+    fn autofix_keeps_version_and_depends_fields() {
+        let content = format!(
+            "---\nname: My Skill\n# pinned for the release\nversion: 1.2.3\ndescription: does it\n\
+             depends:\n  - base-skill\nallowed-tools: Read\nmodel: opus\n---\n\n{LONG_BODY}"
+        );
+        let result = autofix_frontmatter(
+            Path::new("/t/s/SKILL.md"),
+            &content,
+            &AutofixOptions::default(),
+        )
+        .unwrap();
+        assert!(result.modified);
+        let fm = parse_frontmatter(&result.content)
+            .unwrap()
+            .frontmatter
+            .unwrap();
+        assert_eq!(fm.name.as_deref(), Some("my-skill"));
+        assert_eq!(fm.description.as_deref(), Some("does it"));
+        assert_eq!(fm.version.as_deref(), Some("1.2.3"));
+        assert_eq!(fm.depends.len(), 1);
+        assert!(fm.extra.contains_key("allowed-tools"));
+        assert!(fm.extra.contains_key("model"));
+        assert!(result.content.contains("# pinned for the release"));
+    }
+
+    #[test]
+    fn autofix_replaces_a_multiline_description_without_leaving_its_continuation() {
+        let long = "word ".repeat(120);
+        let content = format!(
+            "---\nname: s\ndescription: |\n  {long}\n  second line\nlicense: MIT\n---\n\n{LONG_BODY}"
+        );
+        let result = autofix_frontmatter(
+            Path::new("/t/s/SKILL.md"),
+            &content,
+            &AutofixOptions::default(),
+        )
+        .unwrap();
+        assert!(result.modified);
+        let fm = parse_frontmatter(&result.content)
+            .unwrap()
+            .frontmatter
+            .unwrap();
+        assert_eq!(
+            fm.description.unwrap().chars().count(),
+            MAX_DESCRIPTION_LENGTH
+        );
+        assert!(fm.extra.contains_key("license"));
+        assert!(!result.content.contains("second line"));
+    }
+
+    #[test]
+    fn derived_description_skips_fenced_code() {
+        let content = "```rust\nfn main(){}\n```\nReal description here.";
+        assert_eq!(
+            derive_description_from_content(content),
+            "Real description here."
+        );
+    }
+
+    #[test]
+    fn autofix_reports_unterminated_frontmatter() {
+        let content = "---\nname: s\ndescription: d\n\n# Body";
+        let outcome = autofix_frontmatter(
+            Path::new("/t/s/SKILL.md"),
+            content,
+            &AutofixOptions::default(),
+        );
+        assert!(outcome.is_err(), "{outcome:?}");
+    }
+
+    #[test]
+    fn autofix_backup_appends_bak_and_keeps_the_first_backup() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let skill_path = temp_dir.path().join("skill.markdown");
+        let original = "# My Skill\nShort body only.";
+        fs::write(&skill_path, original).unwrap();
+        let options = AutofixOptions {
+            create_backup: true,
+            write_changes: true,
+            ..Default::default()
+        };
+        let first = autofix_frontmatter(&skill_path, original, &options).unwrap();
+        let backup = first.backup_path.unwrap();
+        assert_eq!(backup, temp_dir.path().join("skill.markdown.bak"));
+
+        // A second run on the fixed file must not replace the original backup.
+        autofix_frontmatter(&skill_path, original, &options).unwrap();
+        assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn autofix_writes_through_a_symlinked_skill() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let target = temp_dir.path().join("source.md");
+        let link = temp_dir.path().join("SKILL.md");
+        let content = "# My Skill\nShort body only.";
+        fs::write(&target, content).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let options = AutofixOptions {
+            write_changes: true,
+            ..Default::default()
+        };
+        let result = autofix_frontmatter(&link, content, &options).unwrap();
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_to_string(&target).unwrap(), result.content);
+    }
+
+    #[test]
+    fn kebab_case_lowercases_unicode_and_never_returns_empty() {
+        assert_eq!(to_kebab_case("ÉCOLE"), "école");
+        let result = autofix_frontmatter(
+            Path::new("/t/fallback-name/SKILL.md"),
+            "---\nname: \"!!!\"\ndescription: d\n---\n\n# Body",
+            &AutofixOptions::default(),
+        )
+        .unwrap();
+        let fm = parse_frontmatter(&result.content)
+            .unwrap()
+            .frontmatter
+            .unwrap();
+        assert_eq!(fm.name.as_deref(), Some("fallback-name"));
     }
 }

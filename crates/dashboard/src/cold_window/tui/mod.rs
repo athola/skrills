@@ -59,7 +59,8 @@ pub struct UiState {
     /// shrink between snapshots.
     pub selected: SelectionState,
     /// When true the focused pane takes the whole body (FR-5.2); the
-    /// escape hatch for tiny terminals. `z` toggles, `Esc` clears.
+    /// escape hatch for tiny terminals. `z` toggles, `Esc` clears it
+    /// when no overlay is open.
     pub zoomed: bool,
 }
 

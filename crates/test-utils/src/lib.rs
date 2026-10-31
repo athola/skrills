@@ -20,7 +20,9 @@ pub fn env_guard() -> MutexGuard<'static, ()> {
 /// RAII guard for environment variables - restores original value on drop.
 pub struct EnvVarGuard {
     key: &'static str,
-    previous: Option<String>,
+    /// `OsString`, not `String`: a non-UTF-8 original must be restored, not
+    /// removed.
+    previous: Option<std::ffi::OsString>,
 }
 
 impl Drop for EnvVarGuard {
@@ -42,7 +44,7 @@ impl Drop for EnvVarGuard {
 /// // When _guard drops, MY_VAR is restored to its original value
 /// ```
 pub fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
-    let previous = std::env::var(key).ok();
+    let previous = std::env::var_os(key);
     if let Some(val) = value {
         std::env::set_var(key, val);
     } else {
@@ -286,5 +288,22 @@ mod tests {
         }
         // Restored after guard drops
         assert_eq!(std::env::var("HOME").ok(), original_home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn set_env_var_restores_a_non_utf8_original() {
+        use std::os::unix::ffi::OsStrExt;
+        let _guard = env_guard();
+        let original = std::ffi::OsStr::from_bytes(b"caf\xe9");
+        std::env::set_var("SKRILLS_TEST_NON_UTF8", original);
+        {
+            let _var = set_env_var("SKRILLS_TEST_NON_UTF8", Some("plain"));
+        }
+        assert_eq!(
+            std::env::var_os("SKRILLS_TEST_NON_UTF8").as_deref(),
+            Some(original)
+        );
+        std::env::remove_var("SKRILLS_TEST_NON_UTF8");
     }
 }

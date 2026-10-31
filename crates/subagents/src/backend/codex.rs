@@ -1,16 +1,12 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::backend::{
     config::{endpoint, AdapterConfig},
     run_http_adapter, spawn_run, AdapterCapabilities, BackendAdapter, HttpProvider,
 };
-use crate::store::{
-    BackendKind, RunId, RunRecord, RunRequest, RunStatus, RunStore, SubagentTemplate,
-};
+use crate::store::{BackendKind, RunId, RunRequest, RunStore, SubagentTemplate};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use reqwest::Url;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -22,25 +18,21 @@ const API_KEY_ERROR: &str = "Codex API key not set. Set SKRILLS_CODEX_API_KEY en
 pub struct CodexAdapter {
     config: AdapterConfig,
     client: reqwest::Client,
+    /// A setting that could not be read (such as a malformed base URL);
+    /// every run fails with it rather than calling a default endpoint.
+    config_error: Option<String>,
 }
 
 impl CodexAdapter {
     pub fn new(model: String) -> Result<Self> {
-        let config =
-            match AdapterConfig::from_env("CODEX", &model, DEFAULT_BASE, DEFAULT_TIMEOUT_MS) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(error = %e, "adapter config unavailable; API calls will fail");
-                    AdapterConfig {
-                        api_key: String::new(),
-                        base_url: Url::parse(DEFAULT_BASE)
-                            .expect("DEFAULT_BASE constant must be a valid URL"),
-                        model,
-                        timeout: Duration::from_millis(DEFAULT_TIMEOUT_MS),
-                    }
-                }
-            };
-        Self::with_config(config)
+        let (config, config_error) =
+            AdapterConfig::from_env_or_default("CODEX", &model, DEFAULT_BASE, DEFAULT_TIMEOUT_MS);
+        if let Some(ref e) = config_error {
+            tracing::warn!(error = %e, "adapter config invalid; API calls will fail");
+        }
+        let mut adapter = Self::with_config(config)?;
+        adapter.config_error = config_error;
+        Ok(adapter)
     }
 
     pub fn with_config(config: AdapterConfig) -> Result<Self> {
@@ -48,7 +40,11 @@ impl CodexAdapter {
             .timeout(config.timeout)
             .build()
             .context("failed to build HTTP client")?;
-        Ok(Self { config, client })
+        Ok(Self {
+            config,
+            client,
+            config_error: None,
+        })
     }
 
     async fn execute_run(
@@ -57,7 +53,13 @@ impl CodexAdapter {
         request: RunRequest,
         store: Arc<dyn RunStore>,
     ) -> Result<()> {
-        let body = build_openai_body(&self.config.model, &request);
+        if let Some(ref e) = self.config_error {
+            return Err(anyhow::anyhow!("{e}"));
+        }
+        let body = build_openai_body(
+            request.model.as_deref().unwrap_or(&self.config.model),
+            &request,
+        );
         let url = endpoint(&self.config.base_url, "chat/completions")?;
         let api_key = self.config.api_key.clone();
 
@@ -78,9 +80,11 @@ struct OpenAiMessage {
 struct JsonSchemaFormat {
     #[serde(rename = "type")]
     fmt_type: String,
+    /// `{"name", "schema"}`. No `strict`: Chat Completions reads it inside
+    /// `json_schema`, and strict mode rejects schemas that do not mark every
+    /// property required and forbid additional ones, which a caller's
+    /// schema need not do.
     json_schema: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    strict: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -102,10 +106,10 @@ fn build_openai_body(model: &str, request: &RunRequest) -> OpenAiBody {
         .map(|schema| JsonSchemaFormat {
             fmt_type: "json_schema".into(),
             json_schema: json!({ "name": "subagent_output", "schema": schema }),
-            strict: Some(true),
         });
     let metadata = if request.tracing {
-        Some(json!({"trace": true}))
+        // Metadata values must be strings.
+        Some(json!({"trace": "true"}))
     } else {
         None
     };
@@ -178,7 +182,7 @@ impl BackendAdapter for CodexAdapter {
             supports_schema: true,
             supports_async: true,
             supports_tracing: true,
-            // `download-transcript-secure` is a stub that returns an error.
+            // `download-transcript-secure` is not implemented (and not listed).
             supports_secure_transcript: false,
         }
     }
@@ -207,25 +211,14 @@ impl BackendAdapter for CodexAdapter {
         )
         .await
     }
-
-    async fn status(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<Option<RunStatus>> {
-        store.status(run_id).await
-    }
-
-    async fn stop(&self, run_id: RunId, store: Arc<dyn RunStore>) -> Result<bool> {
-        store.stop(run_id).await
-    }
-
-    async fn history(&self, limit: usize, store: Arc<dyn RunStore>) -> Result<Vec<RunStatus>> {
-        let runs: Vec<RunRecord> = store.history(limit).await?;
-        Ok(runs.into_iter().map(|r| r.status).collect())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::Url;
     use serial_test::serial;
+    use std::time::Duration;
 
     #[test]
     #[serial]
@@ -298,6 +291,7 @@ mod tests {
             output_schema: None,
             tracing: false,
             async_mode: false,
+            model: None,
         };
 
         let body = build_openai_body("gpt-4", &request);
@@ -326,6 +320,7 @@ mod tests {
             output_schema: Some(serde_json::Value::Object(schema)),
             tracing: true,
             async_mode: true,
+            model: None,
         };
 
         let body = build_openai_body("gpt-4", &request);
@@ -338,10 +333,34 @@ mod tests {
         assert_eq!(response_format.fmt_type, "json_schema");
         assert_eq!(response_format.json_schema["name"], "subagent_output");
         assert_eq!(response_format.json_schema["schema"]["type"], "object");
-        assert_eq!(response_format.strict, Some(true));
 
         let metadata = body.metadata.unwrap();
-        assert_eq!(metadata["trace"], true);
+        assert_eq!(metadata["trace"], "true");
+    }
+
+    /// M277 / M323: the request body matches the Chat Completions shape:
+    /// any `strict` belongs inside `json_schema` (none is sent, so any schema
+    /// is accepted), and metadata values are strings.
+    #[test]
+    fn openai_body_wire_shape_matches_chat_completions() {
+        let request = RunRequest {
+            backend: BackendKind::Codex,
+            prompt: "Generate JSON".to_string(),
+            template_id: None,
+            output_schema: Some(json!({"type": "object"})),
+            tracing: true,
+            async_mode: false,
+            model: None,
+        };
+        let wire = serde_json::to_value(build_openai_body("gpt-test", &request)).unwrap();
+        assert_eq!(
+            wire["response_format"],
+            json!({
+                "type": "json_schema",
+                "json_schema": {"name": "subagent_output", "schema": {"type": "object"}}
+            })
+        );
+        assert_eq!(wire["metadata"], json!({"trace": "true"}));
     }
 
     #[test]
@@ -454,36 +473,6 @@ mod tests {
     }
 
     #[test]
-    fn test_json_schema_format_serialization() {
-        let schema = JsonSchemaFormat {
-            fmt_type: "json_schema".to_string(),
-            json_schema: json!({"name": "test", "schema": {"type": "object"}}),
-            strict: Some(true),
-        };
-
-        let json = serde_json::to_string(&schema).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(parsed["type"], "json_schema");
-        assert_eq!(parsed["json_schema"]["name"], "test");
-        assert_eq!(parsed["strict"], true);
-    }
-
-    #[test]
-    fn test_json_schema_format_serialization_skips_none() {
-        let schema = JsonSchemaFormat {
-            fmt_type: "json_schema".to_string(),
-            json_schema: json!({"name": "test"}),
-            strict: None,
-        };
-
-        let json = serde_json::to_string(&schema).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-
-        assert!(parsed.get("strict").is_none());
-    }
-
-    #[test]
     fn test_openai_body_serialization() {
         let body = OpenAiBody {
             model: "gpt-4".to_string(),
@@ -494,10 +483,9 @@ mod tests {
             response_format: Some(JsonSchemaFormat {
                 fmt_type: "json_schema".to_string(),
                 json_schema: json!({"name": "test"}),
-                strict: Some(false),
             }),
             stream: Some(true),
-            metadata: Some(json!({"trace": true})),
+            metadata: Some(json!({"trace": "true"})),
         };
 
         let json = serde_json::to_string(&body).unwrap();
@@ -506,8 +494,7 @@ mod tests {
         assert_eq!(parsed["model"], "gpt-4");
         assert_eq!(parsed["stream"], true);
         assert_eq!(parsed["response_format"]["type"], "json_schema");
-        assert_eq!(parsed["response_format"]["strict"], false);
-        assert_eq!(parsed["metadata"]["trace"], true);
+        assert_eq!(parsed["metadata"]["trace"], "true");
     }
 
     #[test]
@@ -550,6 +537,7 @@ mod tests {
             output_schema: None,
             tracing: false,
             async_mode: false,
+            model: None,
         };
 
         assert!(

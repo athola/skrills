@@ -6,10 +6,10 @@
 
 use anyhow::{anyhow, Result};
 use rmcp::service::serve_server;
+use skrills_discovery::merge_extra_dirs;
 #[cfg(feature = "watch")]
 use skrills_server::app::start_fs_watcher;
 use skrills_server::app::SkillService;
-use skrills_server::discovery::merge_extra_dirs;
 use skrills_server::tool_schemas::all_tools;
 use skrills_server::trace::stdio_with_optional_trace;
 use skrills_state::{cache_ttl, load_manifest_settings};
@@ -92,7 +92,7 @@ pub(crate) struct ServeOptions {
 #[cfg_attr(not(feature = "http-transport"), allow(dead_code))]
 fn resolve_auth_token(
     from_cli_or_env: Option<String>,
-    load_config: impl FnOnce() -> Result<Option<skrills_server::config::Config>>,
+    load_config: impl FnOnce() -> Result<Option<crate::config::Config>>,
 ) -> Result<Option<String>> {
     if from_cli_or_env.is_some() {
         return Ok(from_cli_or_env);
@@ -106,7 +106,7 @@ fn resolve_auth_token(
 /// `[serve] project_roots` from `~/.skrills/config.toml`, with `~` expanded.
 /// `None` when the file or the key is absent.
 fn resolve_project_roots(
-    load_config: impl FnOnce() -> Result<Option<skrills_server::config::Config>>,
+    load_config: impl FnOnce() -> Result<Option<crate::config::Config>>,
 ) -> Result<Option<Vec<PathBuf>>> {
     Ok(load_config()?.and_then(|c| c.serve.project_roots_expanded()))
 }
@@ -149,8 +149,71 @@ fn warn_if_project_dirs_unrestricted(bind: &str, project_roots: Option<&[PathBuf
     }
 }
 
+/// Flags the chosen transport ignores, one warning line per transport:
+/// the HTTP security flags under stdio (an `--auth-token` there protects
+/// nothing), and `--trace-wire`, which only wraps stdio, under HTTP.
+fn ignored_flag_warnings(opts: &ServeOptions) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if opts.http.is_none() {
+        let ignored: Vec<&str> = [
+            (opts.auth_token.is_some(), "--auth-token"),
+            (opts.tls_cert.is_some(), "--tls-cert"),
+            (opts.tls_key.is_some(), "--tls-key"),
+            (opts.tls_auto, "--tls-auto"),
+            (!opts.cors_origins.is_empty(), "--cors-origins"),
+            (!opts.allowed_hosts.is_empty(), "--allowed-hosts"),
+        ]
+        .into_iter()
+        .filter_map(|(set, flag)| set.then_some(flag))
+        .collect();
+        if !ignored.is_empty() {
+            warnings.push(format!(
+                "{} only apply with --http; serving over stdio without them",
+                ignored.join(", ")
+            ));
+        }
+    } else if opts.trace_wire {
+        warnings.push("--trace-wire only traces stdio; it has no effect with --http".to_string());
+    }
+    warnings
+}
+
+/// Every tool the server lists: the core schemas plus the MCP gateway
+/// tools the handler adds. Subagent tools are added by the running service
+/// and are not reachable from here.
+fn listed_tools() -> Vec<rmcp::model::Tool> {
+    let mut tools = all_tools();
+    tools.extend(skrills_server::mcp_gateway::mcp_gateway_tools());
+    tools
+}
+
+/// Runs `action` when dropped, if `enabled`, so the exit work runs on every
+/// return path: the HTTP transport's, and a stdio server that ends in error.
+struct OnExit<F: FnMut()> {
+    action: Option<F>,
+}
+
+impl<F: FnMut()> OnExit<F> {
+    fn new(enabled: bool, action: F) -> Self {
+        Self {
+            action: enabled.then_some(action),
+        }
+    }
+}
+
+impl<F: FnMut()> Drop for OnExit<F> {
+    fn drop(&mut self) {
+        if let Some(action) = self.action.as_mut() {
+            action();
+        }
+    }
+}
+
 /// Handle the `serve` command.
 pub(crate) fn handle_serve_command(options: ServeOptions) -> Result<()> {
+    for warning in ignored_flag_warnings(&options) {
+        tracing::warn!(target: "skrills::serve", "{warning}");
+    }
     let ServeOptions {
         skill_dirs,
         cache_ttl_ms,
@@ -170,7 +233,7 @@ pub(crate) fn handle_serve_command(options: ServeOptions) -> Result<()> {
 
     // Handle --list-tools: print tool names and exit
     if list_tools {
-        let tools = all_tools();
+        let tools = listed_tools();
         println!("Available MCP tools ({} total):", tools.len());
         println!();
         for tool in &tools {
@@ -196,9 +259,21 @@ pub(crate) fn handle_serve_command(options: ServeOptions) -> Result<()> {
         .unwrap_or_else(|| cache_ttl(&load_manifest_settings));
 
     let project_roots =
-        resolve_project_roots(|| skrills_server::config::load_config().map_err(|e| anyhow!(e)))?;
+        resolve_project_roots(|| crate::config::load_config().map_err(|e| anyhow!(e)))?;
 
     let rt = Runtime::new()?;
+
+    // Persist analytics when the server exits, whichever transport ran and
+    // however it ended. A fallback until Claude Code exposes session-end
+    // hooks; declared after `rt` so it runs before the runtime is dropped.
+    let auto_persist_on_exit = skrills_state::env_auto_persist();
+    if auto_persist_on_exit {
+        tracing::debug!(
+            target: "skrills::serve",
+            "Auto-persist enabled, analytics will be saved on server exit"
+        );
+    }
+    let _persist_on_exit = OnExit::new(auto_persist_on_exit, persist_analytics_on_exit);
 
     // HTTP transport mode
     if let Some(bind_addr) = http {
@@ -209,6 +284,17 @@ pub(crate) fn handle_serve_command(options: ServeOptions) -> Result<()> {
 
             // Clone values needed for the factory closure
             let skill_dirs_clone = skill_dirs.clone();
+
+            // `serve --http --watch` has no watcher to start: the HTTP
+            // transport builds a service per session. Refuse rather than
+            // accept the flag and serve a cache that never reloads, and
+            // before `--tls-auto` writes anything for a run that will not start.
+            #[cfg(feature = "watch")]
+            if watch {
+                return Err(anyhow!(
+                    "serve --watch is not supported with --http; restart the server to pick up skill changes"
+                ));
+            }
 
             // Resolve TLS paths: use auto-generated certs if --tls-auto, else CLI args
             let (resolved_cert, resolved_key) = if tls_auto {
@@ -224,18 +310,8 @@ pub(crate) fn handle_serve_command(options: ServeOptions) -> Result<()> {
                 (tls_cert, tls_key)
             };
 
-            // `serve --http --watch` has no watcher to start: the HTTP
-            // transport builds a service per session. Refuse rather than
-            // accept the flag and serve a cache that never reloads.
-            #[cfg(feature = "watch")]
-            if watch {
-                return Err(anyhow!(
-                    "serve --watch is not supported with --http; restart the server to pick up skill changes"
-                ));
-            }
-
             let auth_token = resolve_auth_token(auth_token, || {
-                skrills_server::config::load_config().map_err(|e| anyhow!(e))
+                crate::config::load_config().map_err(|e| anyhow!(e))
             })?;
 
             // Build security config from CLI arguments
@@ -309,15 +385,6 @@ pub(crate) fn handle_serve_command(options: ServeOptions) -> Result<()> {
         None
     };
 
-    // Check if auto-persist is enabled for exit handling
-    let auto_persist_on_exit = skrills_state::env_auto_persist();
-    if auto_persist_on_exit {
-        tracing::debug!(
-            target: "skrills::serve",
-            "Auto-persist enabled, analytics will be saved on server exit"
-        );
-    }
-
     let transport = stdio_with_optional_trace(trace_wire);
     let running = rt.block_on(async {
         serve_server(service, transport)
@@ -331,12 +398,6 @@ pub(crate) fn handle_serve_command(options: ServeOptions) -> Result<()> {
             .await
             .map_err(|e| anyhow!("server task ended: {e}"))
     })?;
-
-    // Persist analytics on server exit if enabled
-    // This serves as a fallback until Claude Code exposes session-end hooks
-    if auto_persist_on_exit {
-        persist_analytics_on_exit();
-    }
 
     #[cfg(feature = "watch")]
     drop(_watcher);
@@ -367,7 +428,7 @@ mod tests {
     /// SA-23: `[serve] project_roots` reaches serve with `~` expanded.
     #[test]
     fn project_roots_come_from_the_config_file() {
-        let config: skrills_server::config::Config =
+        let config: crate::config::Config =
             toml::from_str("[serve]\nproject_roots = [\"/work\"]\n").unwrap();
         assert_eq!(
             resolve_project_roots(|| Ok(Some(config))).unwrap(),
@@ -376,7 +437,7 @@ mod tests {
         assert_eq!(resolve_project_roots(|| Ok(None)).unwrap(), None);
     }
 
-    fn config_with_token(token: &str) -> skrills_server::config::Config {
+    fn config_with_token(token: &str) -> crate::config::Config {
         toml::from_str(&format!("[serve]\nauth_token = \"{token}\"\n")).unwrap()
     }
 
@@ -422,10 +483,90 @@ mod tests {
         .unwrap();
 
         let token = resolve_auth_token(None, || {
-            skrills_server::config::load_config().map_err(|e| anyhow!(e))
+            crate::config::load_config().map_err(|e| anyhow!(e))
         })
         .unwrap();
 
         assert_eq!(token.as_deref(), Some("home-token"));
+    }
+
+    #[test]
+    fn http_only_flags_without_http_are_reported() {
+        let opts = ServeOptions {
+            auth_token: Some("t".into()),
+            tls_cert: Some(PathBuf::from("c.pem")),
+            cors_origins: vec!["https://x".into()],
+            ..Default::default()
+        };
+
+        let warnings = ignored_flag_warnings(&opts);
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("--auth-token"), "{warnings:?}");
+        assert!(warnings[0].contains("--tls-cert"), "{warnings:?}");
+        assert!(warnings[0].contains("--cors-origins"), "{warnings:?}");
+    }
+
+    #[test]
+    fn trace_wire_under_http_is_reported() {
+        let opts = ServeOptions {
+            http: Some("127.0.0.1:0".into()),
+            trace_wire: true,
+            ..Default::default()
+        };
+
+        let warnings = ignored_flag_warnings(&opts);
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("--trace-wire"), "{warnings:?}");
+        assert!(ignored_flag_warnings(&ServeOptions::default()).is_empty());
+    }
+
+    #[test]
+    fn listed_tools_include_the_gateway_tools_the_server_serves() {
+        let names: Vec<String> = listed_tools().iter().map(|t| t.name.to_string()).collect();
+        for tool in skrills_server::mcp_gateway::mcp_gateway_tools() {
+            assert!(
+                names.contains(&tool.name.to_string()),
+                "{} missing",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn on_exit_runs_its_action_when_dropped_on_any_path() {
+        let ran = std::cell::Cell::new(false);
+        {
+            let _guard = OnExit::new(true, || ran.set(true));
+        }
+        assert!(ran.get());
+
+        let skipped = std::cell::Cell::new(false);
+        {
+            let _guard = OnExit::new(false, || skipped.set(true));
+        }
+        assert!(!skipped.get());
+    }
+
+    /// `--tls-auto` wrote certificates before `--watch` was refused.
+    #[cfg(all(feature = "watch", feature = "http-transport"))]
+    #[test]
+    fn http_watch_is_refused_before_tls_auto_writes_certificates() {
+        let _g = skrills_test_utils::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _h = skrills_test_utils::set_env_var("HOME", Some(home.path().to_str().unwrap()));
+        let _a = skrills_test_utils::set_env_var("SKRILLS_AUTO_PERSIST", None);
+
+        let err = handle_serve_command(ServeOptions {
+            http: Some("127.0.0.1:0".into()),
+            tls_auto: true,
+            watch: true,
+            ..Default::default()
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("--watch"), "{err}");
+        assert!(!home.path().join(".skrills/tls").exists());
     }
 }

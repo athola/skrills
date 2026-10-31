@@ -19,6 +19,14 @@ pub struct FieldSupport {
     pub plugin_assets: bool,
 }
 
+/// How a plugin mirror treats files a newer plugin version no longer ships.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MirrorOptions {
+    /// Leave those files in place instead of removing them; a later sync
+    /// without this flag still removes them.
+    pub keep_versions: bool,
+}
+
 #[cfg(test)]
 use mockall::automock;
 
@@ -134,6 +142,24 @@ pub trait AgentAdapter: Send + Sync {
         Ok(WriteReport::default())
     }
 
+    /// Removes the flat skill folders named in `folders`, skills a plugin
+    /// mirror now carries, when sync wrote them. With `dry_run` only names them
+    /// in warnings.
+    fn remove_flat_skill_copies(&self, _folders: &[String], _dry_run: bool) -> Result<WriteReport> {
+        Ok(WriteReport::default())
+    }
+
+    /// [`write_plugin_assets`](Self::write_plugin_assets) with removal policy.
+    /// The default ignores `options`: only a writer that removes superseded
+    /// files has anything to keep.
+    fn write_plugin_assets_with(
+        &self,
+        assets: &[PluginAsset],
+        _options: &MirrorOptions,
+    ) -> Result<WriteReport> {
+        self.write_plugin_assets(assets)
+    }
+
     /// Previews [`write_plugin_assets`](Self::write_plugin_assets) for a dry run.
     ///
     /// The default only counts the batch, which is all a purely additive writer
@@ -145,6 +171,18 @@ pub trait AgentAdapter: Send + Sync {
             written: assets.len(),
             ..WriteReport::default()
         })
+    }
+
+    /// Previews [`write_skills`](Self::write_skills) for a dry run.
+    ///
+    /// The default compares each skill with what [`read_skills`](Self::read_skills)
+    /// returns under the same name. An adapter whose writer renames or rewrites
+    /// skills (Codex sets `name:` to the folder) overrides this, or a dry run
+    /// after a real sync reports changes that a sync would not make.
+    fn preview_skills(&self, skills: &[Command]) -> Result<WriteReport> {
+        Ok(crate::orchestrator::preview_skill_items(skills, || {
+            self.read_skills()
+        }))
     }
 }
 
@@ -211,7 +249,20 @@ impl AgentAdapter for Box<dyn AgentAdapter> {
     fn write_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
         (**self).write_plugin_assets(assets)
     }
+    fn write_plugin_assets_with(
+        &self,
+        assets: &[PluginAsset],
+        options: &MirrorOptions,
+    ) -> Result<WriteReport> {
+        (**self).write_plugin_assets_with(assets, options)
+    }
+    fn remove_flat_skill_copies(&self, folders: &[String], dry_run: bool) -> Result<WriteReport> {
+        (**self).remove_flat_skill_copies(folders, dry_run)
+    }
     fn preview_plugin_assets(&self, assets: &[PluginAsset]) -> Result<WriteReport> {
         (**self).preview_plugin_assets(assets)
+    }
+    fn preview_skills(&self, skills: &[Command]) -> Result<WriteReport> {
+        (**self).preview_skills(skills)
     }
 }

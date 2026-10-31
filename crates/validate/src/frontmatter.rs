@@ -68,7 +68,7 @@ pub struct NormalizedDependency {
 // RATIONALE: This regex pattern is a compile-time string literal that has been verified
 // to be valid. The `.expect()` will never panic (pattern is hardcoded, not user-provided).
 static COMPACT_DEP_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:([a-z]+):)?([^@:\s]+)(?:@(.+))?$")
+    Regex::new(r"^(?:([a-z][a-z0-9_-]*):)?([^@:\s]+)(?:@(.+))?$")
         .expect("COMPACT_DEP_REGEX: compile-time constant")
 });
 
@@ -85,6 +85,16 @@ impl DeclaredDependency {
                 source,
                 optional,
             } => {
+                // Same rules as the compact form, so `name: ""` or a source
+                // the compact syntax could not express are rejected too.
+                if !is_valid_dependency_name(name) {
+                    return Err(format!("Invalid dependency name: '{}'", name));
+                }
+                if let Some(source) = source {
+                    if !is_valid_dependency_source(source) {
+                        return Err(format!("Invalid dependency source: '{}'", source));
+                    }
+                }
                 let version_req = match version {
                     Some(v) => Some(
                         semver::VersionReq::parse(v)
@@ -101,6 +111,22 @@ impl DeclaredDependency {
             }
         }
     }
+}
+
+/// A dependency name: non-empty, no whitespace, `@` or `:` (the compact
+/// syntax's separators).
+fn is_valid_dependency_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name
+            .chars()
+            .any(|c| c.is_whitespace() || c == '@' || c == ':')
+}
+
+/// A dependency source: a lowercase identifier such as `codex` or `my-source`.
+fn is_valid_dependency_source(source: &str) -> bool {
+    let mut chars = source.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
 /// Parse compact dependency syntax: `[source:]name[@version]`
@@ -153,7 +179,7 @@ pub struct SkillFrontmatter {
     pub depends: Vec<DeclaredDependency>,
     /// Additional fields that may be present.
     #[serde(flatten)]
-    pub extra: std::collections::HashMap<String, serde_yaml::Value>,
+    pub extra: std::collections::HashMap<String, serde_norway::Value>,
 }
 
 impl SkillFrontmatter {
@@ -188,8 +214,21 @@ pub struct ParsedSkill {
 
 /// Check if a skill file has frontmatter.
 pub fn has_frontmatter(content: &str) -> bool {
-    let trimmed = content.trim_start();
-    trimmed.starts_with("---")
+    opening_fence_len(strip_bom(content).trim_start()).is_some()
+}
+
+/// Length of the opening fence line (with its line ending) when the first
+/// line of `trimmed` is exactly `---`, trailing whitespace allowed. `----` and
+/// `---foo` are not fences.
+fn opening_fence_len(trimmed: &str) -> Option<usize> {
+    let line_end = trimmed.find('\n').map_or(trimmed.len(), |i| i + 1);
+    (trimmed[..line_end].trim_end() == "---").then_some(line_end)
+}
+
+/// Editors on Windows save UTF-8 with a leading byte-order mark, which
+/// `trim_start` keeps because U+FEFF is not whitespace.
+fn strip_bom(content: &str) -> &str {
+    content.strip_prefix('\u{feff}').unwrap_or(content)
 }
 
 /// Split content into frontmatter and body sections.
@@ -201,11 +240,12 @@ pub fn has_frontmatter(content: &str) -> bool {
 /// leaving it in made callers that rebuild the block line by line emit the
 /// closing `---` on the same line as the last key.
 pub fn split_frontmatter(content: &str) -> (Option<String>, String, usize) {
+    let content = strip_bom(content);
     let trimmed = content.trim_start();
 
-    if !trimmed.starts_with("---") {
+    let Some(fence_len) = opening_fence_len(trimmed) else {
         return (None, content.to_string(), 1);
-    }
+    };
 
     // Count leading whitespace lines
     let leading_lines = content
@@ -213,19 +253,24 @@ pub fn split_frontmatter(content: &str) -> (Option<String>, String, usize) {
         .take_while(|line| line.trim().is_empty())
         .count();
 
-    // Find the closing ---
-    let after_open = &trimmed[3..];
-    let after_open = after_open.trim_start_matches(['\r', '\n']);
+    // Drop only the opening fence's own line: blank lines after it belong to
+    // the block, and an immediate `---` closes an empty block.
+    let after_open = &trimmed[fence_len..];
 
     if let Some((end_pos, fence_end)) = find_closing_fence(after_open) {
         let block = &after_open[..end_pos];
         let yaml = block.strip_suffix('\r').unwrap_or(block);
-        let rest = &after_open[fence_end..];
-        let rest = rest.trim_start_matches(['\r', '\n']);
+        let after_fence = &after_open[fence_end..];
+        let rest = after_fence.trim_start_matches(['\r', '\n']);
 
-        // Calculate content start line
-        let frontmatter_lines = yaml.lines().count() + 2; // +2 for opening and closing ---
-        let content_start = leading_lines + frontmatter_lines + 1;
+        // Opening fence, every block line (blank ones too), closing fence,
+        // then the blank lines skipped before the body. The first newline
+        // after the fence ends the fence's own line.
+        let block_lines = after_open[..fence_end].matches('\n').count();
+        let skipped = after_fence[..after_fence.len() - rest.len()]
+            .matches('\n')
+            .count();
+        let content_start = leading_lines + 1 + block_lines + 1 + skipped.saturating_sub(1) + 1;
 
         (Some(yaml.to_string()), rest.to_string(), content_start)
     } else {
@@ -243,6 +288,11 @@ pub fn split_frontmatter(content: &str) -> (Option<String>, String, usize) {
 /// since its `\r` trails the previous line, and a `\r\n---` in the body of an
 /// LF file is never mistaken for the fence.
 fn find_closing_fence(after_open: &str) -> Option<(usize, usize)> {
+    // An empty block: the fence is the very first line.
+    let first_end = after_open.find('\n').unwrap_or(after_open.len());
+    if after_open[..first_end].trim_end() == "---" {
+        return Some((0, first_end));
+    }
     let mut search_from = 0;
     while let Some(rel) = after_open[search_from..].find("\n---") {
         let newline = search_from + rel;
@@ -258,29 +308,59 @@ fn find_closing_fence(after_open: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// 1-indexed file line of the top-level `key:` entry in the frontmatter
+/// block, or `None` when the block or the key is absent.
+pub(crate) fn frontmatter_key_line(content: &str, key: &str) -> Option<usize> {
+    let content = strip_bom(content);
+    let mut lines = content
+        .lines()
+        .enumerate()
+        .skip_while(|(_, line)| line.trim().is_empty());
+    let (_, open) = lines.next()?;
+    if open.trim() != "---" {
+        return None;
+    }
+    for (idx, line) in lines {
+        if line.trim_end() == "---" {
+            return None;
+        }
+        if line
+            .strip_prefix(key)
+            .is_some_and(|rest| rest.trim_start().starts_with(':'))
+        {
+            return Some(idx + 1);
+        }
+    }
+    None
+}
+
 /// Parse YAML frontmatter from a skill file.
 pub fn parse_frontmatter(content: &str) -> Result<ParsedSkill, String> {
     let (raw_yaml, body, content_start) = split_frontmatter(content);
 
     let frontmatter = if let Some(ref yaml) = raw_yaml {
-        match serde_yaml::from_str::<SkillFrontmatter>(yaml) {
-            Ok(fm) => Some(fm),
-            Err(e) => {
-                // Extract line/column info from serde_yaml error if available
-                // The frontmatter starts at line 2 (after the opening ---),
-                // so we add 1 to account for the opening --- line
-                let error_msg = if let Some(loc) = e.location() {
-                    let actual_line = loc.line() + 1; // +1 for opening ---
-                    format!(
-                        "Invalid YAML frontmatter at line {}, column {}: {}",
-                        actual_line,
-                        loc.column(),
-                        e
-                    )
-                } else {
-                    format!("Invalid YAML frontmatter: {e}")
-                };
-                return Err(error_msg);
+        if yaml.trim().is_empty() {
+            Some(SkillFrontmatter::default())
+        } else {
+            match serde_norway::from_str::<SkillFrontmatter>(yaml) {
+                Ok(fm) => Some(fm),
+                Err(e) => {
+                    // Extract line/column info from serde_norway error if available
+                    // The frontmatter starts at line 2 (after the opening ---),
+                    // so we add 1 to account for the opening --- line
+                    let error_msg = if let Some(loc) = e.location() {
+                        let actual_line = loc.line() + 1; // +1 for opening ---
+                        format!(
+                            "Invalid YAML frontmatter at line {}, column {}: {}",
+                            actual_line,
+                            loc.column(),
+                            e
+                        )
+                    } else {
+                        format!("Invalid YAML frontmatter: {e}")
+                    };
+                    return Err(error_msg);
+                }
             }
         }
     } else {
@@ -297,37 +377,65 @@ pub fn parse_frontmatter(content: &str) -> Result<ParsedSkill, String> {
 
 /// Generate frontmatter YAML from a name and description.
 pub fn generate_frontmatter(name: &str, description: &str) -> String {
-    // Escape special characters in YAML strings
-    let name_escaped = if name.contains(':') || name.contains('#') {
-        format!("\"{}\"", name.replace('"', "\\\""))
-    } else {
-        name.to_string()
-    };
+    format!(
+        "---\nname: {}\ndescription: {}\n---\n",
+        yaml_scalar(name),
+        yaml_scalar(description)
+    )
+}
 
-    let desc_escaped = if description.contains('\n') || description.len() > 80 {
-        // Use YAML literal block scalar for multi-line or long descriptions
-        let line_count = description.lines().count();
-        let mut indented = String::with_capacity(description.len() + (2 * line_count) + line_count);
-        for (idx, line) in description.lines().enumerate() {
-            if idx > 0 {
-                indented.push('\n');
-            }
-            indented.push_str("  ");
-            indented.push_str(line);
+/// Renders `text` as a YAML scalar that parses back to the same string.
+///
+/// Plain style is kept only for text that cannot be read as anything else:
+/// a leading `-`, `*`, `[`, `"`, a ` #`, a `: ` or a bare `true` each change
+/// what the parser sees. Everything else is double-quoted with escapes.
+pub(crate) fn yaml_scalar(text: &str) -> String {
+    let plain_safe = text.chars().next().is_some_and(char::is_alphabetic)
+        && !text.ends_with(' ')
+        && text
+            .chars()
+            .all(|c| c.is_alphanumeric() || " _.,()/-".contains(c))
+        && !matches!(
+            text.to_ascii_lowercase().as_str(),
+            "true" | "false" | "null" | "yes" | "no" | "on" | "off" | "y" | "n"
+        );
+    if plain_safe {
+        return text.to_string();
+    }
+    let mut quoted = String::with_capacity(text.len() + 2);
+    quoted.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '\n' => quoted.push_str("\\n"),
+            '\r' => quoted.push_str("\\r"),
+            '\t' => quoted.push_str("\\t"),
+            c if c.is_control() => quoted.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => quoted.push(c),
         }
-        format!("|\n{indented}")
-    } else if description.contains(':') || description.contains('#') {
-        format!("\"{}\"", description.replace('"', "\\\""))
-    } else {
-        description.to_string()
-    };
-
-    format!("---\nname: {name_escaped}\ndescription: {desc_escaped}\n---\n")
+    }
+    quoted.push('"');
+    quoted
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    /// `----` or `---foo` is a thematic break or text, not a fence; the sync
+    /// adapters and token counter already require a whole `---` line.
+    fn an_opener_that_is_not_exactly_three_dashes_is_not_frontmatter() {
+        for content in ["----\nname: x\n---\nbody", "---foo\nname: x\n---\nbody"] {
+            assert!(!has_frontmatter(content), "{content:?}");
+            let (raw, body, line) = split_frontmatter(content);
+            assert!(raw.is_none(), "{content:?}");
+            assert_eq!(body, content);
+            assert_eq!(line, 1);
+        }
+        assert!(has_frontmatter("---  \nname: x\n---\nbody"));
+    }
 
     #[test]
     fn test_has_frontmatter() {
@@ -358,7 +466,8 @@ mod tests {
 
         assert_eq!(yaml.as_deref(), Some("name: test\r\nmodel: x"));
         assert_eq!(body, "# Body\r\n");
-        assert_eq!(line, 5);
+        // 1 ---, 2 name, 3 model, 4 ---, 5 blank, 6 # Body
+        assert_eq!(line, 6);
     }
 
     /// Only a line that is exactly `---` closes the block. A `----` rule or a
@@ -461,6 +570,69 @@ mod tests {
         let fm = generate_frontmatter("skill:name", "Contains: colon");
         assert!(fm.contains("name: \"skill:name\""));
         assert!(fm.contains("description: \"Contains: colon\""));
+    }
+
+    #[test]
+    fn generate_frontmatter_roundtrips_yaml_indicator_strings() {
+        let cases = [
+            "- first bullet",
+            "**Bold** intro",
+            "\"quoted\" name",
+            "[draft] x",
+            "back\\slash: \"q\"",
+            "true",
+            "123",
+            "& anchor",
+            "a #comment",
+            "trailing space ",
+            "line one\nline two",
+            &"long text ".repeat(20),
+        ];
+        for text in cases {
+            let generated = generate_frontmatter(text, text);
+            let fm = parse_frontmatter(&generated)
+                .unwrap_or_else(|e| panic!("{text:?} -> {generated:?}: {e}"))
+                .frontmatter
+                .unwrap();
+            assert_eq!(fm.name.as_deref(), Some(text), "{generated:?}");
+            assert_eq!(fm.description.as_deref(), Some(text), "{generated:?}");
+        }
+    }
+
+    #[test]
+    fn yaml_scalar_escapes_tab_and_carriage_return() {
+        assert_eq!(yaml_scalar("a\tb\rc"), "\"a\\tb\\rc\"");
+        for text in ["tab\there", "cr\rhere"] {
+            let generated = generate_frontmatter(text, text);
+            let fm = parse_frontmatter(&generated)
+                .unwrap_or_else(|e| panic!("{text:?} -> {generated:?}: {e}"))
+                .frontmatter
+                .unwrap();
+            assert_eq!(fm.name.as_deref(), Some(text), "{generated:?}");
+        }
+    }
+
+    #[test]
+    fn frontmatter_key_line_is_none_when_the_first_line_is_not_a_fence() {
+        assert_eq!(
+            frontmatter_key_line("# not a fence\nname: x\n", "name"),
+            None
+        );
+    }
+
+    #[test]
+    fn frontmatter_key_line_is_none_when_an_unclosed_block_lacks_the_key() {
+        assert_eq!(frontmatter_key_line("---\nname: x\n", "description"), None);
+        assert_eq!(frontmatter_key_line("---\nname: x\n", "name"), Some(2));
+    }
+
+    #[test]
+    fn frontmatter_after_a_utf8_bom_is_recognized() {
+        let content = "\u{feff}---\nname: a\ndescription: b\n---\n# Body";
+        assert!(has_frontmatter(content));
+        let parsed = parse_frontmatter(content).unwrap();
+        assert_eq!(parsed.frontmatter.unwrap().name.as_deref(), Some("a"));
+        assert_eq!(parsed.content, "# Body");
     }
 
     // ============================================================
@@ -589,6 +761,18 @@ depends:
 
         assert_eq!(deps[2].name, "optional-helper");
         assert!(deps[2].optional);
+    }
+
+    #[test]
+    fn unknown_frontmatter_keys_round_trip_through_the_yaml_crate() {
+        let content = "---\nname: my-skill\ndescription: d\nmetadata:\n  tags: [a, \"b: c\"]\n  level: 2\n---\nBody";
+        let fm = parse_frontmatter(content).unwrap().frontmatter.unwrap();
+        let metadata = &fm.extra["metadata"];
+        let rendered = serde_norway::to_string(metadata).unwrap();
+        let reparsed: serde_norway::Value = serde_norway::from_str(&rendered).unwrap();
+        assert_eq!(&reparsed, metadata);
+        assert_eq!(metadata["tags"][1].as_str(), Some("b: c"));
+        assert_eq!(metadata["level"].as_u64(), Some(2));
     }
 
     #[test]
@@ -927,7 +1111,7 @@ name: duplicate
     #[test]
     fn test_yaml_error_with_location_info() {
         // Test that YAML parse errors include location information when available.
-        // Most serde_yaml errors include location info, which we format with
+        // Most serde_norway errors include location info, which we format with
         // line offset to account for the opening --- delimiter.
         let content = "---\n: missing key\n---\n";
         let result = parse_frontmatter(content);
@@ -976,11 +1160,11 @@ name: duplicate
 
     #[test]
     fn test_yaml_error_fallback_format() {
-        // Test the fallback error format when serde_yaml errors lack location info.
+        // Test the fallback error format when serde_norway errors lack location info.
         // The fallback format is: "Invalid YAML frontmatter: {details}"
         //
         // Note: It's difficult to trigger the fallback path with real YAML because
-        // serde_yaml almost always provides location info for syntax errors.
+        // serde_norway almost always provides location info for syntax errors.
         // This test verifies the format by constructing the expected message directly
         // and checking that errors conform to our prefix convention.
         //
@@ -1117,5 +1301,40 @@ name: duplicate
         // The fallback branch exists for edge cases - verify the code handles
         // both branches by checking the shared prefix
         assert!(err.starts_with("Invalid YAML frontmatter"));
+    }
+
+    #[test]
+    fn empty_frontmatter_block_is_recognized() {
+        let (yaml, body, line) = split_frontmatter("---\n---\nbody\n---\nmore\n");
+        assert_eq!(yaml.as_deref(), Some(""));
+        assert_eq!(body, "body\n---\nmore\n");
+        assert_eq!(line, 3);
+    }
+
+    #[test]
+    fn content_start_line_counts_blank_lines_around_the_fences() {
+        let (yaml, body, line) = split_frontmatter("---\n\nname: a\n\n---\n\n\nBody");
+        assert_eq!(yaml.as_deref(), Some("\nname: a\n"));
+        assert_eq!(body, "Body");
+        // 1 ---, 2 blank, 3 name, 4 blank, 5 ---, 6 blank, 7 blank, 8 Body
+        assert_eq!(line, 8);
+    }
+
+    #[test]
+    fn structured_and_compact_dependencies_share_one_name_and_source_rule() {
+        let structured = |name: &str, source: Option<&str>| DeclaredDependency::Structured {
+            name: name.into(),
+            version: None,
+            source: source.map(Into::into),
+            optional: false,
+        };
+        assert!(structured("", None).normalize().is_err());
+        assert!(structured("a b", None).normalize().is_err());
+        assert!(structured("ok", Some("Bad Source")).normalize().is_err());
+        let compact = DeclaredDependency::Simple("my-source:foo".into())
+            .normalize()
+            .unwrap();
+        assert_eq!(compact.source.as_deref(), Some("my-source"));
+        assert_eq!(compact.name, "foo");
     }
 }

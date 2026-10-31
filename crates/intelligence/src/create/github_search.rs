@@ -199,6 +199,14 @@ fn sanitize_github_query(query: &str) -> String {
         "filename:",
         "path:",
         "extension:",
+        "symbol:",
+        "content:",
+        "no:",
+        "owner:",
+        "enterprise:",
+        "sort:",
+        "mirror:",
+        "template:",
     ];
 
     // Boolean operators (must be standalone words, case-insensitive)
@@ -246,10 +254,35 @@ pub async fn search_github_skills(query: &str, limit: usize) -> Result<Vec<GitHu
     // Sanitize user input to prevent search operator injection
     let sanitized_query = sanitize_github_query(query);
 
+    // With nothing left the search would be every SKILL.md on GitHub.
+    if sanitized_query.trim().is_empty() {
+        anyhow::bail!("search query is empty once GitHub search operators are removed");
+    }
+
     // Build search query for SKILL.md files
     let search_query = format!("{} filename:SKILL.md", sanitized_query);
 
     search_github_raw(&search_query, limit).await
+}
+
+/// GitHub's search API accepts 1-100 results per page.
+fn clamp_per_page(limit: usize) -> usize {
+    limit.clamp(1, 100)
+}
+
+/// Accepts a plain language name (`rust`, `c++`, `c#`, `objective-c`) and
+/// refuses anything else, so a caller cannot smuggle further qualifiers
+/// (`rust repo:attacker/x`) into the query sent with the user's token.
+fn validate_language(language: &str) -> Result<&str> {
+    if !language.is_empty()
+        && language
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '#' | '.' | '-'))
+    {
+        Ok(language)
+    } else {
+        anyhow::bail!("invalid search language {language:?}")
+    }
 }
 
 /// Internal search function that performs the raw GitHub API call.
@@ -261,7 +294,10 @@ async fn search_github_raw(query: &str, limit: usize) -> Result<Vec<GitHubSkillR
     let response = apply_github_auth(
         client
             .get(format!("{}/search/code", github_api_base()))
-            .query(&[("q", query), ("per_page", &limit.to_string())])
+            .query(&[
+                ("q", query),
+                ("per_page", &clamp_per_page(limit).to_string()),
+            ])
             .header("Accept", "application/vnd.github.v3+json"),
     )
     .send()
@@ -283,6 +319,7 @@ async fn search_github_raw(query: &str, limit: usize) -> Result<Vec<GitHubSkillR
                     "GitHub API access forbidden. Check your GITHUB_TOKEN permissions."
                 }
             }
+            429 => "GitHub API rate limit exceeded. Wait a few minutes and try again, or set GITHUB_TOKEN environment variable for higher limits.",
             401 => "GitHub API authentication failed. Verify your GITHUB_TOKEN is valid.",
             422 => "GitHub search query invalid. Try simplifying your search terms.",
             _ => "",
@@ -384,20 +421,22 @@ pub async fn search_skills_advanced(
         }
     }
 
-    // Add language filter (trusted input, not from user)
+    // Add language filter, validated: it reaches the query unsanitized.
     if let Some(lang) = language {
-        query_parts.push(format!("language:{}", lang));
-    }
-
-    // Add star filter (trusted input, not from user)
-    if let Some(stars) = min_stars {
-        query_parts.push(format!("stars:>={}", stars));
+        query_parts.push(format!("language:{}", validate_language(lang)?));
     }
 
     let query = query_parts.join(" ");
     // Use raw search since we've already sanitized user input and
     // added trusted operators
-    search_github_raw(&query, limit).await
+    let mut results = search_github_raw(&query, limit).await?;
+
+    // Code search has no `stars:` qualifier (it belongs to repository search),
+    // so the floor is applied to each result's repository instead.
+    if let Some(stars) = min_stars {
+        results.retain(|r| r.stars >= stars);
+    }
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -892,6 +931,59 @@ mod integration_tests {
 
     #[tokio::test]
     #[serial]
+    async fn search_reports_rate_limit_on_429() {
+        let server = MockServer::start().await;
+        let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some(&server.uri()));
+        let _token_guard = set_env_var("GITHUB_TOKEN", None);
+        Mock::given(method("GET"))
+            .and(path("/search/code"))
+            .respond_with(ResponseTemplate::new(429).set_body_string("slow down"))
+            .mount(&server)
+            .await;
+        let err = search_github_skills("testing", 10)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("rate limit"), "{err}");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn search_with_nothing_left_after_sanitizing_is_refused() {
+        let server = MockServer::start().await;
+        let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some(&server.uri()));
+        let _token_guard = set_env_var("GITHUB_TOKEN", None);
+        Mock::given(method("GET"))
+            .and(path("/search/code"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items": []})))
+            .expect(0)
+            .mount(&server)
+            .await;
+        assert!(search_github_skills("repo:x/y", 10).await.is_err());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn search_skills_advanced_rejects_a_language_carrying_qualifiers() {
+        let server = MockServer::start().await;
+        let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some(&server.uri()));
+        let _token_guard = set_env_var("GITHUB_TOKEN", None);
+        Mock::given(method("GET"))
+            .and(path("/search/code"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items": []})))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let keywords = vec!["async".to_string()];
+        assert!(
+            search_skills_advanced(&keywords, Some("rust repo:attacker/x"), None, 10)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
     async fn test_search_github_skills_success() {
         let server = MockServer::start().await;
 
@@ -1046,7 +1138,9 @@ mod integration_tests {
             .mount(&server)
             .await;
 
-        let result = search_github_skills("", 10).await;
+        // An empty query is refused before any request, so a non-empty one
+        // reaches the 422 mapping.
+        let result = search_github_skills("testing", 10).await;
 
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
@@ -1246,33 +1340,34 @@ This is a test skill."#;
         );
     }
 
+    /// `stars:` is a repository-search qualifier that legacy code search does
+    /// not support (docs.github.com/en/search-github/searching-on-github/searching-code),
+    /// so the star floor is applied to the results instead of the query.
     #[tokio::test]
     #[serial]
-    async fn test_search_skills_advanced_with_stars_filter() {
+    async fn search_skills_advanced_filters_by_stars_client_side() {
         let server = MockServer::start().await;
 
         let _api_guard = set_env_var("GITHUB_API_BASE_URL", Some(&server.uri()));
         let _token_guard = set_env_var("GITHUB_TOKEN", None);
 
-        let mock_response = json!({
-            "items": [
-                {
-                    "path": "SKILL.md",
-                    "html_url": "https://github.com/popular/repo/blob/main/SKILL.md",
-                    "repository": {
-                        "full_name": "popular/repo",
-                        "html_url": "https://github.com/popular/repo",
-                        "stargazers_count": 1500,
-                        "updated_at": "2024-08-01T00:00:00Z",
-                        "description": "Popular repo"
-                    }
+        let item = |name: &str, stars: u64| {
+            json!({
+                "path": "SKILL.md",
+                "html_url": format!("https://github.com/{name}/blob/main/SKILL.md"),
+                "repository": {
+                    "full_name": name,
+                    "html_url": format!("https://github.com/{name}"),
+                    "stargazers_count": stars,
+                    "updated_at": "2024-08-01T00:00:00Z",
+                    "description": null
                 }
-            ]
-        });
+            })
+        };
+        let mock_response = json!({ "items": [item("popular/repo", 1500), item("small/repo", 5)] });
 
         Mock::given(method("GET"))
             .and(path("/search/code"))
-            .and(query_param_contains("q", "stars:>=100"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&mock_response))
             .mount(&server)
             .await;
@@ -1284,6 +1379,9 @@ This is a test skill."#;
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].stars, 1500);
+        let requests = server.received_requests().await.unwrap();
+        let query = requests[0].url.query().unwrap_or_default().to_string();
+        assert!(!query.contains("stars"), "query: {query}");
     }
 
     #[tokio::test]
@@ -1367,5 +1465,30 @@ This is a test skill."#;
             "Expected forbidden error, got: {}",
             error_msg
         );
+    }
+
+    #[test]
+    fn sanitize_github_query_strips_code_search_qualifiers() {
+        assert_eq!(
+            sanitize_github_query("x symbol:foo content:bar no:topic owner:me"),
+            "x"
+        );
+    }
+
+    #[test]
+    fn search_language_must_be_a_plain_language_name() {
+        assert!(validate_language("rust").is_ok());
+        assert!(validate_language("c++").is_ok());
+        assert!(validate_language("c#").is_ok());
+        assert!(validate_language("objective-c").is_ok());
+        assert!(validate_language("rust repo:attacker/x").is_err());
+        assert!(validate_language("").is_err());
+    }
+
+    #[test]
+    fn per_page_is_clamped_to_the_api_range() {
+        assert_eq!(clamp_per_page(0), 1);
+        assert_eq!(clamp_per_page(50), 50);
+        assert_eq!(clamp_per_page(500), 100);
     }
 }

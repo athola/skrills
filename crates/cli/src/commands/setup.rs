@@ -12,6 +12,7 @@ pub(crate) struct SetupOptions {
     pub yes: bool,
     pub universal: bool,
     pub mirror_source: Option<PathBuf>,
+    pub include_marketplace: bool,
 }
 
 pub(crate) fn handle_setup_command(options: SetupOptions) -> Result<()> {
@@ -24,8 +25,9 @@ pub(crate) fn handle_setup_command(options: SetupOptions) -> Result<()> {
         yes,
         universal,
         mirror_source,
+        include_marketplace,
     } = options;
-    let config = skrills_server::setup::interactive_setup(
+    let config = skrills_setup::interactive_setup(
         client,
         bin_dir,
         reinstall,
@@ -34,6 +36,7 @@ pub(crate) fn handle_setup_command(options: SetupOptions) -> Result<()> {
         yes,
         universal,
         mirror_source,
+        include_marketplace,
     )?;
-    skrills_server::setup::run_setup(config)
+    skrills_setup::run_setup(config)
 }

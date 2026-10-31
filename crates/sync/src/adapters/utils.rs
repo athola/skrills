@@ -15,22 +15,34 @@ use walkdir::WalkDir;
 /// is `None` (no engine present, e.g. unit tests of the adapter in isolation)
 /// or disengaged, the call is a near-zero-cost atomic load.
 ///
-/// On engagement, returns [`SyncError::TokenBudgetExceeded`] wrapped in
-/// `anyhow::Error`. The numeric `tokens` and `ceiling` fields are not
-/// available at the adapter (they live in the engine that engaged the
-/// switch); the adapter reports `(0, 0)` and relies on the engine's
-/// WARNING-tier alert for the operator-facing numbers.
+/// On engagement, returns [`SyncError::KillSwitchEngaged`] wrapped in
+/// `anyhow::Error`. The token numbers live in the engine that engaged the
+/// switch, which reports them in its own WARNING-tier alert.
 pub(crate) fn ensure_not_engaged(switch: Option<&KillSwitch>) -> Result<()> {
     if let Some(s) = switch {
         if s.is_engaged() {
-            return Err(SyncError::TokenBudgetExceeded {
-                tokens: 0,
-                ceiling: 0,
-            }
-            .into());
+            return Err(SyncError::KillSwitchEngaged.into());
         }
     }
     Ok(())
+}
+
+/// Reads one item file a reader found, with its modification time.
+///
+/// An unreadable file is skipped with a warning: failing the read would fail
+/// the whole phase on every run, and the Claude readers already skip.
+pub(crate) fn read_item_file(path: &Path) -> Option<(Vec<u8>, std::time::SystemTime)> {
+    let read = std::fs::read(path).and_then(|content| Ok((content, std::fs::metadata(path)?)));
+    match read {
+        Ok((content, meta)) => Some((
+            content,
+            meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+        )),
+        Err(e) => {
+            warn!(path = %path.display(), error = %e, "Skipping unreadable file");
+            None
+        }
+    }
 }
 
 /// Returns true if the name starts with a dot (hidden file/directory).
@@ -146,10 +158,14 @@ pub(crate) const MAX_MODULE_FILE_BYTES: u64 = 16 * 1024 * 1024;
 pub fn collect_module_files(skill_dir: &Path) -> Vec<ModuleFile> {
     let mut modules = Vec::new();
 
+    // A subdirectory holding its own SKILL.md is a separate skill, not a
+    // module of this one.
     for entry in WalkDir::new(skill_dir)
         .min_depth(1)
         .max_depth(10)
         .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| !(e.file_type().is_dir() && e.path().join("SKILL.md").is_file()))
     {
         let entry = match entry {
             Ok(e) => e,
@@ -170,7 +186,7 @@ pub fn collect_module_files(skill_dir: &Path) -> Vec<ModuleFile> {
             continue;
         }
 
-        if path.file_name().is_some_and(|n| n == "SKILL.md") {
+        if path == skill_dir.join("SKILL.md") {
             continue;
         }
 
@@ -265,9 +281,17 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8], private: bool) -> std::io:
     use std::io::Write;
 
     let dest = match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => {
-            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-        }
+        Ok(meta) if meta.file_type().is_symlink() => match std::fs::canonicalize(path) {
+            Ok(resolved) => resolved,
+            // A dangling link: write where it points, so the link survives.
+            Err(_) => {
+                let target = std::fs::read_link(path)?;
+                match path.parent() {
+                    Some(parent) if target.is_relative() => parent.join(target),
+                    _ => target,
+                }
+            }
+        },
         _ => path.to_path_buf(),
     };
     let parent = match dest.parent() {
@@ -390,6 +414,24 @@ pub(crate) fn skill_dir_name(skill: &crate::common::Command) -> String {
     }
 }
 
+/// The folder a skill is written to in every target: the last segment of its
+/// name, kebab-cased, so `synced/<id>/morning` lands in `morning/` whichever
+/// tool receives it, and `a/b` and `ab` stay apart.
+///
+/// One segment because Cursor and OpenCode load a skill only when its
+/// frontmatter `name` matches its folder, and the shared `~/.agents/skills`
+/// is read one level deep.
+pub(crate) fn skill_folder_name(skill: &crate::common::Command) -> String {
+    let dir = skill_dir_name(skill);
+    let leaf = dir.rsplit(['/', '\\']).next().unwrap_or(&dir);
+    sanitize_name_kebab(leaf)
+}
+
+/// File placed in every skill directory skrills writes, so a later cleanup
+/// can tell its copies from skills the user made. Hidden, so no reader
+/// collects it as a module.
+pub(crate) const SYNCED_MARKER: &str = ".skrills-synced";
+
 /// Writes skill-shaped directories (`<root>/<rel_dir>/<main_file>` plus
 /// companion modules) for one batch, with the checks every adapter needs.
 ///
@@ -400,8 +442,24 @@ pub(crate) fn skill_dir_name(skill: &crate::common::Command) -> String {
 /// unchanged, so an edited companion script never reached the target.
 pub(crate) struct BatchWriter {
     root: std::path::PathBuf,
-    /// Destination directory to the item that claimed it in this batch.
-    claimed: std::collections::HashMap<std::path::PathBuf, String>,
+    /// Destination, case-folded, to the item that claimed it in this batch.
+    /// Folded because APFS and NTFS treat `Foo` and `foo` as one directory.
+    claimed: std::collections::HashMap<String, String>,
+}
+
+/// Records the failure of one item's write as a refusal so the rest of the
+/// batch is still attempted. Errors that make the whole phase pointless (the
+/// target root itself) are raised by the callers before the batch starts.
+fn refuse_unwritable(
+    item: &str,
+    path: &Path,
+    error: &std::io::Error,
+    report: &mut crate::report::WriteReport,
+) {
+    report.skipped.push(crate::report::SkipReason::Refused {
+        item: item.to_string(),
+        reason: format!("could not write {}: {error}", path.display()),
+    });
 }
 
 impl BatchWriter {
@@ -434,7 +492,8 @@ impl BatchWriter {
             return Ok(());
         }
         let path = self.root.join(format!("{stem}{suffix}"));
-        if let Some(first) = self.claimed.get(&path) {
+        let key = path.to_string_lossy().to_lowercase();
+        if let Some(first) = self.claimed.get(&key) {
             report.skipped.push(SkipReason::Refused {
                 item: item.to_string(),
                 reason: format!(
@@ -444,7 +503,7 @@ impl BatchWriter {
             });
             return Ok(());
         }
-        self.claimed.insert(path.clone(), item.to_string());
+        self.claimed.insert(key, item.to_string());
 
         if let Some(link) = symlink_below(&self.root, &path) {
             report.skipped.push(SkipReason::Refused {
@@ -462,11 +521,15 @@ impl BatchWriter {
             });
             return Ok(());
         }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        let written = match path.parent() {
+            Some(parent) => std::fs::create_dir_all(parent),
+            None => Ok(()),
         }
-        write_file(&path, content)?;
-        report.written += 1;
+        .and_then(|()| write_file(&path, content));
+        match written {
+            Ok(()) => report.written += 1,
+            Err(e) => refuse_unwritable(item, &path, &e, report),
+        }
         Ok(())
     }
 
@@ -493,7 +556,8 @@ impl BatchWriter {
         }
 
         let dir = self.root.join(rel_dir);
-        if let Some(first) = self.claimed.get(&dir) {
+        let key = dir.to_string_lossy().to_lowercase();
+        if let Some(first) = self.claimed.get(&key) {
             report.skipped.push(SkipReason::Refused {
                 item: item.to_string(),
                 reason: format!(
@@ -503,7 +567,7 @@ impl BatchWriter {
             });
             return Ok(());
         }
-        self.claimed.insert(dir.clone(), item.to_string());
+        self.claimed.insert(key, item.to_string());
 
         let main_path = dir.join(main_file);
         if let Some(link) = symlink_below(&self.root, &main_path) {
@@ -519,8 +583,12 @@ impl BatchWriter {
 
         let mut changed = false;
         if std::fs::read(&main_path).ok().as_deref() != Some(main) {
-            std::fs::create_dir_all(&dir)?;
-            write_file(&main_path, main)?;
+            if let Err(e) =
+                std::fs::create_dir_all(&dir).and_then(|()| write_file(&main_path, main))
+            {
+                refuse_unwritable(item, &main_path, &e, report);
+                return Ok(());
+            }
             changed = true;
         }
 
@@ -544,11 +612,30 @@ impl BatchWriter {
             if std::fs::read(&module_path).ok().as_deref() == Some(module.content.as_slice()) {
                 continue;
             }
-            if let Some(parent) = module_path.parent() {
-                std::fs::create_dir_all(parent)?;
+            let written = match module_path.parent() {
+                Some(parent) => std::fs::create_dir_all(parent),
+                None => Ok(()),
             }
-            write_file(&module_path, &module.content)?;
+            .and_then(|()| write_file(&module_path, &module.content));
+            if let Err(e) = written {
+                report.warnings.push(format!(
+                    "Skipped module {} of {item}: could not write {}: {e}",
+                    module.relative_path.display(),
+                    module_path.display()
+                ));
+                continue;
+            }
             changed = true;
+        }
+
+        let marker = dir.join(SYNCED_MARKER);
+        if !marker.exists() {
+            if let Err(e) = write_file(&marker, b"written by skrills sync\n") {
+                report.warnings.push(format!(
+                    "Could not mark {} as a skrills copy: {e}",
+                    dir.display()
+                ));
+            }
         }
 
         if changed {
@@ -819,6 +906,35 @@ mod tests {
         assert_eq!(names, vec![std::path::PathBuf::from("plain.py")]);
     }
 
+    /// A nested directory with its own SKILL.md is a separate skill: its
+    /// SKILL.md was dropped but its other files kept, leaving a headless
+    /// `sub/` inside the parent skill.
+    #[test]
+    fn collect_module_files_leaves_out_a_nested_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("SKILL.md"), "root").unwrap();
+        std::fs::write(dir.path().join("x.py"), "x").unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/SKILL.md"), "sub").unwrap();
+        std::fs::write(dir.path().join("sub/y.py"), "y").unwrap();
+        std::fs::create_dir_all(dir.path().join("lib")).unwrap();
+        std::fs::write(dir.path().join("lib/z.py"), "z").unwrap();
+
+        let mut names: Vec<_> = collect_module_files(dir.path())
+            .into_iter()
+            .map(|m| m.relative_path)
+            .collect();
+        names.sort();
+
+        assert_eq!(
+            names,
+            vec![
+                std::path::PathBuf::from("lib/z.py"),
+                std::path::PathBuf::from("x.py")
+            ]
+        );
+    }
+
     /// Every companion file was read whole into memory with no cap.
     #[test]
     fn collect_module_files_skips_files_over_the_size_cap() {
@@ -831,6 +947,113 @@ mod tests {
 
         let names: Vec<_> = modules.iter().map(|m| m.relative_path.clone()).collect();
         assert_eq!(names, vec![std::path::PathBuf::from("small.py")]);
+    }
+
+    /// `canonicalize` fails on a link whose target does not exist yet, and the
+    /// fallback replaced the link itself with a plain file.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_keeps_a_dangling_symlink_and_creates_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("settings.json");
+        std::os::unix::fs::symlink("dotfiles/settings.json", &link).unwrap();
+        std::fs::create_dir_all(dir.path().join("dotfiles")).unwrap();
+
+        atomic_write(&link, b"{}", false).unwrap();
+
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read(dir.path().join("dotfiles/settings.json")).unwrap(),
+            b"{}"
+        );
+    }
+
+    fn refused_items(report: &crate::report::WriteReport) -> Vec<String> {
+        report
+            .skipped
+            .iter()
+            .filter_map(|skip| match skip {
+                crate::report::SkipReason::Refused { item, .. } => Some(item.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// One item that cannot be written used to abort the batch through `?`,
+    /// leaving every later item unwritten on this run and on every run after.
+    #[test]
+    fn batch_writer_refuses_an_item_it_cannot_write_and_writes_the_rest() {
+        let root = tempfile::tempdir().unwrap();
+        // A plain file where the item's directory has to go.
+        std::fs::write(root.path().join("blocked"), b"in the way").unwrap();
+        let mut writer = BatchWriter::new(root.path());
+        let mut report = crate::report::WriteReport::default();
+
+        writer
+            .write("blocked", "blocked", "SKILL.md", b"a", &[], &mut report)
+            .unwrap();
+        writer
+            .write("fine", "fine", "SKILL.md", b"b", &[], &mut report)
+            .unwrap();
+
+        assert_eq!(report.written, 1);
+        assert!(root.path().join("fine/SKILL.md").exists());
+        assert_eq!(refused_items(&report), vec!["blocked".to_string()]);
+    }
+
+    #[test]
+    fn batch_writer_single_refuses_an_item_it_cannot_write_and_writes_the_rest() {
+        let root = tempfile::tempdir().unwrap();
+        // A directory where the item's file has to go.
+        std::fs::create_dir_all(root.path().join("blocked.md/inner")).unwrap();
+        let mut writer = BatchWriter::new(root.path());
+        let mut report = crate::report::WriteReport::default();
+
+        writer
+            .write_single("blocked", "blocked", ".md", b"a", &mut report)
+            .unwrap();
+        writer
+            .write_single("fine", "fine", ".md", b"b", &mut report)
+            .unwrap();
+
+        assert_eq!(report.written, 1);
+        assert!(root.path().join("fine.md").is_file());
+        assert_eq!(refused_items(&report), vec!["blocked".to_string()]);
+    }
+
+    /// APFS and NTFS are case-insensitive by default, so `Foo` and `foo` are
+    /// one directory there and the second write replaced the first.
+    #[test]
+    fn batch_writer_refuses_a_name_that_differs_only_in_case() {
+        let root = tempfile::tempdir().unwrap();
+        let mut writer = BatchWriter::new(root.path());
+        let mut report = crate::report::WriteReport::default();
+
+        writer
+            .write("Foo", "Foo", "SKILL.md", b"first", &[], &mut report)
+            .unwrap();
+        writer
+            .write("foo", "foo", "SKILL.md", b"second", &[], &mut report)
+            .unwrap();
+        writer
+            .write_single("Bar", "Bar", ".md", b"first", &mut report)
+            .unwrap();
+        writer
+            .write_single("bar", "bar", ".md", b"second", &mut report)
+            .unwrap();
+
+        assert_eq!(report.written, 2);
+        assert_eq!(
+            std::fs::read(root.path().join("Foo/SKILL.md")).unwrap(),
+            b"first"
+        );
+        assert_eq!(
+            refused_items(&report),
+            vec!["foo".to_string(), "bar".to_string()]
+        );
     }
 
     mod proptests {

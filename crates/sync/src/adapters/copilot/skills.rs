@@ -1,16 +1,13 @@
 //! Skills reading and writing for Copilot adapter.
 
 use super::paths::skills_dir;
-use crate::adapters::utils::{
-    collect_module_files, hash_content, is_hidden_path, sanitize_name_segments,
-};
+use crate::adapters::utils::{collect_module_files, hash_content, is_hidden_path};
 use crate::common::{Command, ContentFormat};
 use crate::report::WriteReport;
 use crate::Result;
 use anyhow::Context;
 use std::fs;
 use std::path::Path;
-use std::time::SystemTime;
 use tracing::warn;
 use walkdir::WalkDir;
 
@@ -66,9 +63,9 @@ pub fn read_skills(root: &Path) -> Result<Vec<Command>> {
             .unwrap_or("unknown")
             .to_string();
 
-        let content = fs::read(path)?;
-        let metadata = fs::metadata(path)?;
-        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let Some((content, modified)) = crate::adapters::utils::read_item_file(path) else {
+            continue;
+        };
         let hash = hash_content(&content);
 
         // Collect companion files from the skill directory
@@ -100,7 +97,7 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
     let mut writer = crate::adapters::utils::BatchWriter::new(&dir);
     for skill in skills {
         // Write each skill into ~/.copilot/skills/<skill-name>/SKILL.md
-        let safe_rel_dir = sanitize_name_segments(&crate::adapters::utils::skill_dir_name(skill));
+        let safe_rel_dir = crate::adapters::utils::skill_folder_name(skill);
         writer
             .write(
                 &skill.name,

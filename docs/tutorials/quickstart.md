@@ -96,12 +96,12 @@ skrills sync
 The sync command:
 - Converts frontmatter to Codex-compatible format
 - Preserves skill content and metadata
-- Creates the `~/.codex/skills/` directory if needed
+- Creates the `~/.agents/skills/` directory Codex loads, if needed
 - Enables experimental skills feature in Codex config
 
 After syncing, verify with:
 ```bash
-find ~/.codex/skills -name 'SKILL.md'
+find ~/.agents/skills -name 'SKILL.md'
 ```
 
 ## Tips

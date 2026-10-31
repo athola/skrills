@@ -11,7 +11,7 @@ pub(crate) fn handle_metrics_command(
     format: OutputFormat,
     include_validation: bool,
 ) -> Result<()> {
-    let roots = crate::commands::skill_roots_for(&skill_dirs);
+    let roots = crate::commands::skill_roots_for(&skill_dirs)?;
     let skills = discover_skills(&roots, None)?;
     let metrics = compute_metrics(&skills, include_validation);
 
@@ -22,7 +22,7 @@ pub(crate) fn handle_metrics_command(
     } else if metrics.total_skills == 0 {
         println!("No skills found.");
     } else {
-        print_metrics_human(&metrics);
+        print!("{}", format_metrics_human(&metrics)?);
     }
     Ok(())
 }
@@ -37,15 +37,23 @@ fn compute_metrics(
     compute_skill_metrics(skills, &build_dependency_graph(skills), include_validation)
 }
 
-/// Print metrics in human-readable format.
-fn print_metrics_human(metrics: &SkillMetrics) {
-    println!("Skill Metrics");
-    println!("═════════════\n");
+/// The skill folder name in a skill URI, which ends in `/SKILL.md`.
+fn skill_label(uri: &str) -> &str {
+    let dir = uri.strip_suffix("/SKILL.md").unwrap_or(uri);
+    dir.rsplit('/').next().unwrap_or(dir)
+}
 
-    println!("Total: {} skills\n", metrics.total_skills);
+/// Renders metrics in human-readable format.
+fn format_metrics_human(metrics: &SkillMetrics) -> Result<String, std::fmt::Error> {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    writeln!(out, "Skill Metrics")?;
+    writeln!(out, "═════════════\n")?;
+
+    writeln!(out, "Total: {} skills\n", metrics.total_skills)?;
 
     // By source
-    println!("By Source:");
+    writeln!(out, "By Source:")?;
     let total = metrics.total_skills as f64;
     let mut sources: Vec<_> = metrics.by_source.iter().collect();
     sources.sort_by(|a, b| b.1.cmp(a.1));
@@ -55,64 +63,74 @@ fn print_metrics_human(metrics: &SkillMetrics) {
         } else {
             0.0
         };
-        println!("  {:14} {:3} ({:.0}%)", format!("{}:", source), count, pct);
+        writeln!(
+            out,
+            "  {:14} {:3} ({:.0}%)",
+            format!("{}:", source),
+            count,
+            pct
+        )?;
     }
 
     // Quality
-    println!("\nQuality:");
+    writeln!(out, "\nQuality:")?;
     let q = &metrics.by_quality;
     let q_total = (q.high + q.medium + q.low) as f64;
     if q_total > 0.0 {
-        println!(
+        writeln!(
+            out,
             "  High (≥0.8)    {:3} ({:.0}%)",
             q.high,
             (q.high as f64 / q_total) * 100.0
-        );
-        println!(
+        )?;
+        writeln!(
+            out,
             "  Medium         {:3} ({:.0}%)",
             q.medium,
             (q.medium as f64 / q_total) * 100.0
-        );
-        println!(
+        )?;
+        writeln!(
+            out,
             "  Low (<0.5)     {:3} ({:.0}%)",
             q.low,
             (q.low as f64 / q_total) * 100.0
-        );
+        )?;
     }
 
     // Dependencies
-    println!("\nDependencies:");
+    writeln!(out, "\nDependencies:")?;
     let d = &metrics.dependency_stats;
-    println!("  Total edges    {}", d.total_dependencies);
-    println!("  Avg/skill      {:.1}", d.avg_per_skill);
-    println!("  Orphans        {}", d.orphan_count);
+    writeln!(out, "  Total edges    {}", d.total_dependencies)?;
+    writeln!(out, "  Avg/skill      {:.1}", d.avg_per_skill)?;
+    writeln!(out, "  Orphans        {}", d.orphan_count)?;
     if !d.hub_skills.is_empty() {
         let hub_names: Vec<&str> = d
             .hub_skills
             .iter()
             .take(3)
-            .map(|h| h.uri.rsplit('/').next().unwrap_or(&h.uri))
+            .map(|h| skill_label(&h.uri))
             .collect();
-        println!("  Top hubs       {}", hub_names.join(", "));
+        writeln!(out, "  Top hubs       {}", hub_names.join(", "))?;
     }
 
     // Tokens
-    println!("\nTokens:");
+    writeln!(out, "\nTokens:")?;
     let t = &metrics.token_stats;
-    println!("  Total          {}", t.total_tokens);
-    println!("  Average        {}", t.avg_per_skill);
+    writeln!(out, "  Total          {}", t.total_tokens)?;
+    writeln!(out, "  Average        {}", t.avg_per_skill)?;
     if let Some(ref largest) = t.largest_skill {
-        let name = largest.uri.rsplit('/').next().unwrap_or(&largest.uri);
-        println!("  Largest        {} ({})", name, largest.tokens);
+        let name = skill_label(&largest.uri);
+        writeln!(out, "  Largest        {} ({})", name, largest.tokens)?;
     }
 
     // Validation summary (if present)
     if let Some(ref v) = metrics.validation_summary {
-        println!("\nValidation:");
-        println!("  Passing        {}", v.passing);
-        println!("  With errors    {}", v.with_errors);
-        println!("  With warnings  {}", v.with_warnings);
+        writeln!(out, "\nValidation:")?;
+        writeln!(out, "  Passing        {}", v.passing)?;
+        writeln!(out, "  With errors    {}", v.with_errors)?;
+        writeln!(out, "  With warnings  {}", v.with_warnings)?;
     }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -246,96 +264,6 @@ skill(high-quality)
 
         // THEN it should succeed and process all 3 skills
         result.expect("metrics command with multiple skills should succeed");
-    }
-
-    #[test]
-    fn test_quality_distribution_new() {
-        // GIVEN quality distribution values
-        let dist = QualityDistribution {
-            high: 5,
-            medium: 3,
-            low: 2,
-        };
-
-        // THEN the values should be set correctly
-        assert_eq!(dist.high, 5);
-        assert_eq!(dist.medium, 3);
-        assert_eq!(dist.low, 2);
-    }
-
-    #[test]
-    fn test_dependency_stats_empty() {
-        // GIVEN empty dependency stats
-        let stats = DependencyStats {
-            total_dependencies: 0,
-            avg_per_skill: 0.0,
-            orphan_count: 0,
-            hub_skills: vec![],
-        };
-
-        // THEN it should represent no dependencies
-        assert_eq!(stats.total_dependencies, 0);
-        assert_eq!(stats.orphan_count, 0);
-        assert!(stats.hub_skills.is_empty());
-    }
-
-    #[test]
-    fn test_hub_skill_creation() {
-        // GIVEN a hub skill
-        let hub = HubSkill {
-            uri: "skill://skrills/codex/core".into(),
-            dependent_count: 10,
-        };
-
-        // THEN it should have the expected values
-        assert_eq!(hub.uri, "skill://skrills/codex/core");
-        assert_eq!(hub.dependent_count, 10);
-    }
-
-    #[test]
-    fn test_token_stats_without_largest() {
-        // GIVEN token stats without a largest skill
-        let stats = TokenStats {
-            total_tokens: 0,
-            avg_per_skill: 0,
-            largest_skill: None,
-        };
-
-        // THEN largest_skill should be None
-        assert!(stats.largest_skill.is_none());
-    }
-
-    #[test]
-    fn test_token_stats_with_largest() {
-        // GIVEN token stats with a largest skill
-        let stats = TokenStats {
-            total_tokens: 5000,
-            avg_per_skill: 1000,
-            largest_skill: Some(SkillTokenInfo {
-                uri: "skill://skrills/codex/big-skill".into(),
-                tokens: 2000,
-            }),
-        };
-
-        // THEN largest_skill should have correct values
-        let largest = stats.largest_skill.as_ref().unwrap();
-        assert_eq!(largest.tokens, 2000);
-        assert!(largest.uri.contains("big-skill"));
-    }
-
-    #[test]
-    fn test_validation_summary() {
-        // GIVEN a validation summary
-        let summary = MetricsValidationSummary {
-            passing: 8,
-            with_errors: 1,
-            with_warnings: 2,
-        };
-
-        // THEN the counts should match
-        assert_eq!(summary.passing, 8);
-        assert_eq!(summary.with_errors, 1);
-        assert_eq!(summary.with_warnings, 2);
     }
 
     #[test]
@@ -477,7 +405,7 @@ skill(high-quality)
         let _g = skrills_test_utils::env_guard();
         let home = tempdir().unwrap();
         let _home = skrills_test_utils::set_env_var("HOME", Some(home.path().to_str().unwrap()));
-        let _dirs = skrills_test_utils::set_env_var("SKRILLS_EXTRA_SKILL_DIRS", None);
+        let _dirs = skrills_test_utils::set_env_var("SKRILLS_SKILL_DIR", None);
         let tmp = tempdir().unwrap();
         let linking = |name: &str| {
             format!("---\nname: {name}\ndescription: Links to b\n---\n# {name}\n\nSee [b](../b/SKILL.md).\n")
@@ -498,6 +426,30 @@ skill(high-quality)
         assert_eq!(cli, server);
         assert_eq!(cli["dependency_stats"]["orphan_count"], 1);
         assert_eq!(cli["dependency_stats"]["total_dependencies"], 2);
+    }
+
+    /// Hub and largest-skill names are the skill folder, not the `SKILL.md`
+    /// every URI ends in.
+    #[test]
+    fn text_output_names_hubs_and_largest_skill_by_folder() {
+        let tmp = tempdir().unwrap();
+        let linking = |name: &str| {
+            format!("---\nname: {name}\ndescription: Links to b\n---\n# {name}\n\nSee [b](../b/SKILL.md).\n")
+        };
+        create_skill(tmp.path(), "a", &linking("a"));
+        create_skill(tmp.path(), "c", &linking("c"));
+        let long_body = "word ".repeat(400);
+        create_skill(
+            tmp.path(),
+            "b",
+            &format!("---\nname: b\ndescription: Hub\n---\n# b\n\n{long_body}\n"),
+        );
+
+        let text = format_metrics_human(&compute_metrics(&discovered(tmp.path()), false)).unwrap();
+
+        assert!(text.contains("Top hubs       b\n"), "{text}");
+        assert!(text.contains("Largest        b ("), "{text}");
+        assert!(!text.contains("SKILL.md"), "{text}");
     }
 
     /// An unreadable skill is no orphan either: it is left out of every count.

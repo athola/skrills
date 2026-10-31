@@ -11,31 +11,34 @@
 # looks. A `mod <stem>;` in some unrelated module of the same crate does
 # not compile the file, and stems repeat across the adapter modules in
 # crates/sync, so a crate-wide search would pass an orphan there.
-#
-# Usage: ./scripts/lint-module-reachability.sh
-# Exit:  0 = every file declared, 1 = an undeclared file, 2 = nothing scanned.
 set -euo pipefail
 
-# Anchor on the script's own location. Run from another directory the
-# `crates/*/src` glob matches nothing, and the gate used to report clean.
-case "${BASH_SOURCE[0]}" in
-  */*) script_dir="${BASH_SOURCE[0]%/*}" ;;
-  *) script_dir="." ;;
-esac
-cd "${script_dir}/.."
+MYDIR="${0%"${0##*/}"}"
+readonly MYDIR="${MYDIR:-./}"
+# shellcheck source=scripts/logging.sh
+. "${MYDIR%/}/logging.sh"
 
-orphans=""
-scanned=0
+usage() {
+  log "Usage: ${0##*/} [-h] [-x]"
+  printf '  %-4s %s\n' \
+    "-h" "Show this help and exit" \
+    "-x" "Trace execution (set -x)"
+  printf '  %s\n' "Exit: 0 every file declared, 1 an undeclared file, 2 nothing scanned."
+  exit 0
+}
 
-for crate_src in crates/*/src; do
-  [ -d "${crate_src}" ] || continue
-  scanned=$((scanned + 1))
+# Append to the caller's `orphans` each .rs file under crate source dir $1
+# that its parent module does not declare, one per line.
+crate_orphans() {
+  local crate_src="${1:?crate_orphans needs a crate source dir}"
+  local path_values file base dir stem parent_dir parent declared path_value
+  local -a parents
 
   # `#[path = "..."]` compiles a file under a name of its own, and the value
   # may carry directory components ("gen/impl_a.rs"). Collect every value in
   # the crate once, then match each file by path suffix.
-  path_values="$(grep -rhoE '#\[path[[:space:]]*=[[:space:]]*"[^"]+"' "${crate_src}" \
-    | sed -E 's/.*"([^"]+)"/\1/' | sort -u)" || path_values=""
+  path_values="$(grep -rhoE '#\[path[[:space:]]*=[[:space:]]*"[^"]+"' "${crate_src}" |
+    sed -E 's/.*"([^"]+)"/\1/' | sort -u)" || path_values=""
 
   while IFS= read -r file; do
     base="${file##*/}"
@@ -50,60 +53,108 @@ for crate_src in crates/*/src; do
 
     # `foo/mod.rs` is declared as `mod foo;` by the module that owns `foo/`'s
     # parent directory; `foo.rs` by the module that owns its own directory.
-    if [ "${base}" = "mod.rs" ]; then
-      dir="${file%/mod.rs}"
-      stem="${dir##*/}"
-      parent_dir="${dir%/*}"
-    else
-      stem="${base%.rs}"
-      parent_dir="${file%/*}"
-    fi
+    case "${base}" in
+      mod.rs)
+        dir="${file%/mod.rs}"
+        stem="${dir##*/}"
+        parent_dir="${dir%/*}"
+        ;;
+      *)
+        stem="${base%.rs}"
+        parent_dir="${file%/*}"
+        ;;
+    esac
 
     # The parent module is `<parent_dir>/mod.rs` or the sibling
     # `<parent_dir>.rs`, except at the crate source root where it is the
     # crate root file.
-    if [ "${parent_dir}" = "${crate_src}" ]; then
-      parents=("${crate_src}/lib.rs" "${crate_src}/main.rs")
-    else
-      parents=("${parent_dir}/mod.rs" "${parent_dir}.rs")
-    fi
+    case "${parent_dir}" in
+      "${crate_src}") parents=("${crate_src}/lib.rs" "${crate_src}/main.rs") ;;
+      *) parents=("${parent_dir}/mod.rs" "${parent_dir}.rs") ;;
+    esac
 
     declared=0
     for parent in "${parents[@]}"; do
       [ -f "${parent}" ] || continue
-      if grep -qE "^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?mod[[:space:]]+${stem}[[:space:]]*;" \
+      if grep -qE "^[[:space:]]*(#\[[^]]*\][[:space:]]*)*(pub(\([^)]*\))?[[:space:]]+)?mod[[:space:]]+(r#)?${stem}[[:space:]]*;" \
         "${parent}"; then
         declared=1
         break
       fi
     done
-    [ "${declared}" -eq 1 ] && continue
+    case "${declared}" in
+      1) continue ;;
+    esac
 
     while IFS= read -r path_value; do
-      [ -n "${path_value}" ] || continue
+      case "${path_value}" in
+        "") continue ;;
+      esac
       case "${file}" in
-        *"/${path_value}") declared=1; break ;;
+        *"/${path_value}")
+          declared=1
+          break
+          ;;
       esac
     done <<<"${path_values}"
-    [ "${declared}" -eq 1 ] && continue
+    case "${declared}" in
+      1) continue ;;
+    esac
 
     orphans="${orphans}${file}"$'\n'
   done < <(find "${crate_src}" -name '*.rs' -type f)
-done
+}
 
-if [ "${scanned}" -eq 0 ]; then
-  echo "ERROR: no crates/*/src directory found under $(pwd)." >&2
-  echo "The module-reachability lint scanned nothing, so it proved nothing." >&2
-  exit 2
-fi
+main() {
+  case "${1:-}" in
+    *[uU][sS][aA][gG][eE] | *[hH][eE][lL][pP]) usage ;;
+  esac
+  local opt
+  while getopts ":hx" opt; do
+    case "${opt}" in
+      h) usage ;;
+      x) set -x ;;
+      *)
+        log 3 "Unknown flag: -${OPTARG}"
+        exit 64
+        ;;
+    esac
+  done
 
-if [ -n "${orphans}" ]; then
-  echo "ERROR: Rust files not reachable from their crate root:" >&2
-  printf '%s' "${orphans}" >&2
-  echo "" >&2
-  echo "Declare each in its parent module with a 'mod' item, or delete it." >&2
-  echo "An undeclared file is never compiled and never checked." >&2
-  exit 1
-fi
+  # Anchor on the script's own location. Run from another directory the
+  # `crates/*/src` glob matches nothing, and the gate used to report clean.
+  (
+    cd "${MYDIR%/}/.."
+    local crate_src orphans="" scanned=0
+    for crate_src in crates/*/src; do
+      [ -d "${crate_src}" ] || continue
+      scanned=$((scanned + 1))
+      crate_orphans "${crate_src}"
+    done
 
-echo "module-reachability lint clean (${scanned} crates, every source file declared)"
+    case "${scanned}" in
+      0)
+        log 3 "ERROR: no crates/*/src directory found under $(pwd)."
+        log 3 "The module-reachability lint scanned nothing, so it proved nothing."
+        exit 2
+        ;;
+    esac
+
+    case "${orphans}" in
+      "") ;;
+      *)
+        log 3 "ERROR: Rust files not reachable from their crate root:"
+        printf '%s' "${orphans}" >&2
+        log 3 ""
+        log 3 "Declare each in its parent module with a 'mod' item, or delete it."
+        log 3 "An undeclared file is never compiled and never checked."
+        exit 1
+        ;;
+    esac
+
+    # stdout, not log: callers and tests read this line as the clean verdict.
+    printf '%s\n' "module-reachability lint clean (${scanned} crates, every source file declared)"
+  )
+}
+
+main "$@"

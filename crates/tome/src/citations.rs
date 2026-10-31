@@ -79,7 +79,10 @@ impl CitationTracker {
         conn.execute(
             "INSERT INTO tracked_papers (id, title, doi, year, citation_count)
              VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(id) DO UPDATE SET title=excluded.title, doi=excluded.doi, year=excluded.year, citation_count=excluded.citation_count",
+             ON CONFLICT(id) DO UPDATE SET title=excluded.title,
+                 doi=COALESCE(excluded.doi, doi),
+                 year=COALESCE(excluded.year, year),
+                 citation_count=COALESCE(excluded.citation_count, citation_count)",
             rusqlite::params![
                 paper.id,
                 paper.title,
@@ -92,12 +95,15 @@ impl CitationTracker {
     }
 
     /// Record a citation relationship.
+    ///
+    /// Returns `false` when nothing was stored: the edge already exists or
+    /// either paper is untracked.
     pub fn add_citation(
         &self,
         citing_id: &str,
         cited_id: &str,
         context: Option<&str>,
-    ) -> TomeResult<()> {
+    ) -> TomeResult<bool> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
         // OR IGNORE covers the duplicate case only; SQLite still raises a
         // foreign-key violation when either paper is untracked.
@@ -118,7 +124,7 @@ impl CitationTracker {
                 "citation {citing_id} -> {cited_id} not inserted (duplicate or untracked paper)"
             );
         }
-        Ok(())
+        Ok(rows > 0)
     }
 
     /// Forward citations: "who cited this paper?"
@@ -337,5 +343,39 @@ mod tests {
         assert_eq!(papers[0].0, "high");
         assert_eq!(papers[1].0, "mid");
         assert_eq!(papers[2].0, "low");
+    }
+
+    #[test]
+    fn add_citation_reports_whether_the_edge_was_stored() {
+        let ct = CitationTracker::open_in_memory().unwrap();
+        ct.track_paper(&test_paper("p1", "A")).unwrap();
+        ct.track_paper(&test_paper("p2", "B")).unwrap();
+        assert!(ct.add_citation("p2", "p1", None).unwrap());
+        assert!(!ct.add_citation("p2", "p1", None).unwrap(), "duplicate");
+        assert!(!ct.add_citation("untracked", "p1", None).unwrap());
+    }
+
+    #[test]
+    fn track_paper_upsert_keeps_known_fields_the_new_record_lacks() {
+        let ct = CitationTracker::open_in_memory().unwrap();
+        ct.track_paper(&test_paper("p1", "A")).unwrap();
+        let sparse = Paper {
+            doi: None,
+            year: None,
+            citation_count: None,
+            ..test_paper("p1", "A again")
+        };
+        ct.track_paper(&sparse).unwrap();
+        let conn = ct.conn.lock().unwrap();
+        let (doi, year, count): (Option<String>, Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT doi, year, citation_count FROM tracked_papers WHERE id = 'p1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(doi.as_deref(), Some("10.1234/p1"));
+        assert_eq!(year, Some(2024));
+        assert_eq!(count, Some(42));
     }
 }

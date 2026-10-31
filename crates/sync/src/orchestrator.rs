@@ -5,7 +5,7 @@ use crate::common::Command;
 use crate::models::transform_model;
 use crate::report::{SkipReason, SyncReport, WriteReport};
 use crate::Result;
-use anyhow::bail;
+use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -76,6 +76,10 @@ pub struct SyncParams {
     /// Used when the target needs a complete plugin mirror (e.g., Cursor).
     #[serde(default)]
     pub full_plugin_mirror: bool,
+    /// Keep target files that a newer plugin version no longer ships, and
+    /// flat skill copies the plugin mirror now carries, instead of removing them.
+    #[serde(default)]
+    pub keep_versions: bool,
 }
 
 impl Default for SyncParams {
@@ -98,6 +102,7 @@ impl Default for SyncParams {
             interactive: false,
             exclude_plugins: Vec::new(),
             full_plugin_mirror: false,
+            keep_versions: false,
         }
     }
 }
@@ -185,19 +190,39 @@ fn sync_items(
 /// a target that transforms content on write (Cursor, Copilot agents) never
 /// matches, so its preview can still over-count, never under-count. A target
 /// that cannot be read previews every item as written.
-fn preview_items(
+pub(crate) fn preview_items(
     items: &[Command],
     read_target: impl FnOnce() -> Result<Vec<Command>>,
+) -> WriteReport {
+    preview_items_keyed(items, read_target, |c| existing_key(&c.name))
+}
+
+/// [`preview_items`] for skills: writers put a skill in its
+/// [`skill_folder_name`](crate::adapters::utils::skill_folder_name) folder,
+/// so `synced/abc/morning` is read back as `morning` and has to be matched
+/// under that key.
+pub(crate) fn preview_skill_items(
+    items: &[Command],
+    read_target: impl FnOnce() -> Result<Vec<Command>>,
+) -> WriteReport {
+    preview_items_keyed(items, read_target, |c| {
+        existing_key(&crate::adapters::utils::skill_folder_name(c))
+    })
+}
+
+fn preview_items_keyed(
+    items: &[Command],
+    read_target: impl FnOnce() -> Result<Vec<Command>>,
+    key: impl Fn(&Command) -> String,
 ) -> WriteReport {
     let target = read_target().unwrap_or_else(|e| {
         tracing::debug!(error = %format!("{e:#}"), "Dry run could not read the target; counting every item");
         Vec::new()
     });
-    let by_key: HashMap<String, &Command> =
-        target.iter().map(|c| (existing_key(&c.name), c)).collect();
+    let by_key: HashMap<String, &Command> = target.iter().map(|c| (key(c), c)).collect();
     let mut report = WriteReport::default();
     for item in items {
-        let unchanged = by_key.get(&existing_key(&item.name)).is_some_and(|t| {
+        let unchanged = by_key.get(&key(item)).is_some_and(|t| {
             t.content == item.content
                 && item.modules.iter().all(|m| {
                     t.modules
@@ -310,7 +335,10 @@ fn run_phase(
     };
     if matches!(
         e.downcast_ref::<crate::error::SyncError>(),
-        Some(crate::error::SyncError::TokenBudgetExceeded { .. })
+        Some(
+            crate::error::SyncError::TokenBudgetExceeded { .. }
+                | crate::error::SyncError::KillSwitchEngaged
+        )
     ) {
         return Err(e);
     }
@@ -339,13 +367,6 @@ fn without_excluded_plugins(
         .collect()
 }
 
-/// Whether two tools take model ids from the same vendor, so an id with no
-/// mapping can still be carried over unchanged.
-fn same_model_vendor(source: &str, target: &str) -> bool {
-    let openai = |name: &str| matches!(name, "codex" | "copilot");
-    source == target || (openai(source) && openai(target))
-}
-
 /// The form of a name that survives every adapter's sanitizer: writers strip
 /// `.`, spaces and `/` or kebab-case, so `my.cmd`, `my-cmd` and `mycmd` can all
 /// land in one file. Comparing these keys errs towards "already exists", which
@@ -363,16 +384,53 @@ fn existing_key(name: &str) -> String {
     }
 }
 
+/// Lock file in a target's config root that serializes syncs into it.
+const SYNC_LOCK_FILE: &str = ".skrills-sync.lock";
+
+/// Waits for and takes the advisory lock on `root`'s [`SYNC_LOCK_FILE`]. The
+/// lock is released when the returned file is dropped.
+fn lock_target(root: &std::path::Path) -> Result<std::fs::File> {
+    std::fs::create_dir_all(root)
+        .with_context(|| format!("Failed to create {}", root.display()))?;
+    let path = root.join(SYNC_LOCK_FILE);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("Failed to open {}", path.display()))?;
+    file.lock()
+        .with_context(|| format!("Failed to lock {}", path.display()))?;
+    Ok(file)
+}
+
 /// Orchestrates sync operations between agents.
 pub struct SyncOrchestrator<S: AgentAdapter, T: AgentAdapter> {
     source: S,
     target: T,
+    /// Where a `skrills cold-window` process in another process records an
+    /// engaged kill switch; see [`crate::kill_switch_marker`].
+    kill_switch_marker: Option<std::path::PathBuf>,
 }
 
 impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
-    /// Creates a new orchestrator with source and target adapters.
+    /// Creates a new orchestrator with source and target adapters. It
+    /// consults the kill-switch marker at
+    /// [`crate::kill_switch_marker::marker_path`].
     pub fn new(source: S, target: T) -> Self {
-        Self { source, target }
+        Self {
+            source,
+            target,
+            kill_switch_marker: crate::kill_switch_marker::marker_path(),
+        }
+    }
+
+    /// Consults the kill-switch marker at `path` instead of the per-user one;
+    /// `None` consults none.
+    #[must_use]
+    pub fn with_kill_switch_marker(mut self, path: Option<std::path::PathBuf>) -> Self {
+        self.kill_switch_marker = path;
+        self
     }
 
     /// Performs the sync operation.
@@ -387,6 +445,21 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             // flag promises; running anyway would write without asking.
             bail!("interactive sync is not implemented; preview with dry_run instead");
         }
+
+        // A `skrills cold-window` in another process may have engaged its
+        // kill switch (FR12). A dry run writes nothing, so it still runs.
+        if !params.dry_run {
+            crate::kill_switch_marker::ensure_not_engaged(self.kill_switch_marker.as_deref())?;
+        }
+
+        // Held for the whole run: the phases read, merge and rewrite shared
+        // config files, and a second sync into the same target in between
+        // would lose one of the updates. A dry run writes nothing.
+        let _lock = if params.dry_run {
+            None
+        } else {
+            Some(lock_target(&self.target.config_root())?)
+        };
 
         let mut report = SyncReport::new();
         let target_support = self.target.write_support();
@@ -426,13 +499,19 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                     |c| c.name.clone(),
                     |c| c.source_path.display().to_string(),
                 );
-                let include_marketplace = params.include_marketplace;
                 *slot = sync_items(
                     commands,
                     params.force,
                     params.dry_run,
                     params.skip_existing_commands,
-                    || self.target.read_commands(include_marketplace),
+                    // Only the writer's own directory: plugin-cache and
+                    // marketplace commands are never overwritten, so they
+                    // cannot make a command "already exist".
+                    || {
+                        let mut existing = self.target.read_commands(false)?;
+                        existing.retain(|c| c.plugin_origin.is_none());
+                        Ok(existing)
+                    },
                     |items| self.target.write_commands(items),
                 )?;
                 slot.duplicates = cmd_dups;
@@ -452,8 +531,18 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         {
             run_phase("skills", &mut report.skills, &mut failed, |slot| {
                 let mut skills = self.source.read_skills()?;
+                let mut in_mirror_names = Vec::new();
                 if mirror_carries_plugin_skills {
                     let before = skills.len();
+                    in_mirror_names = skills
+                        .iter()
+                        .filter(|s| {
+                            s.plugin_origin
+                                .as_ref()
+                                .is_some_and(|o| !params.is_plugin_excluded(&o.plugin_name))
+                        })
+                        .map(crate::adapters::utils::skill_folder_name)
+                        .collect();
                     skills.retain(|s| s.plugin_origin.is_none());
                     let in_mirror = before - skills.len();
                     if in_mirror > 0 {
@@ -481,7 +570,13 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 if !params.dry_run {
                     *slot = self.target.write_skills(&skills)?;
                 } else {
-                    *slot = preview_items(&skills, || self.target.read_skills());
+                    *slot = self.target.preview_skills(&skills)?;
+                }
+                if !params.keep_versions && !in_mirror_names.is_empty() {
+                    let removed = self
+                        .target
+                        .remove_flat_skill_copies(&in_mirror_names, params.dry_run)?;
+                    slot.warnings.extend(removed.warnings);
                 }
                 slot.duplicates = skill_dups;
                 // Report excluded plugins as skipped
@@ -511,7 +606,8 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                     if !params.dry_run {
                         *slot = self.target.write_mcp_servers(&servers)?;
                     } else {
-                        let target = self.target.read_mcp_servers().unwrap_or_default();
+                        // A target the real run would refuse fails the preview too.
+                        let target = self.target.read_mcp_servers()?;
                         *slot = preview_servers(&servers, &target);
                     }
                     Ok(())
@@ -542,7 +638,6 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                         let (source, target) = (self.source.name(), self.target.name());
                         match transform_model(&model, source, target) {
                             Some(transformed) => prefs.model = Some(transformed),
-                            None if same_model_vendor(source, target) => prefs.model = Some(model),
                             None => {
                                 // Another vendor's tool rejects an id it does not
                                 // know, so the target keeps the model it has.
@@ -599,8 +694,19 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             })?;
         }
 
-        // Sync hooks (lifecycle events)
-        if params.sync_hooks
+        // Sync hooks (lifecycle events). Cursor reads Claude's own hooks from
+        // ~/.claude/settings.json and runs every match from both files, so a
+        // copy would run each hook twice.
+        if params.sync_hooks && source_name == "claude" && target_name == "cursor" {
+            report.hooks.skipped.push(SkipReason::AgentSpecificFeature {
+                item: "hooks".to_string(),
+                feature: "Cursor loads Claude Code hooks from ~/.claude/settings.json itself"
+                    .to_string(),
+                suggestion: "Keep them in ~/.claude/settings.json; a copy in \
+                             ~/.cursor/hooks.json would run each hook twice"
+                    .to_string(),
+            });
+        } else if params.sync_hooks
             && target_writes(
                 target_support.hooks,
                 "hooks",
@@ -700,7 +806,10 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                             .collect();
                         let excluded_asset_count = before - assets.len();
                         if !params.dry_run {
-                            *slot = self.target.write_plugin_assets(&assets)?;
+                            let options = crate::adapters::MirrorOptions {
+                                keep_versions: params.keep_versions,
+                            };
+                            *slot = self.target.write_plugin_assets_with(&assets, &options)?;
                         } else {
                             // The writer also deletes, so the preview has to come from
                             // the adapter rather than from the batch length alone.
@@ -726,42 +835,75 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
 ///
 /// This avoids the combinatorial match arm explosion that occurs when each
 /// (from, to) pair is constructed explicitly.
-pub fn sync_between(from: &str, to: &str, params: &SyncParams) -> Result<SyncReport> {
-    let source = create_adapter(from)?;
+pub fn sync_between(
+    from: crate::Platform,
+    to: crate::Platform,
+    params: &SyncParams,
+) -> Result<SyncReport> {
+    let source = create_source_adapter(from, params)?;
     let target = create_adapter(to)?;
     SyncOrchestrator::new(source, target).sync(params)
 }
 
-/// Validates that a platform name is recognized.
+/// [`create_adapter`] for the side being read: a Claude source also reads
+/// marketplace skills when `params.include_marketplace` asks for them, as it
+/// already does for commands.
+pub fn create_source_adapter(
+    platform: crate::Platform,
+    params: &SyncParams,
+) -> Result<Box<dyn AgentAdapter>> {
+    if platform == crate::Platform::Claude {
+        return Ok(Box::new(
+            crate::adapters::ClaudeAdapter::new()?
+                .with_marketplace_skills(params.include_marketplace),
+        ));
+    }
+    create_adapter(platform)
+}
+
+/// Syncs the skills under `claude_root` into `home/.agents/skills`, the
+/// directory Codex loads user skills from, with `include_marketplace` adding
+/// skills of marketplace plugins that are not installed.
 ///
-/// ```
-/// use skrills_sync::orchestrator::is_valid_platform;
-///
-/// assert!(is_valid_platform("claude"));
-/// assert!(is_valid_platform("cursor"));
-/// assert!(!is_valid_platform("vscode"));
-/// ```
-pub fn is_valid_platform(name: &str) -> bool {
-    matches!(
-        name.to_lowercase().as_str(),
-        "claude" | "codex" | "copilot" | "cursor"
-    )
+/// Commands, MCP servers and the rest are left to [`sync_between`]; this is
+/// the skills-only direction `sync`, `mirror` and `setup` run.
+pub fn sync_claude_skills_to_codex(
+    claude_root: &std::path::Path,
+    home: &std::path::Path,
+    include_marketplace: bool,
+    dry_run: bool,
+) -> Result<SyncReport> {
+    let source = crate::adapters::ClaudeAdapter::with_root(claude_root.to_path_buf())
+        .with_marketplace_skills(include_marketplace);
+    let target = crate::adapters::CodexAdapter::with_home(home);
+    let params = SyncParams {
+        from: Some("claude".to_string()),
+        dry_run,
+        sync_skills: true,
+        sync_commands: false,
+        sync_mcp_servers: false,
+        sync_preferences: false,
+        sync_agents: false,
+        sync_hooks: false,
+        sync_instructions: false,
+        sync_plugin_assets: false,
+        include_marketplace,
+        ..Default::default()
+    };
+    SyncOrchestrator::new(source, target).sync(&params)
 }
 
 /// Creates an adapter for the given platform name.
 ///
 /// Returns a boxed `AgentAdapter` for the specified platform.
-pub fn create_adapter(platform: &str) -> Result<Box<dyn AgentAdapter>> {
-    match platform.to_lowercase().as_str() {
-        "claude" => Ok(Box::new(crate::adapters::ClaudeAdapter::new()?)),
-        "codex" => Ok(Box::new(crate::adapters::CodexAdapter::new()?)),
-        "copilot" => Ok(Box::new(crate::adapters::CopilotAdapter::new()?)),
-        "cursor" => Ok(Box::new(crate::adapters::CursorAdapter::new()?)),
-        _ => bail!(
-            "Unknown platform '{}'. Use 'claude', 'codex', 'copilot', or 'cursor'",
-            platform
-        ),
-    }
+pub fn create_adapter(platform: crate::Platform) -> Result<Box<dyn AgentAdapter>> {
+    use crate::Platform;
+    Ok(match platform {
+        Platform::Claude => Box::new(crate::adapters::ClaudeAdapter::new()?),
+        Platform::Codex => Box::new(crate::adapters::CodexAdapter::new()?),
+        Platform::Copilot => Box::new(crate::adapters::CopilotAdapter::new()?),
+        Platform::Cursor => Box::new(crate::adapters::CursorAdapter::new()?),
+    })
 }
 
 #[cfg(test)]
@@ -800,6 +942,121 @@ mod tests {
         let tgt_file = tgt_dir.path().join("prompts/hello.md");
         assert!(tgt_file.exists());
         assert_eq!(fs::read_to_string(&tgt_file).unwrap(), "# Hello");
+    }
+
+    /// Skip-existing compared against plugin-cache commands too, which the
+    /// Claude writer never overwrites, so a new command was skipped because a
+    /// plugin happened to ship one with the same name.
+    #[test]
+    fn skip_existing_ignores_plugin_commands_the_writer_would_not_touch() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("prompts")).unwrap();
+        fs::write(src_dir.path().join("prompts/deploy.md"), "# Deploy").unwrap();
+        let plugin_cmds = tgt_dir
+            .path()
+            .join("plugins/cache/market/plug/1.0.0/commands");
+        fs::create_dir_all(&plugin_cmds).unwrap();
+        fs::write(plugin_cmds.join("deploy.md"), "# Plugin deploy").unwrap();
+
+        let report = SyncOrchestrator::new(
+            CodexAdapter::with_root(src_dir.path().to_path_buf()),
+            ClaudeAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .sync(&SyncParams {
+            sync_commands: true,
+            skip_existing_commands: true,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            sync_agents: false,
+            sync_hooks: false,
+            sync_instructions: false,
+            sync_plugin_assets: false,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(report.commands.written, 1, "{:?}", report.commands);
+        assert!(tgt_dir.path().join("commands/deploy.md").exists());
+    }
+
+    /// A target config that does not parse makes the real run refuse to
+    /// write; the dry run reported every server as "would write".
+    #[test]
+    fn dry_run_reports_an_unreadable_mcp_target_like_the_real_run() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::write(
+            src_dir.path().join(".claude.json"),
+            r#"{"mcpServers": {"s": {"command": "/bin/s"}}}"#,
+        )
+        .unwrap();
+        fs::write(tgt_dir.path().join("config.toml"), "[unclosed\n").unwrap();
+
+        let report = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .sync(&SyncParams {
+            dry_run: true,
+            sync_commands: false,
+            sync_mcp_servers: true,
+            sync_preferences: false,
+            sync_skills: false,
+            sync_agents: false,
+            sync_hooks: false,
+            sync_instructions: false,
+            sync_plugin_assets: false,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(report.mcp_servers.written, 0, "{:?}", report.mcp_servers);
+        assert!(!report.success);
+    }
+
+    /// Two syncs into one target read, merge and write the same config files;
+    /// without a lock one of them loses its update. A second sync waits for
+    /// the lock on the target root.
+    #[test]
+    fn a_sync_waits_while_another_holds_the_target_lock() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("commands")).unwrap();
+        fs::write(src_dir.path().join("commands/hello.md"), "# Hello").unwrap();
+        let held = fs::File::create(tgt_dir.path().join(SYNC_LOCK_FILE)).unwrap();
+        held.lock().unwrap();
+
+        let (done, finished) = std::sync::mpsc::channel();
+        let (src, tgt) = (src_dir.path().to_path_buf(), tgt_dir.path().to_path_buf());
+        let worker = std::thread::spawn(move || {
+            let report =
+                SyncOrchestrator::new(ClaudeAdapter::with_root(src), CodexAdapter::with_root(tgt))
+                    .sync(&SyncParams {
+                        sync_commands: true,
+                        sync_mcp_servers: false,
+                        sync_preferences: false,
+                        sync_skills: false,
+                        sync_agents: false,
+                        sync_hooks: false,
+                        sync_instructions: false,
+                        sync_plugin_assets: false,
+                        ..Default::default()
+                    })
+                    .map(|r| r.commands.written);
+            done.send(report).unwrap();
+        });
+
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "the sync ran while the lock was held"
+        );
+        held.unlock().unwrap();
+        assert_eq!(finished.recv().unwrap().unwrap(), 1);
+        worker.join().unwrap();
     }
 
     #[test]
@@ -909,7 +1166,7 @@ mod tests {
         let tgt_dir = tempdir().unwrap();
 
         // Create source MCP config
-        let settings_path = src_dir.path().join("settings.json");
+        let settings_path = src_dir.path().join(".claude.json");
         fs::write(
             &settings_path,
             r#"{
@@ -946,13 +1203,18 @@ mod tests {
     }
 
     #[test]
-    fn sync_transforms_model_claude_to_codex() {
+    fn sync_keeps_the_codex_model_for_a_claude_model() {
         let src_dir = tempdir().unwrap();
         let tgt_dir = tempdir().unwrap();
 
         // Create source settings with Claude model
         let settings_path = src_dir.path().join("settings.json");
         fs::write(&settings_path, r#"{"model": "sonnet"}"#).unwrap();
+        fs::write(
+            tgt_dir.path().join("config.toml"),
+            "model = \"gpt-6.1-sol\"\n",
+        )
+        .unwrap();
 
         let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
         let target = CodexAdapter::with_root(tgt_dir.path().to_path_buf());
@@ -967,19 +1229,19 @@ mod tests {
         };
 
         let report = orchestrator.sync(&params).unwrap();
-        assert_eq!(report.preferences.written, 1);
+        assert_eq!(report.preferences.written, 0);
 
-        // Verify model was transformed to OpenAI equivalent
+        // No current Claude -> Codex model table, so Codex keeps its model
         let target = CodexAdapter::with_root(tgt_dir.path().to_path_buf());
         assert_eq!(
             target.read_preferences().unwrap().model.as_deref(),
-            Some("gpt-4o-mini")
+            Some("gpt-6.1-sol")
         );
         assert!(!tgt_dir.path().join("config.json").exists());
     }
 
     #[test]
-    fn sync_transforms_model_codex_to_claude() {
+    fn sync_leaves_the_claude_model_unset_for_an_openai_model() {
         let src_dir = tempdir().unwrap();
         let tgt_dir = tempdir().unwrap();
 
@@ -1000,13 +1262,10 @@ mod tests {
         };
 
         let report = orchestrator.sync(&params).unwrap();
-        assert_eq!(report.preferences.written, 1);
+        assert_eq!(report.preferences.written, 0);
 
-        // Verify model was transformed to Claude equivalent
-        let tgt_settings = tgt_dir.path().join("settings.json");
-        let content = fs::read_to_string(&tgt_settings).unwrap();
-        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(settings["model"], "opus");
+        // No OpenAI -> Claude model table, so Claude's settings are untouched
+        assert!(!tgt_dir.path().join("settings.json").exists());
     }
 
     /// A model id with no mapping was written verbatim into the other
@@ -1088,11 +1347,11 @@ mod tests {
         fs::create_dir_all(src_dir.path().join("commands")).unwrap();
         fs::write(src_dir.path().join("commands/hello.md"), "# Hello").unwrap();
         fs::write(
-            src_dir.path().join("settings.json"),
-            r#"{"model": "sonnet"}"#,
+            src_dir.path().join(".claude.json"),
+            r#"{"mcpServers": {"s": {"command": "/bin/s"}}}"#,
         )
         .unwrap();
-        // A malformed config.toml makes the preference writer fail.
+        // A malformed config.toml makes the MCP writer fail.
         fs::write(tgt_dir.path().join("config.toml"), "[unclosed\n").unwrap();
 
         let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
@@ -1100,8 +1359,8 @@ mod tests {
         let report = SyncOrchestrator::new(source, target)
             .sync(&SyncParams {
                 sync_commands: true,
-                sync_mcp_servers: false,
-                sync_preferences: true,
+                sync_mcp_servers: true,
+                sync_preferences: false,
                 sync_skills: false,
                 sync_agents: false,
                 sync_hooks: false,
@@ -1115,12 +1374,12 @@ mod tests {
         assert!(!report.success);
         assert!(
             report
-                .preferences
+                .mcp_servers
                 .warnings
                 .iter()
                 .any(|w| w.contains("failed")),
             "{:?}",
-            report.preferences.warnings
+            report.mcp_servers.warnings
         );
     }
 
@@ -1141,7 +1400,12 @@ mod tests {
         fs::write(src_dir.path().join("skills/alpha/notes.md"), "notes").unwrap();
         fs::write(
             src_dir.path().join("settings.json"),
-            r#"{"model": "sonnet", "mcpServers": {"s": {"command": "/bin/s", "args": ["-x"]}}}"#,
+            r#"{"model": "sonnet"}"#,
+        )
+        .unwrap();
+        fs::write(
+            src_dir.path().join(".claude.json"),
+            r#"{"mcpServers": {"s": {"command": "/bin/s", "args": ["-x"]}}}"#,
         )
         .unwrap();
 
@@ -1172,7 +1436,8 @@ mod tests {
         assert_eq!(first.commands.written, 1);
         assert_eq!(first.skills.written, 1);
         assert_eq!(first.mcp_servers.written, 1);
-        assert_eq!(first.preferences.written, 1);
+        // A Claude model has no Codex equivalent, so nothing to write there.
+        assert_eq!(first.preferences.written, 0);
 
         assert!(orch().sync(&params).unwrap().success);
 
@@ -1202,6 +1467,49 @@ mod tests {
             })
             .unwrap();
         assert_eq!(preview.skills.written, 1);
+    }
+
+    /// Cursor loads Claude Code hooks from `~/.claude/settings.json` itself
+    /// (cursor.com/docs/reference/third-party-hooks) and runs every match from
+    /// both files, so a copy in `~/.cursor/hooks.json` ran each hook twice.
+    #[test]
+    fn claude_to_cursor_skips_hooks_cursor_loads_natively() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("hooks")).unwrap();
+        fs::write(
+            src_dir.path().join("hooks/PreToolUse.md"),
+            r#"[{"command": "echo hi"}]"#,
+        )
+        .unwrap();
+
+        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
+        let target = crate::adapters::CursorAdapter::with_root(tgt_dir.path().to_path_buf());
+        let report = SyncOrchestrator::new(source, target)
+            .sync(&SyncParams {
+                sync_commands: false,
+                sync_mcp_servers: false,
+                sync_preferences: false,
+                sync_skills: false,
+                sync_agents: false,
+                sync_hooks: true,
+                sync_instructions: false,
+                sync_plugin_assets: false,
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(report.hooks.written, 0, "{:?}", report.hooks);
+        assert!(
+            matches!(
+                report.hooks.skipped.as_slice(),
+                [SkipReason::AgentSpecificFeature { feature, .. }] if feature.contains("settings.json")
+            ),
+            "{:?}",
+            report.hooks.skipped
+        );
+        assert!(!tgt_dir.path().join("hooks.json").exists());
+        assert!(report.success);
     }
 
     /// SY-37: Codex declares it cannot write hooks and its writer is a no-op,
@@ -1734,6 +2042,70 @@ mod tests {
         );
     }
 
+    /// Runs a skills-and-mirror sync of the seeded root into a Cursor target
+    /// whose flat `skills/deep-work/SKILL.md` already holds `flat_copy`.
+    fn sync_over_flat_copy(
+        flat_copy: &str,
+        keep_versions: bool,
+        dry_run: bool,
+    ) -> (bool, SyncReport) {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        seed_claude_root_with_plugin_and_local_skill(src_dir.path());
+        let flat = tgt_dir.path().join("skills/deep-work");
+        fs::create_dir_all(&flat).unwrap();
+        fs::write(flat.join("SKILL.md"), flat_copy).unwrap();
+
+        let params = SyncParams {
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_agents: false,
+            sync_hooks: false,
+            sync_instructions: false,
+            full_plugin_mirror: true,
+            keep_versions,
+            dry_run,
+            ..Default::default()
+        };
+        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
+        let target = crate::adapters::CursorAdapter::with_root(tgt_dir.path().to_path_buf());
+        let report = SyncOrchestrator::new(source, target).sync(&params).unwrap();
+        (flat.exists(), report)
+    }
+
+    /// Builds before 0.9.1 copied plugin skills flat with the frontmatter
+    /// stripped. Cursor cannot load those, and the mirror now carries the skill.
+    #[test]
+    fn full_mirror_sync_removes_a_legacy_flat_copy_of_a_plugin_skill() {
+        let (exists, report) = sync_over_flat_copy("Old description\n# Deep work\n", false, false);
+        assert!(!exists, "{:?}", report.skills.warnings);
+    }
+
+    #[test]
+    fn full_mirror_sync_keeps_a_flat_skill_the_user_wrote() {
+        let mine = "---\nname: deep-work\ndescription: Mine\n---\n# Mine\n";
+        let (exists, report) = sync_over_flat_copy(mine, false, false);
+        assert!(exists, "{:?}", report.skills.warnings);
+    }
+
+    #[test]
+    fn full_mirror_sync_keeps_superseded_flat_copies_with_keep_versions_or_dry_run() {
+        let legacy = "Old description\n# Deep work\n";
+        assert!(sync_over_flat_copy(legacy, true, false).0);
+        let (exists, report) = sync_over_flat_copy(legacy, false, true);
+        assert!(exists, "a dry run removes nothing");
+        assert!(
+            report
+                .skills
+                .warnings
+                .iter()
+                .any(|w| w.contains("deep-work")),
+            "the preview must name the copy it would remove: {:?}",
+            report.skills.warnings
+        );
+    }
+
     /// Without the full mirror there is no second copy to collide with, so
     /// every skill goes through `write_skills` as before.
     #[test]
@@ -1806,7 +2178,7 @@ mod tests {
         assert!(
             tgt_dir
                 .path()
-                .join("skills/agent-reviewer/SKILL.md")
+                .join(".agents/skills/agent-reviewer/SKILL.md")
                 .exists(),
             "write_agents should convert the agent into an agent-prefixed skill"
         );
@@ -1851,10 +2223,8 @@ mod tests {
     fn create_adapter_all_platforms() {
         // These only verify the adapter constructs; the actual root may not exist
         // on the test machine, but with_root tests cover that path.
-        assert_eq!(create_adapter("claude").unwrap().name(), "claude");
-        assert_eq!(create_adapter("codex").unwrap().name(), "codex");
-        assert_eq!(create_adapter("copilot").unwrap().name(), "copilot");
-        assert_eq!(create_adapter("cursor").unwrap().name(), "cursor");
-        assert!(create_adapter("vscode").is_err());
+        for platform in crate::Platform::ALL {
+            assert_eq!(create_adapter(platform).unwrap().name(), platform.as_str());
+        }
     }
 }

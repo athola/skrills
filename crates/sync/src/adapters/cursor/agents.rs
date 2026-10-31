@@ -4,9 +4,11 @@
 //! Key differences from Claude agents:
 //! - `background: true` → `is_background: true`
 //! - `tools` and `isolation` fields are Claude-only: stripped from the Cursor
-//!   frontmatter, reported as a warning, and kept in a trailing
-//!   `<!-- skrills:frontmatter ... -->` comment that reading the agent back
-//!   from Cursor puts into the frontmatter again
+//!   frontmatter and kept in a trailing `<!-- skrills:frontmatter ... -->`
+//!   comment that reading the agent back from Cursor puts into the frontmatter
+//!   again. A `tools` list with no write tool becomes `readonly: true`, which
+//!   comes off again on that read; one with a write tool is reported, since
+//!   Cursor has no way to keep it
 //! - `is_background` is not renamed back to `background` on read
 //! - `readonly` is Cursor-only (preserved on read)
 //! - `model` is copied unchanged (not translated)
@@ -20,7 +22,6 @@ use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 use std::fs;
 use std::path::Path;
-use std::time::SystemTime;
 
 /// Reads all agents from `.cursor/agents/*.md`.
 pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
@@ -32,10 +33,18 @@ pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
     let mut agents = Vec::new();
 
     for entry in fs::read_dir(&dir)? {
-        let entry = entry?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                tracing::warn!(error = %e, "Skipping unreadable directory entry");
+                continue;
+            }
+        };
         let path = entry.path();
 
-        if !path.is_file() {
+        // `file_type` does not follow links: a linked file could be any file
+        // on disk, and it would be copied into every other tool.
+        if !entry.file_type().is_ok_and(|t| t.is_file()) {
             continue;
         }
         if path
@@ -56,16 +65,15 @@ pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
             .unwrap_or("unknown")
             .to_string();
 
-        let content = fs::read(&path)?;
+        let Some((content, modified)) = crate::adapters::utils::read_item_file(&path) else {
+            continue;
+        };
         // A copy this crate wrote gets its Claude-only lines back.
         let content = match std::str::from_utf8(&content).ok().and_then(restore_agent) {
             Some(restored) => restored.into_bytes(),
             None => content,
         };
         let hash = hash_content(&content);
-        let modified = fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
 
         agents.push(Command {
             name,
@@ -87,7 +95,8 @@ pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
 ///
 /// Translates Claude agent frontmatter to Cursor conventions:
 /// - `background: true` → `is_background: true`
-/// - `tools` and `isolation` fields are stripped
+/// - `tools` and `isolation` fields are stripped; a `tools` list with no
+///   write tool becomes `readonly: true`
 pub fn write_agents(root: &Path, agents: &[Command]) -> Result<WriteReport> {
     let dir = agents_dir(root);
     let mut report = WriteReport::default();
@@ -114,6 +123,18 @@ pub fn write_agents(root: &Path, agents: &[Command]) -> Result<WriteReport> {
             }
         };
         let (translated, dropped) = translate_agent_frontmatter(content_str);
+        let tools = claude_tools(&dropped);
+        // `readonly` is the only restriction a Cursor agent has, so an agent
+        // Claude kept from writing gets it in place of its tool list.
+        let can_write = tools
+            .as_ref()
+            .map(|names| names.iter().any(|n| WRITE_TOOLS.contains(&tool_base(n))));
+        let translated = match can_write {
+            Some(false) if !has_frontmatter_key(&translated, "readonly") => {
+                with_readonly(&translated)
+            }
+            _ => translated,
+        };
         let translated = if dropped.is_empty() {
             translated
         } else {
@@ -126,11 +147,10 @@ pub fn write_agents(root: &Path, agents: &[Command]) -> Result<WriteReport> {
                 agent.name
             ));
         }
-        if restricts_tools(content_str) {
+        if can_write == Some(true) {
             report.warnings.push(format!(
                 "Agent {} limits its tools in Claude; Cursor agents have no tool list, so it \
-                 can use every tool there. Add `readonly: true` to the Cursor copy if it \
-                 should not write.",
+                 can use every tool there.",
                 agent.name
             ));
         }
@@ -147,11 +167,59 @@ pub fn write_agents(root: &Path, agents: &[Command]) -> Result<WriteReport> {
     Ok(report)
 }
 
-/// Whether the agent's frontmatter has a `tools:` key, the restriction
-/// [`translate_agent_frontmatter`] has to drop.
-fn restricts_tools(content: &str) -> bool {
-    let (raw, _body, _line) = skrills_validate::frontmatter::split_frontmatter(content);
-    raw.is_some_and(|fm| fm.lines().any(|line| line.starts_with("tools:")))
+/// Claude tools that change files or run commands; an agent allowed none of
+/// them is read-only.
+const WRITE_TOOLS: &[&str] = &["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"];
+
+/// The tool names in the `tools` lines [`translate_agent_frontmatter`]
+/// dropped, in any of Claude's forms (`a, b`, `[a, b]`, a `- a` block list).
+/// `None` when the agent had no `tools` key.
+fn claude_tools(dropped: &str) -> Option<Vec<String>> {
+    let mut lines = dropped.lines().skip_while(|l| !l.starts_with("tools:"));
+    let first = lines.next()?.strip_prefix("tools:")?;
+    let block = lines.take_while(|l| is_block_continuation(l));
+    let text = std::iter::once(first)
+        .chain(block)
+        .collect::<Vec<_>>()
+        .join(",");
+    Some(
+        text.split(',')
+            .map(|t| {
+                t.trim()
+                    .trim_start_matches(['[', '-'])
+                    .trim_end_matches(']')
+            })
+            .map(|t| t.trim().trim_matches(['"', '\'']).to_string())
+            .filter(|t| !t.is_empty())
+            .collect(),
+    )
+}
+
+/// An indented line, or a `- item` that YAML lets a block list put at its
+/// key's own indent: either belongs to the key above it.
+fn is_block_continuation(line: &str) -> bool {
+    line.starts_with([' ', '\t']) || line == "-" || line.starts_with("- ")
+}
+
+/// `Bash(git:*)` grants `Bash`.
+fn tool_base(tool: &str) -> &str {
+    tool.split('(').next().unwrap_or(tool).trim()
+}
+
+fn has_frontmatter_key(content: &str, key: &str) -> bool {
+    let (raw, _, _) = skrills_validate::frontmatter::split_frontmatter(content);
+    raw.is_some_and(|fm| fm.lines().any(|l| l.starts_with(&format!("{key}:"))))
+}
+
+/// Adds `readonly: true` as the last frontmatter line of a translated agent.
+fn with_readonly(translated: &str) -> String {
+    match translated.get(3..).and_then(|rest| rest.find("\n---\n")) {
+        Some(at) => {
+            let at = at + 3;
+            format!("{}\nreadonly: true{}", &translated[..at], &translated[at..])
+        }
+        None => translated.to_string(),
+    }
 }
 
 /// Puts the Claude-only lines a Cursor copy stashed back at the end of its
@@ -159,7 +227,15 @@ fn restricts_tools(content: &str) -> bool {
 fn restore_agent(content: &str) -> Option<String> {
     let (body, dropped) = take_stash(content)?;
     let (raw, rest, _) = skrills_validate::frontmatter::split_frontmatter(body);
-    let fm = raw?;
+    let mut fm = raw?;
+    // The writer's `readonly: true` stood in for the `tools` restored here.
+    if claude_tools(dropped).is_some() {
+        fm = fm
+            .lines()
+            .filter(|l| *l != "readonly: true")
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
     let mut out = format!("---\n{fm}\n{dropped}\n---\n");
     if !rest.is_empty() {
         out.push('\n');
@@ -200,7 +276,7 @@ fn translate_agent_frontmatter(content: &str) -> (String, String) {
         // If we were skipping a block field, continue skipping continuation lines
         // (indented lines or list items that belong to the previous field)
         if skipping_block {
-            if line.starts_with(' ') || line.starts_with('\t') {
+            if is_block_continuation(line) {
                 dropped_lines.push(line);
                 continue;
             }
@@ -249,6 +325,22 @@ mod tests {
             );
         }
         assert!(output.contains("name: reviewer"));
+    }
+
+    /// YAML allows a block list at the key's own indent. Those `- Read` lines
+    /// used to stay behind as orphans in the Cursor frontmatter, and the tool
+    /// list came out empty, so an agent with Bash was marked read-only.
+    #[test]
+    fn translate_strips_an_unindented_block_list_and_reads_its_tools() {
+        let input = "---\nname: builder\ntools:\n- Read\n- Bash\nmodel: opus\n---\n\nBuild.\n";
+        let (output, dropped) = translate_agent_frontmatter(input);
+        assert!(!output.contains("- Read"), "{output}");
+        assert!(!output.contains("- Bash"), "{output}");
+        assert!(output.contains("model: opus"), "{output}");
+        assert_eq!(
+            claude_tools(&dropped),
+            Some(vec!["Read".to_string(), "Bash".to_string()])
+        );
     }
 
     #[test]

@@ -16,14 +16,14 @@ pub fn run_schema() -> Arc<JsonObject> {
         "properties": {
             "prompt": {"type": "string", "description": "User instruction"},
             "agent_id": {"type": "string", "description": "Agent name to run (from list-agents). When specified, routes to appropriate execution path based on agent capabilities."},
-            "backend": {"type": "string", "description": "codex|claude|other (used only when execution_mode=api and agent_id is not specified)"},
+            "backend": {"type": "string", "description": "codex|claude|other. Picks the CLI binary in cli mode and the API backend in api mode; with agent_id it takes precedence over the agent's model. Without it: the cli_binary/default_backend config, then the detected client."},
             "execution_mode": {"type": "string", "description": "cli|api (default: cli). cli uses local headless CLI; api uses network APIs."},
             "cli_binary": {"type": "string", "description": "CLI binary to run in cli mode (overrides SKRILLS_CLI_BINARY/config)"},
-            "template_id": {"type": "string"},
-            "output_schema": {"type": "object"},
+            "template_id": {"type": "string", "description": "A template id from list-subagents for the selected backend; any other id is rejected"},
+            "output_schema": {"type": "object", "description": "JSON schema for structured output; API runs only, rejected for a CLI run"},
             "tracing": {"type": "boolean"},
             "stream": {"type": "boolean"},
-            "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000}
+            "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 300000, "description": "CLI runs only; rejected for a run that goes to an API"}
         }
     })))
 }
@@ -52,7 +52,8 @@ pub fn events_schema() -> Arc<JsonObject> {
         "required": ["run_id"],
         "properties": {
             "run_id": {"type": "string", "description": "The run ID to get events for"},
-            "since_index": {"type": "integer", "minimum": 0, "description": "Return events after this index (0-based, stable for the life of the run; past 10,000 events the oldest are replaced by one events_dropped event whose data.count says how many)"}
+            "since_index": {"type": "integer", "minimum": 0, "description": "Return events after this index (0-based, stable for the life of the run; past 10,000 events the oldest are replaced by one events_dropped event whose data.count says how many)"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "Most events to return (default 1000); has_more says whether more follow"}
         }
     })))
 }
@@ -214,11 +215,11 @@ pub fn all_tools() -> Vec<Tool> {
         .with_raw_output_schema(events_output_schema),
     ];
 
-    // Codex-only extended tools
+    // Async and status aliases
     tools.push(
         Tool::new(
             "run-subagent-async",
-            "Start background run (Codex-capable backends).",
+            "Start a run in the background and return its run_id at once; poll get-run-status or get-run-events for progress.",
             run_schema,
         )
         .with_title("Run subagent asynchronously")
@@ -233,15 +234,6 @@ pub fn all_tools() -> Vec<Tool> {
         .with_title("Status for async run")
         .with_raw_output_schema(run_output_schema),
     );
-    tools.push(
-        Tool::new(
-            "download-transcript-secure",
-            "Fetch encrypted reasoning transcript (Codex only)",
-            Arc::new(JsonObject::default()),
-        )
-        .with_title("Download secure transcript"),
-    );
-
     tools
 }
 
@@ -505,8 +497,8 @@ mod tests {
         fn given_all_tools_when_generated_then_contains_expected_count() {
             let tools = all_tools();
 
-            // Should have 10 tools total
-            assert_eq!(tools.len(), 10);
+            // 9 tools; the unimplemented transcript download is not listed
+            assert_eq!(tools.len(), 9);
         }
 
         #[test]
@@ -552,7 +544,8 @@ mod tests {
 
             assert!(names.contains(&"run-subagent-async"));
             assert!(names.contains(&"get-async-status"));
-            assert!(names.contains(&"download-transcript-secure"));
+            // M320: not implemented, so not advertised.
+            assert!(!names.contains(&"download-transcript-secure"));
         }
 
         #[test]
@@ -583,23 +576,11 @@ mod tests {
             assert!(run_tool.output_schema.is_some());
         }
 
-        #[test]
-        fn given_download_transcript_tool_when_generated_then_has_no_output_schema() {
-            let tools = all_tools();
-            let transcript_tool = tools
-                .iter()
-                .find(|t| t.name.as_ref() == "download-transcript-secure")
-                .expect("download-transcript-secure tool should exist");
-
-            // download-transcript-secure has no output schema
-            assert!(transcript_tool.output_schema.is_none());
-        }
-
-        /// Every tool but the transcript download pins an output schema.
+        /// Every tool pins an output schema.
         /// Dropping one `.with_raw_output_schema(..)` still compiles and still
         /// passes the per-tool tests above, so pin the exact set.
         #[test]
-        fn output_schema_is_set_on_every_tool_except_the_transcript_download() {
+        fn output_schema_is_set_on_every_tool() {
             let mut with_schema: Vec<String> = all_tools()
                 .iter()
                 .filter(|tool| tool.output_schema.is_some())

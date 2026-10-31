@@ -114,6 +114,7 @@ impl ColdWindowDashboardState {
 
 /// Build the cold-window router.
 pub fn cold_window_routes(state: ColdWindowDashboardState) -> Router {
+    let allowed_hosts = Arc::new(crate::http_transport::loopback_host_allow_list());
     Router::new()
         .route("/dashboard", get(serve_dashboard))
         .route("/dashboard.sse", get(serve_dashboard_sse))
@@ -124,6 +125,11 @@ pub fn cold_window_routes(state: ColdWindowDashboardState) -> Router {
         .layer(axum::middleware::from_fn(
             crate::http_transport::csp_middleware,
         ))
+        // The CLI binds loopback only, so only loopback names are accepted;
+        // anything else is a rebound domain.
+        .layer(axum::middleware::from_fn(move |req, next| {
+            crate::http_transport::host_middleware(allowed_hosts.clone(), req, next)
+        }))
         .with_state(state)
 }
 
@@ -524,6 +530,7 @@ mod tests {
                 .oneshot(
                     axum::http::Request::builder()
                         .uri(uri)
+                        .header(axum::http::header::HOST, "127.0.0.1")
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -545,6 +552,35 @@ mod tests {
                 actual_type.starts_with(content_type),
                 "{uri}: {actual_type}"
             );
+        }
+    }
+
+    /// `skrills cold-window` serves this router alone, so a page on a rebound
+    /// domain could otherwise read the alert stream.
+    #[tokio::test]
+    async fn routes_refuse_a_host_outside_the_loopback_names() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let (tx, _rx) = broadcast::channel(16);
+        let app = cold_window_routes(ColdWindowDashboardState::new(tx, 100_000));
+        for (host, expected) in [
+            ("evil.example:8888", axum::http::StatusCode::FORBIDDEN),
+            ("localhost:8888", axum::http::StatusCode::OK),
+            ("127.0.0.1:8888", axum::http::StatusCode::OK),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri("/dashboard")
+                        .header(axum::http::header::HOST, host)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{host}");
         }
     }
 
@@ -828,6 +864,7 @@ mod tests {
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/dashboard.sse")
+                    .header(axum::http::header::HOST, "127.0.0.1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -869,6 +906,7 @@ mod tests {
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/dashboard.sse")
+                    .header(axum::http::header::HOST, "127.0.0.1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -918,6 +956,7 @@ mod tests {
         // Build the request future first.
         let req = axum::http::Request::builder()
             .uri("/dashboard.sse")
+            .header(axum::http::header::HOST, "127.0.0.1")
             .body(axum::body::Body::empty())
             .unwrap();
         let response_fut = app.oneshot(req);
@@ -993,6 +1032,7 @@ mod tests {
 
         let req = axum::http::Request::builder()
             .uri("/dashboard.sse")
+            .header(axum::http::header::HOST, "127.0.0.1")
             .body(axum::body::Body::empty())
             .unwrap();
         let response_fut = app.oneshot(req);
@@ -1052,6 +1092,7 @@ mod tests {
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/dashboard")
+                    .header(axum::http::header::HOST, "127.0.0.1")
                     .body(Body::empty())
                     .unwrap(),
             )

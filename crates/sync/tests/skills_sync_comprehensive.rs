@@ -238,6 +238,7 @@ mod basic_sync_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -246,6 +247,9 @@ mod basic_sync_tests {
         // THEN: Skills should be transferred to Codex
         assert_eq!(report.skills.written, 2, "Should write both skills");
         assert!(report.skills.skipped.is_empty(), "Should skip none");
+        let shared = ctx.codex_root.join(".agents/skills");
+        assert!(shared.join("code-review/SKILL.md").exists());
+        assert!(shared.join("test-gen/SKILL.md").exists());
     }
 
     #[tokio::test]
@@ -280,6 +284,7 @@ mod basic_sync_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -327,6 +332,7 @@ mod basic_sync_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -371,6 +377,7 @@ mod basic_sync_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -417,6 +424,7 @@ mod basic_sync_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -462,6 +470,7 @@ mod basic_sync_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -470,15 +479,12 @@ mod basic_sync_tests {
         // THEN: Report shows what would be written but target remains empty
         assert_eq!(report.skills.written, 2, "Should report 2 skills to write");
 
-        // Verify target directory is still empty
-        let target_skills_dir = ctx.codex_root.join("skills");
-        if target_skills_dir.exists() {
-            let entries: Vec<_> = fs::read_dir(&target_skills_dir)
-                .unwrap()
-                .filter_map(|e| e.ok())
-                .collect();
-            assert!(entries.is_empty(), "Target should remain empty in dry run");
-        }
+        // Codex skills go to `<root>/.agents/skills` for a `with_root` adapter;
+        // a dry run must not create it.
+        assert!(
+            !ctx.codex_root.join(".agents/skills").exists(),
+            "Target should remain empty in dry run"
+        );
     }
 }
 
@@ -703,12 +709,7 @@ mod autofix_sync_tests {
         let skill = SkillSyncTestContext::claude_only_skill("needs-fix");
 
         // WHEN: Validating with autofix enabled
-        let options = SyncValidationOptions {
-            validate: true,
-            autofix: true,
-            create_backups: false,
-            strict: false,
-        };
+        let options = SyncValidationOptions { autofix: true };
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         // THEN: Autofix generates frontmatter and skill can sync
@@ -729,12 +730,7 @@ mod autofix_sync_tests {
         );
 
         // WHEN: Validating with autofix
-        let options = SyncValidationOptions {
-            validate: true,
-            autofix: true,
-            create_backups: false,
-            strict: false,
-        };
+        let options = SyncValidationOptions { autofix: true };
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         // THEN: Name is derived and added
@@ -753,12 +749,7 @@ mod autofix_sync_tests {
         let skill = SkillSyncTestContext::missing_description_skill("needs-desc");
 
         // WHEN: Validating with autofix
-        let options = SyncValidationOptions {
-            validate: true,
-            autofix: true,
-            create_backups: false,
-            strict: false,
-        };
+        let options = SyncValidationOptions { autofix: true };
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         // THEN: Description is derived and added
@@ -778,12 +769,7 @@ mod autofix_sync_tests {
             SkillSyncTestContext::universal_skill("already-valid", "Already has everything");
 
         // WHEN: Validating with autofix
-        let options = SyncValidationOptions {
-            validate: true,
-            autofix: true,
-            create_backups: false,
-            strict: false,
-        };
+        let options = SyncValidationOptions { autofix: true };
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         // THEN: No autofix applied (skill was already valid)
@@ -803,12 +789,7 @@ mod autofix_sync_tests {
         ];
 
         // WHEN: Validating with autofix
-        let options = SyncValidationOptions {
-            validate: true,
-            autofix: true,
-            create_backups: false,
-            strict: false,
-        };
+        let options = SyncValidationOptions { autofix: true };
         let report = validate_skills_for_sync(&skills, ValidationTarget::Codex, &options);
 
         // THEN: Report shows autofixed count
@@ -825,12 +806,7 @@ mod autofix_sync_tests {
         let skill = SkillSyncTestContext::malformed_yaml_skill("broken-yaml");
 
         // WHEN: Validating with autofix
-        let options = SyncValidationOptions {
-            validate: true,
-            autofix: true,
-            create_backups: false,
-            strict: false,
-        };
+        let options = SyncValidationOptions { autofix: true };
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         // THEN: Skill cannot be fixed (malformed YAML)
@@ -849,12 +825,7 @@ mod autofix_sync_tests {
         let skill = SkillSyncTestContext::claude_only_skill("no-autofix");
 
         // WHEN: Validating with autofix disabled
-        let options = SyncValidationOptions {
-            validate: true,
-            autofix: false,
-            create_backups: false,
-            strict: false,
-        };
+        let options = SyncValidationOptions { autofix: false };
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
         // THEN: No autofix applied
@@ -990,9 +961,12 @@ mod edge_case_tests {
         let options = SyncValidationOptions::default();
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
-        // THEN: Depends on YAML parsing - document behavior
-        // Names with newlines are typically invalid
-        assert!(!result.can_sync || result.validation.is_codex_valid());
+        // THEN: Codex rejects a name containing a newline
+        assert!(!result.validation.is_codex_valid());
+        assert!(
+            !result.can_sync,
+            "a newline in the name must block the sync"
+        );
     }
 
     #[test]
@@ -1012,7 +986,7 @@ mod edge_case_tests {
     }
 
     #[test]
-    fn given_frontmatter_not_at_start_when_validate_then_fails_codex() {
+    fn given_frontmatter_after_a_blank_line_when_validate_then_it_is_still_read() {
         // GIVEN: Skill with frontmatter not at very start
         let skill = SkillSyncTestContext::make_skill(
             "delayed-front",
@@ -1021,11 +995,11 @@ mod edge_case_tests {
 
         // WHEN: Validating
         let options = SyncValidationOptions::default();
-        let _result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
+        let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
-        // THEN: May fail depending on parser strictness
-        // Document the actual behavior
-        // Most parsers require frontmatter to start at line 1
+        // THEN: The splitter skips the leading blank line and reads the fields
+        assert_eq!(result.validation.name, "delayed-front");
+        assert!(result.can_sync);
     }
 
     #[test]
@@ -1117,9 +1091,9 @@ mod negative_tests {
         let options = SyncValidationOptions::default();
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
-        // THEN: Should handle gracefully (may pass or fail but not panic)
-        // The result doesn't matter as much as not crashing
-        let _ = result;
+        // THEN: The frontmatter before the binary tail is still read
+        assert_eq!(result.validation.name, "binary");
+        assert!(result.can_sync);
     }
 
     #[test]
@@ -1149,10 +1123,10 @@ mod negative_tests {
 
         // WHEN: Validating
         let options = SyncValidationOptions::default();
-        let _result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
+        let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
-        // THEN: Should handle gracefully (not panic)
-        // May fail validation but should not panic
+        // THEN: The escaped NUL is decoded into the name, not truncated at it
+        assert_eq!(result.validation.name, "null\0byte");
     }
 
     #[test]
@@ -1167,10 +1141,15 @@ mod negative_tests {
         let options = SyncValidationOptions::default();
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
-        // THEN: Should parse safely without executing injection
-        // The description should be a literal string, not parsed as YAML
-        // Just ensure validation completes without panic
-        let _ = result;
+        // THEN: The quoted `---` stays inside the description: the frontmatter
+        // still ends at the real fence and `name` is not overridden
+        assert_eq!(result.validation.name, "test");
+        assert!(
+            result.validation.issues.is_empty(),
+            "{:?}",
+            result.validation.issues
+        );
+        assert!(result.can_sync);
     }
 
     #[test]
@@ -1185,26 +1164,21 @@ mod negative_tests {
         let options = SyncValidationOptions::default();
         let result = validate_skill_for_sync(&skill, ValidationTarget::Codex, &options);
 
-        // THEN: YAML parsers typically use last value or may error
-        // Document the actual behavior
-        let _ = result;
+        // THEN: A duplicate key is invalid YAML for Codex, so the skill is held back
+        assert!(!result.validation.is_codex_valid());
+        assert!(!result.can_sync);
     }
 
     #[test]
-    fn given_strict_mode_and_invalid_skill_when_validate_then_fails() {
-        // GIVEN: Invalid skill with strict mode
+    fn given_invalid_skill_when_validate_then_report_counts_the_failure() {
+        // GIVEN: One valid and one invalid skill
         let skills = vec![
             SkillSyncTestContext::universal_skill("valid", "Valid skill"),
             SkillSyncTestContext::claude_only_skill("invalid"),
         ];
 
-        // WHEN: Validating with strict mode
-        let options = SyncValidationOptions {
-            validate: true,
-            autofix: false,
-            create_backups: false,
-            strict: true,
-        };
+        // WHEN: Validating without autofix
+        let options = SyncValidationOptions { autofix: false };
         let report = validate_skills_for_sync(&skills, ValidationTarget::Codex, &options);
 
         // THEN: Report shows failure
@@ -1374,6 +1348,7 @@ mod case_sensitivity_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);

@@ -8,9 +8,10 @@
 //! - **Acknowledged warnings**: a set of fingerprints the user has
 //!   individually dismissed. WARNING-tier alerts require per-row
 //!   ack; the master-ack keystroke does not clear them.
-//! - **Acknowledged non-warnings**: a "high water mark" tick version
-//!   above which CAUTION/ADVISORY/STATUS alerts are considered
-//!   acknowledged.
+//! - **Acknowledged non-warnings**: fingerprints of the
+//!   CAUTION/ADVISORY/STATUS alerts that were showing when the user
+//!   pressed master-ack. They stay hidden while they keep firing; an
+//!   ack is dropped once its alert resolves, so a recurrence shows.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -26,11 +27,10 @@ pub struct ColdWindowState {
     /// Stays sticky across ticks (re-firing a warning needs an
     /// alert-history clear from the policy side).
     pub acked_warnings: HashSet<String>,
-    /// Snapshot version at which the user last pressed master-ack.
-    /// Non-warning alerts at or below this version are filtered out
-    /// of the visible list (auto-clear on next tick if the
-    /// underlying condition has resolved).
-    pub master_ack_version: u64,
+    /// Fingerprints of non-warning alerts hidden by master-ack. A
+    /// fingerprint is dropped when a snapshot no longer carries it as
+    /// a non-warning alert, so the alert shows again if it recurs.
+    pub acked_non_warnings: HashSet<String>,
     /// Whether to ring the terminal bell when a new WARNING fires.
     /// Maps to the `--no-bell` CLI flag.
     pub bell_enabled: bool,
@@ -47,7 +47,7 @@ impl ColdWindowState {
         Self {
             current: None,
             acked_warnings: HashSet::new(),
-            master_ack_version: 0,
+            acked_non_warnings: HashSet::new(),
             bell_enabled: true,
             rung_warnings: HashSet::new(),
         }
@@ -60,33 +60,57 @@ impl ColdWindowState {
     /// gate is applied here, so a `true` return means ring
     /// unconditionally; the caller does not re-check the flag.
     pub fn ingest(&mut self, snapshot: Arc<WindowSnapshot>) -> bool {
+        // A late, older snapshot must not replace a newer view.
+        if self
+            .current
+            .as_ref()
+            .is_some_and(|current| snapshot.version < current.version)
+        {
+            return false;
+        }
         let warnings: HashSet<String> = snapshot
             .alerts
             .iter()
             .filter(|alert| matches!(alert.severity, Severity::Warning))
             .map(|alert| alert.fingerprint.clone())
             .collect();
+        let non_warnings: HashSet<&str> = snapshot
+            .alerts
+            .iter()
+            .filter(|alert| !matches!(alert.severity, Severity::Warning))
+            .map(|alert| alert.fingerprint.as_str())
+            .collect();
+        self.acked_non_warnings
+            .retain(|fingerprint| non_warnings.contains(fingerprint.as_str()));
         let new_warning = warnings.iter().any(|fingerprint| {
             !self.acked_warnings.contains(fingerprint) && !self.rung_warnings.contains(fingerprint)
         });
+        // An ack covers one firing: once the warning is gone, forget the
+        // ack so a later re-fire shows and rings again.
+        self.acked_warnings
+            .retain(|fingerprint| warnings.contains(fingerprint));
         self.rung_warnings = warnings;
         self.current = Some(snapshot);
         new_warning && self.bell_enabled
     }
 
     /// Clear all visible CAUTION/ADVISORY/STATUS alerts (master-ack).
-    /// WARNING-tier alerts remain. Returns the number cleared.
+    /// WARNING-tier alerts remain. Returns how many were newly hidden.
     pub fn master_ack(&mut self) -> usize {
         let snap = match self.current.as_deref() {
             Some(s) => s,
             None => return 0,
         };
-        let cleared = snap
+        let mut cleared = 0;
+        for alert in snap
             .alerts
             .iter()
             .filter(|a| !matches!(a.severity, Severity::Warning))
-            .count();
-        self.master_ack_version = snap.version;
+        {
+            if self.acked_non_warnings.insert(alert.fingerprint.clone()) {
+                cleared += 1;
+            }
+        }
         cleared
     }
 
@@ -115,7 +139,7 @@ impl ColdWindowState {
             .iter()
             .filter(|a| match a.severity {
                 Severity::Warning => !self.acked_warnings.contains(&a.fingerprint),
-                _ => snap.version > self.master_ack_version,
+                _ => !self.acked_non_warnings.contains(&a.fingerprint),
             })
             .collect();
         visible.sort_by(|a, b| {
@@ -387,17 +411,74 @@ mod tests {
     }
 
     #[test]
-    fn master_ack_carries_until_next_tick_with_higher_version() {
+    fn master_acked_alert_stays_hidden_while_it_keeps_firing() {
         let mut s = ColdWindowState::new();
-        let snap1 = snapshot(1, vec![alert("c1", Severity::Caution, 100)]);
-        s.ingest(snap1);
+        s.ingest(snapshot(1, vec![alert("c1", Severity::Caution, 100)]));
         s.master_ack();
         assert!(s.visible_alerts().is_empty());
-        // Next tick (version 2), caution still present, but if it
-        // re-fires (a new alert object), version > master_ack_version
-        // means it becomes visible again.
-        let snap2 = snapshot(2, vec![alert("c1", Severity::Caution, 200)]);
-        s.ingest(snap2);
-        assert_eq!(s.visible_alerts().len(), 1);
+        s.ingest(snapshot(2, vec![alert("c1", Severity::Caution, 100)]));
+        s.ingest(snapshot(3, vec![alert("c1", Severity::Caution, 100)]));
+        assert!(
+            s.visible_alerts().is_empty(),
+            "a standing acked alert stays hidden on later ticks"
+        );
+    }
+
+    #[test]
+    fn master_ack_does_not_hide_an_alert_that_fires_after_it() {
+        let mut s = ColdWindowState::new();
+        s.ingest(snapshot(1, vec![alert("c1", Severity::Caution, 100)]));
+        s.master_ack();
+        s.ingest(snapshot(
+            2,
+            vec![
+                alert("c1", Severity::Caution, 100),
+                alert("a2", Severity::Advisory, 200),
+            ],
+        ));
+        let visible = s.visible_alerts();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].fingerprint, "a2");
+    }
+
+    #[test]
+    fn master_acked_alert_shows_again_when_it_recurs_after_resolving() {
+        let mut s = ColdWindowState::new();
+        s.ingest(snapshot(1, vec![alert("c1", Severity::Caution, 100)]));
+        s.master_ack();
+        s.ingest(snapshot(2, vec![]));
+        s.ingest(snapshot(3, vec![alert("c1", Severity::Caution, 300)]));
+        assert_eq!(
+            s.visible_alerts().len(),
+            1,
+            "the ack was pruned when the alert resolved"
+        );
+    }
+
+    fn snap_with(version: u64, warnings: &[&str]) -> Arc<WindowSnapshot> {
+        snapshot(
+            version,
+            warnings
+                .iter()
+                .map(|fp| alert(fp, Severity::Warning, version))
+                .collect(),
+        )
+    }
+    #[test]
+    fn acked_warning_that_resolves_rings_again_when_it_refires() {
+        let mut state = ColdWindowState::new();
+        state.ingest(snap_with(1, &["w"]));
+        state.ack_warning("w");
+        state.ingest(snap_with(2, &[]));
+        assert!(state.ingest(snap_with(3, &["w"])), "re-fired warning rings");
+        assert_eq!(state.visible_alerts().len(), 1);
+    }
+
+    #[test]
+    fn an_older_snapshot_is_ignored() {
+        let mut state = ColdWindowState::new();
+        state.ingest(snap_with(5, &["w"]));
+        state.ingest(snap_with(4, &[]));
+        assert_eq!(state.current.as_ref().unwrap().version, 5);
     }
 }

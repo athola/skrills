@@ -47,9 +47,12 @@ current. The common jobs:
 
 **Make your Claude skills work everywhere.** Codex and Copilot are
 strict about frontmatter, and Cursor uses its own rule format. Detect and
-fix the incompatibilities, then push to the other CLIs:
+fix the incompatibilities, then push to the other CLIs. `validate` and
+`analyze` read `~/.claude` only when `SKRILLS_INCLUDE_CLAUDE=1` is set
+(or pass `--skill-dir`); `sync-all` always reads it:
 
 ```bash
+export SKRILLS_INCLUDE_CLAUDE=1
 skrills validate --target both --autofix   # fix missing/invalid frontmatter and body
 skrills sync-all                            # mirror everything to all four CLIs
 ```
@@ -106,8 +109,8 @@ what the adapter reads or writes today:
 | Asset | Claude Code | Codex CLI | Copilot CLI | Cursor |
 |-------|:-----------:|:---------:|:-----------:|:------:|
 | Skills | Y | Y | Y | Y |
-| Commands | Y | Y | -- | Y |
-| Agents | Y | -- | Y | Y |
+| Commands | Y | Y | Y | Y |
+| Agents | Y | Y | Y | Y |
 | MCP Servers | Y | Y | Y | Y |
 | Hooks | Y | -- | -- | Y |
 | Instructions / Rules | Y | -- | Y | Y |
@@ -115,8 +118,12 @@ what the adapter reads or writes today:
 | Plugin Assets | Y | -- | -- | Y |
 
 A dash means that asset doesn't sync to that CLI, either because the CLI
-has no equivalent (Copilot CLI has no slash commands) or because the
-mapping isn't built yet (Cursor preferences). Plugin assets flow one way,
+has no equivalent (Codex and Copilot have no hooks) or because the
+mapping isn't built yet (Cursor preferences). Copilot gets commands as
+`.prompt.md` prompt files. Codex has no agent directory, so agents go one
+way, into `~/.agents/skills/agent-<name>`. Cursor already runs the hooks
+in `~/.claude/settings.json`, so a Claude-to-Cursor sync skips them
+rather than run them twice. Plugin assets flow one way,
 from Claude Code to Cursor: the whole plugin tree is mirrored into
 Cursor's `plugins/local/`, carrying skill bodies and runtime scripts, and
 stale entries are pruned automatically. A sync in the other direction
@@ -128,7 +135,7 @@ reports plugin assets as skipped. See the
 Validate skills on every pull request with the reusable GitHub Action:
 
 ```yaml
-- uses: athola/skrills/.github/actions/validate-skills@v0.8.2
+- uses: athola/skrills/.github/actions/validate-skills@v0.9.0
   with:
     targets: all
     strict: true
@@ -179,10 +186,10 @@ See [security docs](docs/security.md) for TLS setup and the
 ## Contributing
 
 ```bash
-make lint test --quiet
+make fmt precommit   # every check the pre-commit hook runs
 ```
 
-Builds on stable Rust. See the
+Builds on Rust 1.89 or later; the test suite needs 1.93.1 or later. See the
 [development guide](book/src/development.md) and
 [process guidelines](docs/process-guidelines.md). Update docs and tests
 with code. Report bugs with your OS, `skrills --version`, and logs

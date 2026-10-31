@@ -23,8 +23,11 @@ impl HnAlgoliaClient {
         }
     }
 
-    /// Search HN stories and comments.
+    /// Search HN stories (`tags=story`; comments are not searched).
     pub async fn search(&self, query: &str, limit: usize) -> TomeResult<Vec<Discussion>> {
+        if super::search_limit(query, limit, 100).is_none() {
+            return Ok(Vec::new());
+        }
         let resp = self.http.execute(self.request(query, limit)?).await?;
 
         let resp = super::ensure_success("hn_algolia", resp, "")?;
@@ -158,5 +161,13 @@ mod tests {
         assert!(d.points.is_none());
         assert!(d.comment_count.is_none());
         assert!(d.created_at.is_none());
+    }
+
+    #[test]
+    fn search_with_zero_limit_or_blank_query_returns_empty_without_a_request() {
+        use super::super::tests::poll_ready;
+        let client = HnAlgoliaClient::new();
+        assert!(poll_ready(client.search("rust", 0)).unwrap().is_empty());
+        assert!(poll_ready(client.search("   ", 10)).unwrap().is_empty());
     }
 }

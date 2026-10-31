@@ -28,7 +28,17 @@ pub(super) fn collect_commands_from_dir(
         return Ok(());
     }
 
-    for entry in WalkDir::new(dir).min_depth(1).max_depth(8) {
+    // Files before subdirectories, then by name: `commands/commit.md` wins
+    // over `commands/git/commit.md`, and the winner never depends on readdir
+    // order.
+    for entry in WalkDir::new(dir)
+        .min_depth(1)
+        .max_depth(8)
+        .follow_links(false)
+        .sort_by(|a, b| {
+            (a.file_type().is_dir(), a.file_name()).cmp(&(b.file_type().is_dir(), b.file_name()))
+        })
+    {
         let entry = match entry {
             Ok(entry) => entry,
             Err(e) => {
@@ -38,7 +48,9 @@ pub(super) fn collect_commands_from_dir(
         };
         let path = entry.path();
 
-        if !path.is_file() {
+        // `file_type` does not follow links: a linked command could be any
+        // file on disk, and it would be copied into every other tool.
+        if !entry.file_type().is_file() || is_hidden_path(path.strip_prefix(dir).unwrap_or(path)) {
             continue;
         }
         match path.extension() {
@@ -59,6 +71,11 @@ pub(super) fn collect_commands_from_dir(
             });
 
         if !seen.insert(name.clone()) {
+            tracing::warn!(
+                command = %name,
+                path = %path.display(),
+                "Command shares its name with one read earlier; skipping this one"
+            );
             continue;
         }
 

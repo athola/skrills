@@ -202,7 +202,7 @@ impl ValidationCache {
     /// Useful for serving stale cached data when offline and content has changed.
     pub fn get_latest_for_path(&self, skill_path: &str) -> Result<Option<CachedValidation>> {
         let mut stmt = self.conn.prepare(
-            "SELECT skill_path, content_hash, result_json, cached_at FROM validation_cache WHERE skill_path = ?1 ORDER BY cached_at DESC LIMIT 1",
+            "SELECT skill_path, content_hash, result_json, cached_at FROM validation_cache WHERE skill_path = ?1 ORDER BY cached_at DESC, rowid DESC LIMIT 1",
         )?;
 
         let result = stmt.query_row(rusqlite::params![skill_path], |row| {
@@ -517,5 +517,21 @@ mod tests {
             assert!(result.is_some());
             assert_eq!(result.unwrap().result_json, r#"{"ok": true}"#);
         }
+    }
+
+    /// `cached_at` has one-second resolution; of two writes in the same
+    /// second, the later one is the latest.
+    #[test]
+    fn latest_for_path_prefers_the_later_write_within_one_second() {
+        let cache = ValidationCache::in_memory().unwrap();
+        for i in 0..20 {
+            cache
+                .store_result("/s/SKILL.md", &format!("hash{i}"), &format!("r{i}"))
+                .unwrap();
+        }
+
+        let latest = cache.get_latest_for_path("/s/SKILL.md").unwrap().unwrap();
+
+        assert_eq!(latest.content_hash, "hash19");
     }
 }

@@ -89,7 +89,7 @@ impl CursorSyncTestSetup {
         )
         .unwrap();
 
-        // MCP config, Claude reads from settings.json
+        // MCP config: Claude keeps user-scope servers in ~/.claude.json
         let settings = serde_json::json!({
             "mcpServers": {
                 "skrills": {
@@ -100,7 +100,7 @@ impl CursorSyncTestSetup {
             }
         });
         fs::write(
-            root.join("settings.json"),
+            root.join(".claude.json"),
             serde_json::to_string_pretty(&settings).unwrap(),
         )
         .unwrap();
@@ -189,7 +189,7 @@ impl CursorSyncTestSetup {
 // Claude → Cursor sync tests
 
 #[test]
-fn claude_to_cursor_syncs_skills_with_frontmatter_stripping() {
+fn claude_to_cursor_syncs_skills_with_cursor_frontmatter() {
     let setup = CursorSyncTestSetup::new().unwrap();
     setup.setup_claude_config();
 
@@ -212,11 +212,15 @@ fn claude_to_cursor_syncs_skills_with_frontmatter_stripping() {
     assert!(report.success);
     assert!(report.skills.written >= 2);
 
-    // Verify frontmatter was stripped
+    // Cursor keeps only the `name` and `description` it loads skills by
     let skill_path = setup.cursor_dir.path().join("skills/code-review/SKILL.md");
     assert!(skill_path.exists(), "Skill directory should be created");
     let content = fs::read_to_string(&skill_path).unwrap();
-    assert!(!content.contains("---"), "Frontmatter should be stripped");
+    assert!(
+        content
+            .starts_with("---\nname: code-review\ndescription: \"Reviews code thoroughly\"\n---\n"),
+        "Cursor frontmatter missing:\n{content}"
+    );
     assert!(
         content.contains("# Code Review"),
         "Body should be preserved"
@@ -667,7 +671,7 @@ fn dry_run_does_not_write_files() {
 
 #[test]
 fn create_adapter_factory_works() {
-    use skrills_sync::create_adapter;
+    use skrills_sync::{create_adapter, Platform};
 
     // The factory resolves real config roots from HOME; point HOME at a
     // temp dir so the test neither depends on nor touches the user's.
@@ -675,28 +679,20 @@ fn create_adapter_factory_works() {
     let fixture = skrills_test_utils::TestFixture::new().unwrap();
     let _home = fixture.home_guard();
 
-    // Valid platforms
-    assert!(create_adapter("cursor").is_ok());
-    assert_eq!(create_adapter("cursor").unwrap().name(), "cursor");
-    assert!(create_adapter("cursor")
-        .unwrap()
-        .config_root()
-        .starts_with(fixture.home_path()));
-
-    // Invalid platform
-    assert!(create_adapter("vscode").is_err());
+    let cursor = create_adapter(Platform::Cursor).unwrap();
+    assert_eq!(cursor.name(), "cursor");
+    assert!(cursor.config_root().starts_with(fixture.home_path()));
 }
 
 #[test]
-fn is_valid_platform_recognizes_all() {
-    use skrills_sync::is_valid_platform;
+fn platform_names_parse_and_unknown_ones_are_refused() {
+    use skrills_sync::Platform;
 
-    assert!(is_valid_platform("claude"));
-    assert!(is_valid_platform("codex"));
-    assert!(is_valid_platform("copilot"));
-    assert!(is_valid_platform("cursor"));
-    assert!(!is_valid_platform("vscode"));
-    assert!(!is_valid_platform(""));
+    for name in ["claude", "codex", "copilot", "cursor"] {
+        assert_eq!(name.parse::<Platform>().unwrap().as_str(), name);
+    }
+    assert!("vscode".parse::<Platform>().is_err());
+    assert!("".parse::<Platform>().is_err());
 }
 
 // ========================================================================

@@ -474,3 +474,100 @@ fn same_value(a: &Value, b: &Value) -> bool {
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stdio(name: &str, command: &str) -> McpServer {
+        McpServer {
+            name: name.to_string(),
+            transport: McpTransport::Stdio,
+            command: command.to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            url: None,
+            headers: None,
+            enabled: true,
+            allowed_tools: vec![],
+            disabled_tools: vec![],
+        }
+    }
+
+    fn merged(content: &str, servers: &[McpServer]) -> (DocumentMut, WriteReport) {
+        let mut doc: DocumentMut = content.parse().unwrap();
+        let servers = servers
+            .iter()
+            .map(|s| (s.name.clone(), s.clone()))
+            .collect::<HashMap<_, _>>();
+        let report = merge_servers(&mut doc, &servers).unwrap();
+        let reparsed: DocumentMut = doc.to_string().parse().unwrap_or_else(|e| {
+            panic!("merge produced invalid TOML ({e}):\n{doc}");
+        });
+        (reparsed, report)
+    }
+
+    /// An inline-table server is updated where it is, keeping keys sync does
+    /// not manage, instead of gaining a second definition.
+    #[test]
+    fn merge_updates_an_inline_table_server_in_place() {
+        let (doc, report) = merged(
+            "mcp_servers = { a = { command = \"/old\", startup_timeout_sec = 9 } }\n",
+            &[stdio("a", "/new")],
+        );
+        assert_eq!(report.written, 1);
+        assert_eq!(doc["mcp_servers"]["a"]["command"].as_str(), Some("/new"));
+        assert_eq!(
+            doc["mcp_servers"]["a"]["startup_timeout_sec"].as_integer(),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn merge_updates_a_dotted_key_server_in_place() {
+        let (doc, report) = merged(
+            "mcp_servers.a.command = \"/old\"\nmodel = \"o3\"\n",
+            &[stdio("a", "/new")],
+        );
+        assert_eq!(report.written, 1);
+        assert_eq!(doc["mcp_servers"]["a"]["command"].as_str(), Some("/new"));
+        assert_eq!(doc["model"].as_str(), Some("o3"));
+    }
+
+    /// Servers only the file has survive a merge.
+    #[test]
+    fn merge_keeps_servers_the_source_does_not_have() {
+        let (doc, _) = merged(
+            "[mcp_servers.mine]\ncommand = \"/mine\"\n",
+            &[stdio("synced", "/synced")],
+        );
+        assert_eq!(
+            doc["mcp_servers"]["mine"]["command"].as_str(),
+            Some("/mine")
+        );
+        assert_eq!(
+            doc["mcp_servers"]["synced"]["command"].as_str(),
+            Some("/synced")
+        );
+    }
+
+    #[test]
+    fn merge_skips_an_http_server_without_a_url() {
+        let mut server = stdio("remote", "");
+        server.transport = McpTransport::Http;
+        let (doc, report) = merged("", &[server]);
+        assert_eq!(report.written, 0);
+        assert!(doc.get("mcp_servers").is_none());
+        assert!(matches!(
+            report.skipped.as_slice(),
+            [SkipReason::AgentSpecificFeature { .. }]
+        ));
+    }
+
+    #[test]
+    fn merging_the_same_server_twice_reports_it_unchanged() {
+        let (doc, _) = merged("", &[stdio("a", "/a")]);
+        let (_, report) = merged(&doc.to_string(), &[stdio("a", "/a")]);
+        assert_eq!(report.written, 0, "{report:?}");
+    }
+}

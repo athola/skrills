@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::OutputFormat;
 
-use super::profiling::{load_usage_analytics, now_secs, usage_counts};
+use super::profiling::{load_usage_analytics, now_secs, period_label, rfc3339, usage_counts};
 use super::{UsageReportResult, UsageStats};
 
 /// Handle the skill-usage-report command.
@@ -16,8 +16,10 @@ pub(crate) fn handle_skill_usage_report_command(
     output: Option<PathBuf>,
     skill_dirs: Vec<PathBuf>,
 ) -> Result<()> {
-    let generated_at = now_secs().to_string();
-    let dirs = skrills_server::discovery::merge_extra_dirs(&skill_dirs);
+    // RFC 3339 rather than raw epoch seconds, which "Generated:" printed.
+    let now = now_secs();
+    let generated_at = rfc3339(now).unwrap_or_else(|| now.to_string());
+    let dirs = skrills_discovery::merge_extra_dirs(&skill_dirs);
 
     let report_text = match load_usage_analytics()? {
         None => {
@@ -34,11 +36,12 @@ pub(crate) fn handle_skill_usage_report_command(
                 format!(
                     "Skill Usage Report\n\
                      ═══════════════════\n\
-                     Period: {} days\n\
+                     Period: {}\n\
                      Generated: {}\n\n\
                      No usage data available.\n\
                      Run `skrills recommend-skills-smart --auto-persist` to build analytics.",
-                    period, generated_at
+                    period_label(period),
+                    generated_at
                 )
             }
         }
@@ -99,7 +102,7 @@ fn render_text(result: &UsageReportResult) -> String {
     let mut text = String::new();
     text.push_str("Skill Usage Report\n");
     text.push_str("═══════════════════════════════════════════════════════════\n\n");
-    text.push_str(&format!("Period: {} days\n", result.period_days));
+    text.push_str(&format!("Period: {}\n", period_label(result.period_days)));
     text.push_str(&format!("Generated: {}\n", result.generated_at));
     text.push_str(&format!(
         "Total Invocations: {}\n",
@@ -142,6 +145,21 @@ mod tests {
         let result = usage_report(&[], 7, "t".into());
         assert_eq!(result.total_invocations, 0);
         assert!(result.skills.is_empty());
+    }
+
+    /// The cache holds all-time counts, so the report must not present them
+    /// as counts for the last N days.
+    #[test]
+    fn report_text_labels_counts_as_all_time_not_per_period() {
+        let result = usage_report(&[("review".to_string(), 500)], 30, "t".into());
+
+        let text = render_text(&result);
+
+        assert!(!text.contains("Period: 30 days"), "{text}");
+        assert!(
+            text.contains("all-time counts, skills last used within 30 days"),
+            "{text}"
+        );
     }
 
     /// SB-42: `--skill-dir` was accepted and ignored.

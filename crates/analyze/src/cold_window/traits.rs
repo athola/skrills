@@ -70,6 +70,13 @@ pub trait AlertPolicy: Send + Sync {
         curr: &WindowSnapshot,
         history: &mut AlertHistory,
     ) -> Vec<Alert>;
+
+    /// The hard token ceiling this policy alerts on, if it has one. The
+    /// engine engages its kill switch at the same ceiling, so the two
+    /// cannot disagree.
+    fn budget_ceiling(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Rank a list of hints into a `ScoredHint` vector.
@@ -121,9 +128,10 @@ pub enum DiffField {
 /// always-alert on skill/plugin add/remove, never-alert on
 /// timestamps.
 pub trait SnapshotDiff: Send + Sync {
-    /// Return the alertable fields between `prev` and `curr`. An
-    /// empty vector means nothing changed enough to warrant alert
-    /// evaluation this tick.
+    /// Return the alertable fields between `prev` and `curr`; an empty
+    /// vector means nothing changed enough to report. The engine does
+    /// not gate alert evaluation on it (see
+    /// `ColdWindowEngine::diff_snapshots`).
     fn is_alertable(&self, prev: &WindowSnapshot, curr: &WindowSnapshot) -> Vec<DiffField>;
 }
 

@@ -1,6 +1,6 @@
 # skrills-state
 
-Persists runtime options, pins, and other configuration used by the skrills MCP server. This crate provides a small API for loading and saving state to disk.
+Reads the environment variables, skills manifest and runtime-override paths the skrills MCP server is configured with, and keeps a SQLite cache of validation results.
 
 ## Project resources
 - Source & issues: https://github.com/athola/skrills

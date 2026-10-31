@@ -118,6 +118,10 @@ pub fn analyze_project_with_options(
     root: &Path,
     options: AnalyzeProjectOptions,
 ) -> Result<ProjectProfile> {
+    // A typo'd path would otherwise look like an empty project.
+    if !root.is_dir() {
+        anyhow::bail!("project directory {} does not exist", root.display());
+    }
     let mut profile = ProjectProfile {
         root: root.to_path_buf(),
         ..Default::default()
@@ -131,7 +135,12 @@ pub fn analyze_project_with_options(
     {
         // Sort by file count and take top N
         let mut sorted: Vec<_> = all_languages.into_iter().collect();
-        sorted.sort_by_key(|b| std::cmp::Reverse(b.1.file_count));
+        // Ties are broken by name, so the same languages survive every run.
+        sorted.sort_by(|a, b| {
+            b.1.file_count
+                .cmp(&a.1.file_count)
+                .then_with(|| a.0.cmp(&b.0))
+        });
         sorted.truncate(options.max_languages);
         sorted.into_iter().collect()
     } else {
@@ -206,18 +215,23 @@ pub fn detect_languages(root: &Path) -> Result<HashMap<String, LanguageInfo>> {
         }
     }
 
-    // Find the language with the most files
-    let max_count = counts.values().map(|(c, _)| *c).max().unwrap_or(0);
+    // The primary language has the most files; a tie goes to the first by
+    // name, so there is exactly one.
+    let primary = counts
+        .iter()
+        .max_by(|a, b| a.1 .0.cmp(&b.1 .0).then_with(|| b.0.cmp(a.0)))
+        .map(|(name, _)| name.clone());
 
     Ok(counts
         .into_iter()
         .map(|(name, (count, exts))| {
+            let is_primary = primary.as_deref() == Some(name.as_str());
             (
                 name,
                 LanguageInfo {
                     file_count: count,
                     extensions: exts.into_iter().collect(),
-                    primary: count == max_count && max_count > 0,
+                    primary: is_primary,
                 },
             )
         })
@@ -254,13 +268,16 @@ fn parse_all_dependencies(root: &Path) -> Result<HashMap<String, Vec<DependencyI
         }
     }
 
-    // Python: pyproject.toml
+    // Python: pyproject.toml. A pyproject with no dependency tables (a
+    // setuptools project that keeps them in requirements.txt) does not hide
+    // requirements.txt below.
     let pyproject_path = root.join("pyproject.toml");
     if pyproject_path.exists() {
         match parse_pyproject_toml(&pyproject_path) {
-            Ok(py_deps) => {
+            Ok(py_deps) if !py_deps.is_empty() => {
                 deps.insert("python".to_string(), py_deps);
             }
+            Ok(_) => {}
             Err(e) => {
                 tracing::debug!(error = %e, path = %pyproject_path.display(), "Could not parse pyproject.toml");
             }
@@ -320,6 +337,12 @@ fn parse_requirements_txt(path: &Path) -> Result<Vec<DependencyInfo>> {
 /// `expression-parser` and `echo-cli` do not. Companion packages that imply
 /// the framework are listed explicitly (see
 /// `test_detect_frameworks_no_duplicates`).
+/// Frameworks whose presence makes a project a service.
+const SERVICE_FRAMEWORKS: &[&str] = &[
+    "Express", "Fastify", "Koa", "NestJS", "Next.js", "Nuxt", "FastAPI", "Django", "Flask",
+    "Actix", "Axum", "Rocket", "Gin", "Echo", "Fiber",
+];
+
 const KNOWN_FRAMEWORKS: &[(&str, &str)] = &[
     // JavaScript/TypeScript
     ("react", "React"),
@@ -389,19 +412,19 @@ pub fn detect_frameworks(deps: &HashMap<String, Vec<DependencyInfo>>) -> Vec<Str
 
 /// Parse README file for description and keywords.
 fn parse_readme(root: &Path) -> Result<(Option<String>, Vec<String>)> {
-    // Use case-insensitive matching to avoid duplicating entries
+    // In order of preference, matched case-insensitively. The pattern order,
+    // not the directory listing order, decides which README is read.
     let readme_patterns = ["readme.md", "readme", "readme.rst"];
 
-    // Read directory entries once and match case-insensitively
     if let Ok(entries) = fs::read_dir(root) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let file_name = entry.file_name();
-            let name_lower = file_name.to_string_lossy().to_lowercase();
-            for pattern in readme_patterns {
-                if name_lower == pattern {
-                    let content = fs::read_to_string(entry.path())?;
-                    return Ok(parse_readme_content(&content));
-                }
+        let entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+        for pattern in readme_patterns {
+            if let Some(entry) = entries
+                .iter()
+                .find(|e| e.file_name().to_string_lossy().to_lowercase() == pattern)
+            {
+                let content = fs::read_to_string(entry.path())?;
+                return Ok(parse_readme_content(&content));
             }
         }
     }
@@ -414,40 +437,45 @@ fn parse_readme(root: &Path) -> Result<(Option<String>, Vec<String>)> {
 
 /// Parse README content for description and keywords.
 fn parse_readme_content(content: &str) -> (Option<String>, Vec<String>) {
-    let mut description = None;
     let mut keywords = Vec::new();
-    let lines: Vec<&str> = content.lines().collect();
+    // Lines outside fenced code blocks: a `#` comment in a shell example is
+    // not a heading.
+    let mut in_fence = false;
+    let lines: Vec<&str> = content
+        .lines()
+        .filter(|line| {
+            if line.trim_start().starts_with("```") {
+                in_fence = !in_fence;
+                return false;
+            }
+            !in_fence
+        })
+        .collect();
 
-    // Extract first paragraph after title as description
-    let mut in_description = false;
+    // The description is the first paragraph that is not a heading, a badge
+    // or a link line. It ends at a blank line or the next heading.
     let mut desc_lines = Vec::new();
-
     for line in &lines {
         // Skip badges and images
         if line.contains("![") || line.contains("](http") {
             continue;
         }
-
-        if line.starts_with('#') && description.is_none() {
-            in_description = true;
-            continue;
-        }
-
-        if in_description {
-            if line.is_empty() && !desc_lines.is_empty() {
-                description = Some(desc_lines.join(" ").trim().to_string());
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') || trimmed.is_empty() {
+            if !desc_lines.is_empty() {
                 break;
             }
-            if !line.starts_with('#') && !line.is_empty() && !line.starts_with('[') {
-                desc_lines.push(line.trim());
-            }
+            continue;
+        }
+        if !trimmed.starts_with('[') {
+            desc_lines.push(trimmed);
         }
     }
-
-    // If we didn't find a description, use first non-empty paragraph
-    if description.is_none() && !desc_lines.is_empty() {
-        description = Some(desc_lines.join(" ").trim().to_string());
-    }
+    let mut description = if desc_lines.is_empty() {
+        None
+    } else {
+        Some(desc_lines.join(" ").trim().to_string())
+    };
 
     // Truncate description if too long
     if let Some(ref mut desc) = description {
@@ -462,7 +490,7 @@ fn parse_readme_content(content: &str) -> (Option<String>, Vec<String>) {
             let heading = line.trim_start_matches('#').trim().to_lowercase();
             let words: Vec<_> = heading
                 .split_whitespace()
-                .filter(|w| w.len() >= 3)
+                .filter(|w| w.chars().count() >= 3)
                 .map(|s| s.to_string())
                 .collect();
             keywords.extend(words);
@@ -497,23 +525,17 @@ fn classify_project_type(root: &Path, profile: &ProjectProfile) -> ProjectType {
         return ProjectType::Plugin;
     }
 
-    // Check for service markers
-    if root.join("Dockerfile").exists()
-        || root.join("docker-compose.yml").exists()
-        || root.join("docker-compose.yaml").exists()
-        || profile.frameworks.iter().any(|f| {
-            f == "Express"
-                || f == "FastAPI"
-                || f == "Django"
-                || f == "Actix"
-                || f == "Axum"
-                || f == "Gin"
-        })
+    // A web framework makes a service.
+    if profile
+        .frameworks
+        .iter()
+        .any(|f| SERVICE_FRAMEWORKS.contains(&f.as_str()))
     {
         return ProjectType::Service;
     }
 
-    // Check for library markers
+    // Check for library markers. They come before the container files: a
+    // library that ships a Dockerfile for its CI is still a library.
     if root.join("src/lib.rs").exists()
         || (profile.dependencies.contains_key("rust")
             && fs::read_to_string(root.join("Cargo.toml"))
@@ -521,6 +543,14 @@ fn classify_project_type(root: &Path, profile: &ProjectProfile) -> ProjectType {
                 .unwrap_or(false))
     {
         return ProjectType::Library;
+    }
+
+    // Container files mark a service.
+    if root.join("Dockerfile").exists()
+        || root.join("docker-compose.yml").exists()
+        || root.join("docker-compose.yaml").exists()
+    {
+        return ProjectType::Service;
     }
 
     // Check for application markers
@@ -554,6 +584,11 @@ mod tests {
         let status = Command::new("git")
             .args(args)
             .current_dir(root)
+            // A git hook's GIT_DIR/GIT_INDEX_FILE would point this at the
+            // enclosing repository instead of the temp one.
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_WORK_TREE")
             .env("GIT_AUTHOR_NAME", "Test User")
             .env("GIT_AUTHOR_EMAIL", "test@example.com")
             .env("GIT_COMMITTER_NAME", "Test User")
@@ -1799,5 +1834,114 @@ This is the real description.
                 );
             }
         }
+    }
+
+    #[test]
+    fn requirements_txt_is_read_when_pyproject_lists_no_dependencies() {
+        let tmp = tempdir().unwrap();
+        fs::write(
+            tmp.path().join("pyproject.toml"),
+            "[build-system]\nrequires = [\"setuptools\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("requirements.txt"),
+            "flask==3.0\nrequests\n",
+        )
+        .unwrap();
+        let deps = parse_all_dependencies(tmp.path()).unwrap();
+        let names: Vec<_> = deps["python"].iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["flask", "requests"]);
+    }
+
+    #[test]
+    fn readme_without_a_leading_heading_still_has_a_description() {
+        let (desc, _) = parse_readme_content("A tool that does things.\n\n## Usage\n\nRun it.\n");
+        assert_eq!(desc.as_deref(), Some("A tool that does things."));
+    }
+
+    #[test]
+    fn readme_description_stops_at_the_next_heading() {
+        let (desc, _) = parse_readme_content("# T\n\nFirst para.\n## Usage\nRun it.\n");
+        assert_eq!(desc.as_deref(), Some("First para."));
+    }
+
+    #[test]
+    fn readme_headings_inside_code_fences_are_ignored() {
+        let content = "# Title\n\nIntro text.\n\n```sh\n# comment in code\n```\n";
+        let (_, keywords) = parse_readme_content(content);
+        assert!(!keywords.contains(&"comment".to_string()), "{keywords:?}");
+        let (desc, _) = parse_readme_content("```\n# not a heading\n```\n\nReal text.\n");
+        assert_eq!(desc.as_deref(), Some("Real text."));
+    }
+
+    #[test]
+    fn readme_md_is_preferred_over_other_readme_names() {
+        let tmp = tempdir().unwrap();
+        fs::write(tmp.path().join("README"), "# A\n\nplain readme\n").unwrap();
+        fs::write(tmp.path().join("README.rst"), "# A\n\nrst readme\n").unwrap();
+        fs::write(tmp.path().join("README.md"), "# A\n\nmarkdown readme\n").unwrap();
+        let (desc, _) = parse_readme(tmp.path()).unwrap();
+        assert_eq!(desc.as_deref(), Some("markdown readme"));
+    }
+
+    #[test]
+    fn analyze_project_fails_for_a_missing_directory() {
+        let tmp = tempdir().unwrap();
+        assert!(analyze_project(&tmp.path().join("typo")).is_err());
+    }
+
+    #[test]
+    fn flask_app_without_a_dockerfile_is_a_service() {
+        let tmp = tempdir().unwrap();
+        let profile = ProjectProfile {
+            frameworks: vec!["Flask".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_project_type(tmp.path(), &profile),
+            ProjectType::Service
+        );
+    }
+
+    #[test]
+    fn library_with_a_dockerfile_is_a_library() {
+        let tmp = tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("src")).unwrap();
+        fs::write(tmp.path().join("src/lib.rs"), "").unwrap();
+        fs::write(tmp.path().join("Dockerfile"), "FROM rust").unwrap();
+        let profile = ProjectProfile::default();
+        assert_eq!(
+            classify_project_type(tmp.path(), &profile),
+            ProjectType::Library
+        );
+    }
+
+    #[test]
+    fn language_ties_keep_one_primary_and_truncate_by_name() {
+        let tmp = tempdir().unwrap();
+        for file in ["a.rs", "b.py", "c.go", "d.js"] {
+            fs::write(tmp.path().join(file), "").unwrap();
+        }
+        let languages = detect_languages(tmp.path()).unwrap();
+        let primaries: Vec<_> = languages
+            .iter()
+            .filter(|(_, info)| info.primary)
+            .map(|(name, _)| name.clone())
+            .collect();
+        assert_eq!(primaries.len(), 1, "{primaries:?}");
+
+        let options = AnalyzeProjectOptions {
+            include_git: false,
+            max_languages: 2,
+            ..Default::default()
+        };
+        let profile = analyze_project_with_options(tmp.path(), options).unwrap();
+        let mut kept: Vec<_> = profile.languages.keys().cloned().collect();
+        kept.sort();
+        let mut expected: Vec<String> = languages.keys().cloned().collect();
+        expected.sort();
+        expected.truncate(2);
+        assert_eq!(kept, expected);
     }
 }

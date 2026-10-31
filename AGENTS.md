@@ -58,7 +58,7 @@ Every commit must:
 Run this before committing:
 
 ```bash
-make fmt lint test --quiet build
+make fmt precommit
 ```
 
 ### Effective Prompting
@@ -224,8 +224,8 @@ Excessive output floods the context window. Avoid commands that generate large a
 
 ### Essential Commands
 ```bash
-# To format, lint, and test the code:
-make fmt lint test --quiet
+# To format, then run every check the pre-commit hook runs:
+make fmt precommit
 
 # To execute different test suites:
 make test-coverage --quiet
@@ -279,12 +279,21 @@ skrills doctor
 
 ### Skill Discovery
 
-Skills are automatically discovered from these locations (in priority order):
+Skills are automatically discovered from these locations (in priority order;
+a manifest `priority` list reorders them):
 
-1. **Codex skills**: `~/.codex/skills/`
+1. **Codex skills (pre-0.9.1 sync)**: `~/.codex/skills/`
 2. **Mirror skills**: `~/.codex/skills-mirror/`
-3. **Claude skills**: `~/.claude/skills/` (when `--include-claude` is enabled)
-4. **Marketplace cache**: `~/.codex/plugins/cache/`
+3. **Claude skills**: `~/.claude/skills/` (when `SKRILLS_INCLUDE_CLAUDE=1`)
+4. **Copilot skills**: `$XDG_CONFIG_HOME/copilot/skills/` (or `~/.config/copilot/skills/`), then `~/.copilot/skills/`
+5. **Cursor skills**: `~/.cursor/skills/`
+6. **Claude plugin marketplaces**: `~/.claude/plugins/marketplaces/` (when `SKRILLS_INCLUDE_CLAUDE=1` and `SKRILLS_INCLUDE_MARKETPLACE=1`)
+7. **Claude plugin cache**: `~/.claude/plugins/cache/` (when `SKRILLS_INCLUDE_CLAUDE=1`)
+8. **Shared skills**: `~/.agents/skills/` (where sync writes skills for Codex)
+
+The MCP server, the dashboard, `/api/skills` and the CLI commands that take
+`--skill-dir` all use this list; a `--skill-dir` replaces it for the CLI,
+dashboard and REST API, and adds to it for the MCP server.
 
 #### Skill Naming Caveat
 

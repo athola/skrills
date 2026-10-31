@@ -84,6 +84,25 @@ pub(crate) struct SkillCache {
     /// Set by `invalidate()`: the on-disk snapshot predates the change that
     /// caused the invalidation, so the next refresh must rescan.
     invalidated: bool,
+    /// Every copy of every skill, root by root and not de-duplicated, for
+    /// `skill-diff`; kept for one TTL and dropped by `invalidate()`.
+    every_copy: Option<(Instant, Vec<SkillMeta>)>,
+}
+
+/// Writes the snapshot through a temporary file in the same directory, which
+/// is created if missing, so a concurrent reader (another server or the CLI)
+/// never sees half-written JSON.
+fn write_snapshot(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    fs::create_dir_all(dir)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.write_all(bytes)?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -108,6 +127,7 @@ impl SkillCache {
             snapshot_path,
             dep_graph: RelationshipGraph::new(),
             invalidated: false,
+            every_copy: None,
         };
         if let Err(e) = cache.try_load_snapshot() {
             tracing::debug!(
@@ -117,6 +137,20 @@ impl SkillCache {
             );
         }
         cache
+    }
+
+    /// The per-root listing stored by [`Self::store_every_copy`], while it is
+    /// younger than the TTL.
+    pub(crate) fn every_copy(&self) -> Option<Vec<SkillMeta>> {
+        self.every_copy
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() < self.ttl)
+            .map(|(_, copies)| copies.clone())
+    }
+
+    /// Keeps a per-root listing, walked outside the lock, for one TTL.
+    pub(crate) fn store_every_copy(&mut self, copies: Vec<SkillMeta>) {
+        self.every_copy = Some((Instant::now(), copies));
     }
 
     /// The skill roots this cache scans.
@@ -234,7 +268,7 @@ impl SkillCache {
                 duplicates: self.duplicates.clone(),
             };
             if let Ok(text) = serde_json::to_string(&snap) {
-                if let Err(e) = fs::write(&path, text) {
+                if let Err(e) = write_snapshot(&path, text.as_bytes()) {
                     tracing::debug!(target: "skrills::startup", error=%e, "failed to persist snapshot");
                 }
             }
@@ -245,6 +279,7 @@ impl SkillCache {
     #[cfg(any(feature = "watch", test))]
     pub(crate) fn invalidate(&mut self) {
         self.invalidated = true;
+        self.every_copy = None;
         self.last_scan = None;
         self.skills.clear();
         self.duplicates.clear();
@@ -344,7 +379,9 @@ impl SkillCache {
         if let Some(idx) = self.uri_index.get(uri).copied() {
             return Ok(self.skills[idx].clone());
         }
-        Err(anyhow::anyhow!("skill not found"))
+        Err(crate::handler::resource_not_found(format!(
+            "skill not found: {uri}"
+        )))
     }
 
     /// Get transitive dependencies for a skill URI.
@@ -509,6 +546,34 @@ mod tests {
         let path = skill_dir.join("SKILL.md");
         fs::write(&path, "demo skill").expect("write skill");
         path
+    }
+
+    /// On a fresh home `~/.codex` does not exist, and the snapshot was never
+    /// written.
+    #[test]
+    fn snapshot_is_written_into_a_directory_that_does_not_exist_yet() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let cache_path = temp.path().join("fresh-home/.codex/skills-cache.json");
+        let _cache_env = set_env_var("SKRILLS_CACHE_PATH", cache_path.to_str());
+        let root_dir = temp.path().join("skills");
+        write_skill(&root_dir, "alpha");
+        let mut cache = SkillCache::new_with_ttl(
+            vec![SkillRoot {
+                root: root_dir,
+                source: SkillSource::Codex,
+            }],
+            Duration::from_secs(60),
+        );
+        cache.skills_with_dups().expect("scan");
+        let text = fs::read_to_string(&cache_path).expect("snapshot written");
+        serde_json::from_str::<SkillCacheSnapshot>(&text).expect("snapshot parses");
+        let leftovers: Vec<_> = fs::read_dir(cache_path.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path() != cache_path)
+            .collect();
+        assert!(leftovers.is_empty(), "temporary files left: {leftovers:?}");
     }
 
     #[test]

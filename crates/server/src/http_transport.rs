@@ -98,6 +98,14 @@ async fn auth_middleware(
     next: axum::middleware::Next,
 ) -> impl IntoResponse {
     let uri = req.uri().path();
+    // The dashboard page and its assets hold no data, and a browser cannot
+    // attach a token to a navigation. The page sends the token on every API
+    // call it makes, so only the page itself is let through.
+    if matches!(*req.method(), Method::GET | Method::HEAD)
+        && (uri == "/" || uri.starts_with("/static/"))
+    {
+        return next.run(req).await;
+    }
     let request_id = req
         .headers()
         .get(REQUEST_ID_HEADER)
@@ -107,7 +115,12 @@ async fn auth_middleware(
     // Check Authorization header
     if let Some(auth_header) = req.headers().get(header::AUTHORIZATION) {
         if let Ok(auth_str) = auth_header.to_str() {
-            if let Some(token) = auth_str.strip_prefix("Bearer ") {
+            // The scheme is case-insensitive (RFC 7235 §2.1); the token is not.
+            let bearer = auth_str
+                .split_once(' ')
+                .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+                .map(|(_, token)| token);
+            if let Some(token) = bearer {
                 // Constant-time comparison to prevent timing attacks.
                 // Both tokens are converted to bytes and compared in constant time.
                 // Note: ct_eq requires equal-length slices, so we pad the shorter
@@ -176,7 +189,7 @@ async fn auth_middleware(
 /// An authority to compare `Host` headers against: a host name with an
 /// optional port.
 #[derive(Debug, PartialEq, Eq)]
-struct HostAuthority {
+pub(crate) struct HostAuthority {
     host: String,
     port: Option<u16>,
 }
@@ -242,6 +255,18 @@ fn parse_host_allow_list(entries: &[String]) -> Result<Vec<HostAuthority>> {
         .collect()
 }
 
+/// rmcp's loopback names (localhost, 127.0.0.1, ::1) as a parsed allow-list,
+/// for routers served without operator configuration.
+pub(crate) fn loopback_host_allow_list() -> Vec<HostAuthority> {
+    // rmcp's defaults are bare authorities; the test
+    // `host_allow_list_parses_the_rmcp_defaults` pins that they all parse.
+    StreamableHttpServerConfig::default()
+        .allowed_hosts
+        .iter()
+        .filter_map(|entry| parse_host_authority(entry))
+        .collect()
+}
+
 /// Builds the MCP transport config, extending rmcp's loopback `allowed_hosts`
 /// with any the operator supplied and switching on `Origin` validation when
 /// CORS origins were named.
@@ -287,7 +312,7 @@ fn requested_authority(req: &axum::extract::Request) -> Option<HostAuthority> {
 /// REST API answering a rebound name. This applies the same allow-list to the
 /// whole router, so a page on an attacker's domain that resolves to the bind
 /// address cannot read `/api/skills` either.
-async fn host_middleware(
+pub(crate) async fn host_middleware(
     allowed: Arc<Vec<HostAuthority>>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
@@ -330,6 +355,21 @@ pub(crate) async fn csp_middleware(
     response
 }
 
+/// Methods a browser MCP client uses: POST to send, GET for the SSE stream,
+/// DELETE to end a session.
+const CORS_METHODS: [Method; 4] = [Method::GET, Method::POST, Method::DELETE, Method::OPTIONS];
+
+/// Request headers the streamable-HTTP transport reads besides the usual two.
+fn cors_request_headers() -> [header::HeaderName; 5] {
+    [
+        header::CONTENT_TYPE,
+        header::AUTHORIZATION,
+        header::HeaderName::from_static("mcp-session-id"),
+        header::HeaderName::from_static("mcp-protocol-version"),
+        header::HeaderName::from_static("last-event-id"),
+    ]
+}
+
 /// Builds CORS layer from allowed origins.
 ///
 /// Invalid origins are logged as warnings and skipped. An empty result after
@@ -360,8 +400,9 @@ fn build_cors_layer(origins: &[String], has_auth: bool) -> CorsLayer {
         // Allow any origin
         CorsLayer::new()
             .allow_origin(Any)
-            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-            .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+            .allow_methods(CORS_METHODS)
+            .allow_headers(cors_request_headers())
+            .expose_headers([header::HeaderName::from_static("mcp-session-id")])
     } else {
         // Parse origins and log any failures
         let mut valid_origins = Vec::with_capacity(origins.len());
@@ -389,8 +430,9 @@ fn build_cors_layer(origins: &[String], has_auth: bool) -> CorsLayer {
 
         CorsLayer::new()
             .allow_origin(valid_origins)
-            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-            .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+            .allow_methods(CORS_METHODS)
+            .allow_headers(cors_request_headers())
+            .expose_headers([header::HeaderName::from_static("mcp-session-id")])
     }
 }
 
@@ -443,6 +485,11 @@ fn mcp_servers_router(has_auth: bool) -> axum::Router {
     )
 }
 
+/// Live MCP sessions one HTTP server keeps. Each idles for rmcp's five-minute
+/// keep-alive, so without a bound a client looping `initialize` grows the
+/// server without limit.
+const MAX_HTTP_SESSIONS: usize = 64;
+
 /// Builds the routes and layers shared by every serve entry point.
 fn prepare_server<F>(
     service_factory: F,
@@ -452,6 +499,18 @@ fn prepare_server<F>(
 where
     F: Fn() -> Result<SkillService, std::io::Error> + Send + Sync + 'static,
 {
+    // An empty token would turn auth on and then match `Bearer ` followed by
+    // nothing, so it is refused rather than read as "no auth".
+    if security
+        .auth_token
+        .as_deref()
+        .is_some_and(|token| token.trim().is_empty())
+    {
+        return Err(anyhow!(
+            "the auth token is empty; set a non-empty token or leave it unset to disable auth"
+        ));
+    }
+
     // The effective Host allow-list is parsed once here so an entry rmcp could
     // not match becomes a startup error instead of a 403 on every request.
     let config = build_streamable_config(&security);
@@ -464,8 +523,34 @@ where
     // so the skills served, validated and synced here show up there.
     let metrics_collector = open_metrics_collector()?;
     let session_metrics = metrics_collector.clone();
-    let service_factory =
-        move || service_factory().map(|service| service.with_metrics(session_metrics.clone()));
+
+    // The first session builds the service; later ones share its skill cache
+    // and subagent service instead of rescanning every skill root.
+    let shared: parking_lot::Mutex<Option<SkillService>> = parking_lot::Mutex::new(None);
+    let sessions = session_manager.clone();
+    let service_factory = move || {
+        // A write-locked map is mid-update; admitting one more is harmless.
+        if let Ok(live) = sessions.sessions.try_read() {
+            if live.len() >= MAX_HTTP_SESSIONS {
+                tracing::warn!(
+                    target: "skrills::http",
+                    limit = MAX_HTTP_SESSIONS,
+                    "Refused a new MCP session: too many live sessions"
+                );
+                return Err(std::io::Error::other(format!(
+                    "too many MCP sessions (limit {MAX_HTTP_SESSIONS})"
+                )));
+            }
+        }
+        let mut slot = shared.lock();
+        if let Some(base) = slot.as_ref() {
+            return Ok(base.new_session());
+        }
+        let base = service_factory()?.with_metrics(session_metrics.clone());
+        let session = base.new_session();
+        *slot = Some(base);
+        Ok(session)
+    };
 
     // Create the streamable HTTP service
     let http_service = StreamableHttpService::new(service_factory, session_manager, config);
@@ -590,7 +675,7 @@ fn log_startup(addr: SocketAddr, security: &HttpSecurityConfig) {
 /// Starts the MCP server over HTTP transport with security configuration.
 ///
 /// Binds `bind_addr`, moving to one of the next nine ports when it is taken
-/// (for HTTP and HTTPS alike). Callers that need to know the port in advance,
+/// (for HTTP and HTTPS alike), unless an `allowed_hosts` entry names a port. Callers that need to know the port in advance,
 /// such as tests, should bind themselves and use [`serve_http_on_listener`].
 ///
 /// # Arguments
@@ -614,7 +699,17 @@ where
         .with_context(|| format!("invalid bind address: {bind_addr}"))?;
 
     let prepared = prepare_server(service_factory, security.clone(), skill_dirs)?;
-    let (listener, bound) = bind_with_fallback(addr).await?;
+    let (listener, bound) = if port_fallback_allowed(&security) {
+        bind_with_fallback(addr).await?
+    } else {
+        let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| {
+            format!(
+                "failed to bind to {addr}; not trying other ports because --allowed-hosts \
+                 names a port, which another port would not match"
+            )
+        })?;
+        with_bound_addr(listener)?
+    };
     log_startup(bound, &security);
     run_prepared(prepared, listener, open_browser).await
 }
@@ -666,6 +761,17 @@ fn with_bound_addr(
         .local_addr()
         .context("failed to read the bound address")?;
     Ok((listener, addr))
+}
+
+/// Whether `serve` may move to another port when the requested one is taken.
+/// Not when an allowed host names a port: requests would carry the new port
+/// and every one would be refused.
+fn port_fallback_allowed(security: &HttpSecurityConfig) -> bool {
+    !security
+        .allowed_hosts
+        .iter()
+        .filter_map(|entry| parse_host_authority(entry))
+        .any(|authority| authority.port.is_some())
 }
 
 /// Try to bind to the given address, falling back to up to 9 subsequent ports on conflict.
@@ -720,22 +826,29 @@ async fn bind_with_fallback(addr: SocketAddr) -> Result<(tokio::net::TcpListener
 
 /// Open a URL in the default browser.
 fn open_in_browser(url: &str) {
+    // Every Unix other than macOS (Linux, the BSDs, illumos) uses the
+    // freedesktop opener.
     #[cfg(target_os = "macos")]
     let cmd = "open";
-    #[cfg(target_os = "linux")]
+    #[cfg(all(unix, not(target_os = "macos")))]
     let cmd = "xdg-open";
-    #[cfg(target_os = "windows")]
+    #[cfg(windows)]
     let cmd = "explorer";
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    #[cfg(not(any(unix, windows)))]
     {
         tracing::warn!(
             target: "skrills::http",
             url,
             "Cannot open browser: unsupported platform"
         );
-        return;
     }
+    #[cfg(any(unix, windows))]
+    spawn_browser(cmd, url);
+}
 
+/// Runs `cmd url` and reports a failed launch or a non-zero exit.
+#[cfg(any(unix, windows))]
+fn spawn_browser(cmd: &str, url: &str) {
     match std::process::Command::new(cmd).arg(url).spawn() {
         Ok(mut child) => {
             // Check if the browser command exits with an error (e.g., no DISPLAY)
@@ -1121,6 +1234,58 @@ mod tests {
                 .and_then(|v| v.to_str().ok())
         }
 
+        /// Browser MCP clients send the streamable-HTTP session headers,
+        /// close sessions with DELETE and must read `mcp-session-id`.
+        #[tokio::test]
+        async fn preflight_allows_the_mcp_session_headers_and_delete() {
+            let app = axum::Router::new()
+                .route("/mcp", axum::routing::delete(|| async { "OK" }))
+                .layer(build_cors_layer(&["http://app.example".to_string()], false));
+            let req = Request::builder()
+                .method(Method::OPTIONS)
+                .uri("/mcp")
+                .header(header::ORIGIN, "http://app.example")
+                .header(header::ACCESS_CONTROL_REQUEST_METHOD, "DELETE")
+                .header(
+                    header::ACCESS_CONTROL_REQUEST_HEADERS,
+                    "mcp-session-id,mcp-protocol-version,last-event-id",
+                )
+                .body(Body::empty())
+                .unwrap();
+            let response = app.oneshot(req).await.unwrap();
+            let get = |name| {
+                response
+                    .headers()
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+            };
+            assert!(get(header::ACCESS_CONTROL_ALLOW_METHODS).contains("delete"));
+            let allowed = get(header::ACCESS_CONTROL_ALLOW_HEADERS);
+            for name in ["mcp-session-id", "mcp-protocol-version", "last-event-id"] {
+                assert!(allowed.contains(name), "{name} not in {allowed}");
+            }
+
+            let req = Request::builder()
+                .method(Method::DELETE)
+                .uri("/mcp")
+                .header(header::ORIGIN, "http://app.example")
+                .body(Body::empty())
+                .unwrap();
+            let app = axum::Router::new()
+                .route("/mcp", axum::routing::delete(|| async { "OK" }))
+                .layer(build_cors_layer(&["http://app.example".to_string()], false));
+            let response = app.oneshot(req).await.unwrap();
+            let exposed = response
+                .headers()
+                .get(header::ACCESS_CONTROL_EXPOSE_HEADERS)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            assert!(exposed.contains("mcp-session-id"), "{exposed}");
+        }
+
         #[tokio::test]
         async fn no_origins_grants_no_cross_origin_access() {
             let response = preflight(&[], "http://app.example").await;
@@ -1252,6 +1417,20 @@ mod tests {
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
 
+        /// RFC 7235: the auth scheme is case-insensitive; the token is not.
+        #[tokio::test]
+        async fn auth_accepts_the_bearer_scheme_in_any_case() {
+            for header_value in ["bearer secret-token", "BEARER secret-token"] {
+                let req = Request::builder()
+                    .uri("/test")
+                    .header("Authorization", header_value)
+                    .body(Body::empty())
+                    .unwrap();
+                let response = test_app("secret-token").oneshot(req).await.unwrap();
+                assert_eq!(response.status(), StatusCode::OK, "{header_value}");
+            }
+        }
+
         #[tokio::test]
         async fn auth_is_case_sensitive() {
             let app = test_app("Secret-Token");
@@ -1326,6 +1505,20 @@ mod tests {
             assert!(config.has_tls());
         }
 
+        /// Moving to another port breaks a port-qualified `--allowed-hosts`
+        /// entry: every request then names a refused authority.
+        #[test]
+        fn port_fallback_is_off_when_an_allowed_host_names_a_port() {
+            let with = |hosts: &[&str]| HttpSecurityConfig {
+                allowed_hosts: hosts.iter().map(|h| h.to_string()).collect(),
+                ..Default::default()
+            };
+            assert!(port_fallback_allowed(&with(&[])));
+            assert!(port_fallback_allowed(&with(&["skrills.internal"])));
+            assert!(!port_fallback_allowed(&with(&["skrills.internal:8080"])));
+            assert!(!port_fallback_allowed(&with(&["a.example", "[::1]:3000"])));
+        }
+
         #[tokio::test]
         async fn bind_with_fallback_binds_to_free_port() {
             // Grab an ephemeral port to discover a free one, then release it
@@ -1378,27 +1571,33 @@ mod tests {
 
         #[tokio::test]
         async fn bind_with_fallback_errors_when_all_ports_occupied() {
-            // Occupy 10 consecutive ports (the original + 9 fallbacks).
-            // Use a fixed high port to avoid ephemeral-range race conditions.
-            // If we can't block all 10, skip, another process holds one.
-            let base_port: u16 = 19_100;
-            let base_addr = SocketAddr::new("127.0.0.1".parse().unwrap(), base_port);
-
-            let mut blockers = Vec::with_capacity(10);
-            for offset in 0..10u16 {
-                let addr = SocketAddr::new(base_addr.ip(), base_port + offset);
-                match tokio::net::TcpListener::bind(addr).await {
-                    Ok(l) => blockers.push(l),
-                    Err(_) => {
-                        // Can't block all ports, skip test rather than flake
-                        eprintln!(
-                            "skipping: port {} already in use by another process",
-                            base_port + offset
-                        );
-                        return;
+            // Occupy 10 consecutive ports (the original + 9 fallbacks). The
+            // base comes from the OS; if another process holds one of the
+            // ten, try another base rather than skip, so the test can never
+            // pass without running.
+            let mut held = None;
+            for _ in 0..50 {
+                let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let base_port = probe.local_addr().unwrap().port();
+                drop(probe);
+                if base_port > u16::MAX - 10 {
+                    continue;
+                }
+                let mut blockers = Vec::with_capacity(10);
+                for offset in 0..10u16 {
+                    let addr = SocketAddr::new("127.0.0.1".parse().unwrap(), base_port + offset);
+                    match tokio::net::TcpListener::bind(addr).await {
+                        Ok(l) => blockers.push(l),
+                        Err(_) => break,
                     }
                 }
+                if blockers.len() == 10 {
+                    held = Some((base_port, blockers));
+                    break;
+                }
             }
+            let (base_port, blockers) = held.expect("could not hold 10 consecutive ports");
+            let base_addr = SocketAddr::new("127.0.0.1".parse().unwrap(), base_port);
 
             let result = bind_with_fallback(base_addr).await;
             assert!(
@@ -1564,7 +1763,133 @@ mod tests {
                 content_type.starts_with("text/javascript"),
                 "{content_type}"
             );
-            assert!(body_text(script).contains("fetch('/api/mcp-servers')"));
+            assert!(body_text(script).contains("apiFetch('/api/mcp-servers')"));
+        }
+
+        fn initialize_request() -> Request<Body> {
+            let body = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "0"}
+                }
+            });
+            Request::builder()
+                .method(Method::POST)
+                .uri("/mcp")
+                .header("Host", "127.0.0.1")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "application/json, text/event-stream")
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        }
+
+        /// Each `initialize` used to build a full `SkillService` (snapshot
+        /// load, dependency graph, subagent registry); sessions now share
+        /// one, and their number is bounded.
+        #[test]
+        fn sessions_share_one_service_and_are_capped() {
+            let _g = crate::test_support::env_guard();
+            let home = tempfile::tempdir().unwrap();
+            let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+            let built = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counter = built.clone();
+            let prepared = prepare_server(
+                move || {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    SkillService::new_with_ttl(Vec::new(), std::time::Duration::from_secs(60))
+                        .map_err(std::io::Error::other)
+                },
+                HttpSecurityConfig::default(),
+                Vec::new(),
+            )
+            .unwrap();
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let statuses = rt.block_on(async move {
+                let mut statuses = Vec::new();
+                for _ in 0..=MAX_HTTP_SESSIONS {
+                    let response = prepared
+                        .app
+                        .clone()
+                        .oneshot(initialize_request())
+                        .await
+                        .unwrap();
+                    statuses.push(response.status());
+                }
+                statuses
+            });
+            assert_eq!(built.load(std::sync::atomic::Ordering::SeqCst), 1);
+            let (last, first) = statuses.split_last().unwrap();
+            assert!(first.iter().all(|s| *s == StatusCode::OK), "{first:?}");
+            assert_ne!(
+                *last,
+                StatusCode::OK,
+                "session {} was admitted",
+                MAX_HTTP_SESSIONS + 1
+            );
+        }
+
+        /// An empty token would switch auth on yet match `Bearer ` with
+        /// nothing after it.
+        #[test]
+        fn a_blank_auth_token_is_a_startup_error() {
+            let _g = crate::test_support::env_guard();
+            let home = tempfile::tempdir().unwrap();
+            let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+            for token in ["", "   "] {
+                let security = HttpSecurityConfig {
+                    auth_token: Some(token.to_string()),
+                    ..Default::default()
+                };
+                let Err(error) = prepare_server(
+                    || Err(std::io::Error::other("no MCP session in this test")),
+                    security,
+                    Vec::new(),
+                ) else {
+                    panic!("blank token {token:?} was accepted");
+                };
+                assert!(error.to_string().contains("auth token"), "{error}");
+            }
+        }
+
+        /// With auth on, the page and its assets must load without a token
+        /// (a browser cannot attach one to a navigation); the API stays gated
+        /// and the page sends the token itself.
+        #[test]
+        fn dashboard_page_loads_without_a_token_and_the_api_stays_gated() {
+            let mut responses = respond(
+                Some("tok"),
+                vec![
+                    get("/", None),
+                    get("/static/dashboard.js", None),
+                    get("/static/style.css", None),
+                    get("/api/skills", None),
+                    get("/api/skills", Some("tok")),
+                ],
+            );
+            let statuses: Vec<_> = responses.iter().map(|r| r.status()).collect();
+            assert_eq!(
+                statuses,
+                [
+                    StatusCode::OK,
+                    StatusCode::OK,
+                    StatusCode::OK,
+                    StatusCode::UNAUTHORIZED,
+                    StatusCode::OK
+                ]
+            );
+            let script = body_text(responses.remove(1));
+            assert!(script.contains("'Authorization'"), "script sends no token");
+            assert!(
+                !script.contains(" fetch('/api"),
+                "every API call must go through the token-carrying helper"
+            );
         }
 
         #[test]

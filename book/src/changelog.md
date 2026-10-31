@@ -1,6 +1,29 @@
 # Changelog Highlights
 
-## 0.9.0 (Unreleased)
+## 0.9.1 (Unreleased)
+
+- **Cursor**: skills synced to Cursor keep the `name` and `description` frontmatter Cursor needs to load them. A mirrored plugin's `hooks/hooks.json` is rewritten to Cursor's hook layout. Top-level Claude hooks are no longer copied, because Cursor already loads them from `~/.claude/settings.json`. Agents with no write tool become `readonly`.
+- **Codex**: skills go to `~/.agents/skills`, the only user skills directory Codex documents, instead of `~/.codex/skills`. This covers `sync`, `mirror`, `sync-all`, the TUI, the `sync-from-claude` and `sync-all` MCP tools, and `create-skill` for a Codex-only install. Discovery and `skrills setup --universal` use `~/.agents/skills` in place of `~/.agent/skills`, which no tool loads. `sync-from-claude` now reports `warnings` instead of the `synced` name list.
+- **Copilot**: on macOS, sync and `skrills setup` write to `~/.copilot` (or `COPILOT_HOME`), where Copilot CLI reads, instead of `~/Library/Application Support/copilot`.
+- **Claude MCP servers**: sync reads and writes them in `~/.claude.json`, where Claude Code loads user servers, instead of `~/.claude/settings.json`. Servers an earlier version wrote into `settings.json` are no longer read.
+- **Codex agents**: go to `~/.agents/skills/agent-<name>`. A Claude model is no longer replaced by `gpt-4o` on Codex or Copilot; the target keeps its own model.
+- **Sync safety**: the Cursor plugin mirror no longer deletes or overwrites a plugin it skipped or a directory it does not own, one unwritable item no longer stops a whole phase, and concurrent syncs into one target wait on a lock file.
+- **Server**: credentials in MCP server arguments and hook commands are redacted from the dashboard API, `cold-window --browser` checks `Host`, `fetch-pdf` refuses private addresses, an empty auth token is refused, and the dashboard works with `--auth-token` (open it at `/#token=<TOKEN>`).
+- **CLI**: `skrills doctor` exits non-zero when it finds problems. `--include-description`, `--include-quality` and `--suggestions` turn off with `=false`. `cold-window --alert-budget` must be at least 3.
+- **Validation**: autofix keeps every frontmatter field, writes YAML that parses, and no longer panics on long descriptions with multibyte characters.
+- **API**: `SyncError` has a new `KillSwitchEngaged` variant, which breaks exhaustive matches outside this workspace.
+- **Codex agents run sandboxed**: `skrills agent` and `multi-cli-agent` run `codex exec --sandbox workspace-write`; `--dangerously-bypass-sandbox` restores the old unsandboxed run.
+- **Kill switch across processes**: while cold-window's kill switch is engaged, syncs in every other process refuse to write.
+- **Skill roots**: CLI commands, the dashboard and `/api/skills` scan `~/.claude` only with `SKRILLS_INCLUDE_CLAUDE=1`, as the MCP server does.
+- **Sync**: each skill gets one folder name in every target, skrills-written skill folders carry a `.skrills-synced` marker, JSON config rewrites keep key order, and marketplace skills sync when `--include-marketplace` is given.
+- **TUIs**: `Esc` backs out of what is open, then quits, in both TUIs; cold-window master-ack holds until the alert resolves.
+- **Build**: MSRV 1.89, YAML via `serde_norway`, tests run in parallel, and every shell script follows one style checked by `scripts/shellcheck.sh` (shellcheck plus shfmt).
+- **API**: `skrills_sync::Platform` replaces platform strings, and skrills-server drops its deprecated items. Both break callers outside this workspace.
+- **Agent timeout**: `skrills agent` and `multi-cli-agent` stop a run after `--timeout` seconds (default 1800, `0` for no limit).
+- **Setup**: `skrills setup --universal --include-marketplace` also copies marketplace skills; off by default.
+- **Crates**: skrills-server no longer exports `discovery`, `sync`, `setup` or `config`. They moved to `skrills-discovery`, `skrills_sync`, the new `skrills-setup` crate and the CLI (ADR 0009).
+
+## 0.9.0 (2026-10-13)
 
 - **Security**: `Host` is validated on every HTTP route, not only `/mcp`. `setup --universal` syncs skill directories only, instead of copying all of `~/.claude` (credentials and transcripts included) into `~/.agent`. `serve --http` reads `auth_token` from the config file itself, subagent CLI children no longer inherit server secrets, and skill generation sends the GitHub token only to GitHub. `fetch-pdf`, the tome clients and MCP `create-skill` are bounded. Third-party GitHub Actions are pinned to commit SHAs, and rustls, h2, quinn-proto and crossbeam-epoch advisories are closed.
 - **BREAKING: `cold-window` shows only real data unless `--demo` is passed**. `--alert-budget` must be at least 2, and a ceiling at or below 50K scales the Advisory and Caution tiers to 20% and 50% of it. See [Cold-Window Real-Time Analysis](cold-window.md).

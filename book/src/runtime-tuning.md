@@ -9,6 +9,7 @@ Customize skrills behavior through environment variables and configuration files
 | `SKRILLS_CLIENT` | Force target: `codex` or `claude` | Auto-detected |
 | `SKRILLS_CACHE_TTL_MS` | How long to cache skill discovery | `60000` (1 min) |
 | `SKRILLS_MIRROR_SOURCE` | Where to copy skills from | `~/.claude` |
+| `SKRILLS_INCLUDE_CLAUDE` | Discover skills in `~/.claude/skills` and the Claude plugin cache (MCP server, dashboard, `/api/skills` and CLI alike) | Off |
 
 ## Environment Variables
 

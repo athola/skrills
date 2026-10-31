@@ -142,6 +142,7 @@ mod skip_existing_commands_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -194,6 +195,7 @@ mod skip_existing_commands_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -268,6 +270,7 @@ mod skip_existing_commands_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -327,6 +330,7 @@ mod skip_existing_commands_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -391,6 +395,7 @@ mod skip_existing_commands_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -440,6 +445,7 @@ mod skip_existing_commands_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -494,6 +500,7 @@ mod skip_existing_commands_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         // Sync from Codex (new source) to Claude (new target)
@@ -554,6 +561,7 @@ mod skip_existing_commands_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);
@@ -610,6 +618,7 @@ mod skip_existing_commands_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source_adapter, target_adapter);

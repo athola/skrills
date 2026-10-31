@@ -102,7 +102,12 @@ impl TrizMatrix {
     }
 
     /// Given a contradiction (want to improve X, but Y degrades), suggest principles.
+    /// Improving a parameter at its own expense is not a contradiction, so
+    /// `improve == degrades` suggests nothing.
     pub fn resolve(&self, improve: Parameter, degrades: Parameter) -> Vec<&Principle> {
+        if improve == degrades {
+            return Vec::new();
+        }
         let suggestions = lookup_matrix(improve, degrades);
         suggestions
             .iter()
@@ -336,5 +341,49 @@ mod tests {
         let m = TrizMatrix::new();
         let p1 = m.principle(1).unwrap();
         assert!(!p1.software_examples.is_empty());
+    }
+
+    #[test]
+    fn every_parameter_pair_resolves_to_existing_principles() {
+        use Parameter::*;
+        let all = [
+            Performance,
+            Reliability,
+            Maintainability,
+            Scalability,
+            Security,
+            Usability,
+            Testability,
+            Deployability,
+            CostEfficiency,
+            DevelopmentSpeed,
+            CodeComplexity,
+            MemoryUsage,
+            Latency,
+            Throughput,
+            Availability,
+        ];
+        let matrix = TrizMatrix::new();
+        for &improve in &all {
+            for &degrades in &all {
+                if improve == degrades {
+                    continue;
+                }
+                for number in lookup_matrix(improve, degrades) {
+                    assert!(
+                        matrix.principle(number).is_some(),
+                        "({improve:?}, {degrades:?}) names missing principle {number}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolving_a_parameter_against_itself_suggests_nothing() {
+        let matrix = TrizMatrix::new();
+        assert!(matrix
+            .resolve(Parameter::Performance, Parameter::Performance)
+            .is_empty());
     }
 }

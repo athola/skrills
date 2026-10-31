@@ -44,23 +44,27 @@ pub(crate) use skill::{
     handle_sync_pull_command,
 };
 pub(crate) use sync::{
-    codex_skills_feature_warning, handle_mirror_command, handle_sync_agents_command,
-    handle_sync_all_command, handle_sync_command, handle_sync_status_command,
-    run_sync_with_adapters, skipped_commands_note, SyncAllArgs,
+    handle_mirror_command, handle_sync_agents_command, handle_sync_all_command,
+    handle_sync_command, handle_sync_status_command, print_skill_warnings, run_sync_with_adapters,
+    skipped_commands_note, SyncAllArgs,
 };
 pub(crate) use validate::handle_validate_command;
 
-use skrills_discovery::{skill_roots_or_default, SkillRoot};
+use skrills_discovery::{skill_roots_or_default, RootSettings, SkillRoot};
 use std::path::PathBuf;
 
 /// Skill roots for a command that takes `--skill-dir`.
 ///
 /// The directories given on the command line and in `SKRILLS_SKILL_DIR` when
-/// there are any, every default root otherwise. The help text of these
-/// commands says "default: all discovered skills", and building the roots from
-/// the extra directories alone found nothing when neither was set.
-pub(crate) fn skill_roots_for(skill_dirs: &[PathBuf]) -> Vec<SkillRoot> {
-    skill_roots_or_default(&skrills_server::discovery::merge_extra_dirs(skill_dirs))
+/// there are any, otherwise the default roots the user's settings select
+/// (`SKRILLS_INCLUDE_CLAUDE`, the manifest's priority), as the MCP server
+/// uses. Building the roots from the extra directories alone found nothing
+/// when neither was set.
+pub(crate) fn skill_roots_for(skill_dirs: &[PathBuf]) -> anyhow::Result<Vec<SkillRoot>> {
+    Ok(skill_roots_or_default(
+        &skrills_discovery::merge_extra_dirs(skill_dirs),
+        &RootSettings::from_env()?,
+    ))
 }
 
 #[cfg(test)]
@@ -68,14 +72,18 @@ mod tests {
     use super::skill_roots_for;
     use std::path::PathBuf;
 
+    /// Rewritten for M457: the default roots now follow
+    /// `SKRILLS_INCLUDE_CLAUDE` as the MCP server's do, so `~/.claude/skills`
+    /// is searched only when it is set.
     #[test]
     fn skill_roots_for_without_dirs_falls_back_to_the_default_roots() {
         let _g = skrills_test_utils::env_guard();
         let home = tempfile::tempdir().unwrap();
         let _home = skrills_test_utils::set_env_var("HOME", Some(home.path().to_str().unwrap()));
         let _dirs = skrills_test_utils::set_env_var("SKRILLS_SKILL_DIR", None);
+        let _claude = skrills_test_utils::set_env_var("SKRILLS_INCLUDE_CLAUDE", Some("1"));
 
-        let roots = skill_roots_for(&[]);
+        let roots = skill_roots_for(&[]).unwrap();
 
         assert!(
             roots
@@ -87,12 +95,30 @@ mod tests {
     }
 
     #[test]
+    fn skill_roots_for_without_dirs_leaves_out_claude_unless_included() {
+        let _g = skrills_test_utils::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _home = skrills_test_utils::set_env_var("HOME", Some(home.path().to_str().unwrap()));
+        let _dirs = skrills_test_utils::set_env_var("SKRILLS_SKILL_DIR", None);
+        let _claude = skrills_test_utils::set_env_var("SKRILLS_INCLUDE_CLAUDE", None);
+
+        let roots = skill_roots_for(&[]).unwrap();
+
+        assert!(
+            !roots
+                .iter()
+                .any(|r| r.root.starts_with(home.path().join(".claude"))),
+            "{roots:?}"
+        );
+    }
+
+    #[test]
     fn skill_roots_for_with_dirs_searches_only_those() {
         let _g = skrills_test_utils::env_guard();
         let _dirs = skrills_test_utils::set_env_var("SKRILLS_SKILL_DIR", None);
         let dir = PathBuf::from("/tmp/only-here");
 
-        let roots = skill_roots_for(std::slice::from_ref(&dir));
+        let roots = skill_roots_for(std::slice::from_ref(&dir)).unwrap();
 
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].root, dir);

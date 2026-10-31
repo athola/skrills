@@ -33,7 +33,7 @@ fn adapters(root: &Path) -> Vec<(Box<dyn AgentAdapter>, PathBuf)> {
         ),
         (
             Box::new(CodexAdapter::with_root(root.join("codex"))),
-            root.join("codex/skills"),
+            root.join("codex/.agents/skills"),
         ),
         (
             Box::new(CopilotAdapter::with_root(root.join("copilot"))),
@@ -108,23 +108,54 @@ fn a_symlinked_skill_directory_is_not_written_through() {
     }
 }
 
-/// `my.skill` and `myskill` sanitize to one directory; the second silently
+/// `my.skill` and `my-skill` sanitize to one directory; the second silently
 /// overwrote the first and both were reported written.
 #[test]
 fn two_names_that_sanitize_alike_do_not_overwrite_each_other() {
     let tmp = TempDir::new().unwrap();
     for (adapter, skills_dir) in adapters(tmp.path()) {
-        if adapter.name() == "cursor" {
-            // Cursor kebab-cases: `my.skill` becomes `my-skill`, a distinct name.
-            continue;
-        }
         let report = adapter
-            .write_skills(&[skill("my.skill", "first"), skill("myskill", "second")])
+            .write_skills(&[skill("my.skill", "first"), skill("my-skill", "second")])
             .unwrap();
 
         assert_eq!(report.written, 1, "{}", adapter.name());
-        let text = std::fs::read_to_string(skills_dir.join("myskill/SKILL.md")).unwrap();
+        let text = std::fs::read_to_string(skills_dir.join("my-skill/SKILL.md")).unwrap();
         assert!(text.contains("first"), "{}: {text}", adapter.name());
+    }
+}
+
+/// Pairs that land in one directory for every adapter: kebab-case folding, a
+/// case-only difference (one directory on APFS and NTFS), and two nested
+/// names that share a leaf folder.
+#[test]
+fn names_that_collide_for_each_adapter_do_not_overwrite_each_other() {
+    let tmp = TempDir::new().unwrap();
+    for (adapter, skills_dir) in adapters(tmp.path()) {
+        let pairs = [
+            ("Case", "case", "case"),
+            ("My Skill", "my-skill", "my-skill"),
+            ("a.b", "a-b", "a-b"),
+            ("one/shared", "two/shared", "shared"),
+        ];
+        for (first, second, dir) in pairs {
+            let report = adapter
+                .write_skills(&[skill(first, "first"), skill(second, "second")])
+                .unwrap();
+
+            let label = format!("{}: {first} / {second}", adapter.name());
+            assert_eq!(report.written, 1, "{label}: {report:?}");
+            let entries: Vec<String> = std::fs::read_dir(&skills_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(entries.len(), 1, "{label}: {entries:?}");
+            assert!(entries[0].eq_ignore_ascii_case(dir), "{label}: {entries:?}");
+            let text =
+                std::fs::read_to_string(skills_dir.join(&entries[0]).join("SKILL.md")).unwrap();
+            assert!(text.contains("first"), "{label}: {text}");
+            std::fs::remove_dir_all(&skills_dir).unwrap();
+        }
     }
 }
 
@@ -144,11 +175,14 @@ fn a_name_that_sanitizes_to_nothing_is_refused() {
     }
 }
 
-/// Codex finds SKILL.md at any depth, so a nested name keeps its directory.
+/// Codex loads `~/.agents/skills/<name>/SKILL.md`, the directory Cursor and
+/// Copilot also read, and Cursor needs the folder to equal the skill name, so
+/// a nested name lands one level deep under its last segment.
 #[test]
-fn codex_keeps_nested_skill_directories() {
+fn codex_writes_a_nested_skill_one_level_deep_in_the_shared_dir() {
     let tmp = TempDir::new().unwrap();
     let codex = CodexAdapter::with_root(tmp.path().to_path_buf());
     codex.write_skills(&[skill("nested/foo", "x")]).unwrap();
-    assert!(tmp.path().join("skills/nested/foo/SKILL.md").exists());
+    assert!(tmp.path().join(".agents/skills/foo/SKILL.md").exists());
+    assert!(!tmp.path().join("skills").exists());
 }

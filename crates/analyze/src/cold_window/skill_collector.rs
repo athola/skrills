@@ -16,13 +16,19 @@
 //! relative to the configured root instead, so the diff still sees two
 //! sources.
 //!
-//! The collector is **deliberately stateless and side-effect free**,
-//! mirroring the plugin collector's "cold rewalk" contract. Errors
+//! The collector is **side-effect free** and rewalks cold every tick,
+//! mirroring the plugin collector's contract; the one thing it keeps is
+//! each SKILL.md's token count keyed by path, mtime and length, so an
+//! unchanged file is not re-read and re-tokenized every tick. Errors
 //! reading individual entries are surfaced via `malformed`, not
 //! silently dropped, same discipline applied elsewhere.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::SystemTime;
+
+use parking_lot::Mutex;
 
 use skrills_snapshot::TokenEntry;
 
@@ -57,15 +63,31 @@ pub struct SkillCollectorOutput {
 #[derive(Clone, Debug)]
 pub struct SkillCollector {
     skill_dirs: Vec<PathBuf>,
+    /// Token counts of files already read, by path.
+    cache: Arc<Mutex<HashMap<PathBuf, CachedCount>>>,
+}
+
+/// A file's token count and the metadata it was computed for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CachedCount {
+    modified: Option<SystemTime>,
+    len: u64,
+    tokens: u64,
 }
 
 const MAX_DEPTH: usize = 6;
+
+/// Largest SKILL.md read; a bigger file is reported, not tokenized.
+const MAX_SKILL_BYTES: u64 = 1024 * 1024;
 
 impl SkillCollector {
     /// Construct a collector that walks the supplied directories.
     #[must_use]
     pub fn new(skill_dirs: Vec<PathBuf>) -> Self {
-        Self { skill_dirs }
+        Self {
+            skill_dirs,
+            cache: Arc::default(),
+        }
     }
 
     /// Returns true when no directories are configured (the producer
@@ -84,15 +106,22 @@ impl SkillCollector {
         // Canonical directories already walked, shared across roots,
         // so a symlink cycle or two overlapping roots count once.
         let mut visited = HashSet::new();
+        let mut cache = self.cache.lock();
+        let mut seen = HashSet::new();
         for dir in &self.skill_dirs {
             let mut walker = Walker {
                 root: dir,
+                cache: &mut cache,
+                seen: &mut seen,
                 visited: &mut visited,
                 found: &mut found,
                 malformed: &mut output.malformed,
             };
             walker.walk(dir, 0);
         }
+        // Forget files no longer found, so the cache tracks the tree.
+        cache.retain(|path, _| seen.contains(path));
+        drop(cache);
         output.entries = attribute(found);
         // Stable order so ledger comparisons are reproducible.
         output.entries.sort_by(|a, b| a.source.cmp(&b.source));
@@ -150,6 +179,9 @@ fn slash_path(path: &Path) -> String {
 
 struct Walker<'a> {
     root: &'a Path,
+    cache: &'a mut HashMap<PathBuf, CachedCount>,
+    /// Skill files found this pass.
+    seen: &'a mut HashSet<PathBuf>,
     visited: &'a mut HashSet<PathBuf>,
     found: &'a mut Vec<FoundSkill>,
     malformed: &'a mut Vec<MalformedSkillEntry>,
@@ -187,17 +219,23 @@ impl Walker<'_> {
             }
         };
 
+        // Sorted, so which alias of a linked directory is walked first
+        // (and so which name it is attributed to) does not depend on
+        // readdir order, and `SKILL.md` comes before `skill.md`.
+        let mut sorted = Vec::new();
         for entry in entries {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(err) => {
-                    self.report(
-                        format!("{}/<entry>", dir.display()),
-                        format!("skill dir entry unreadable: {err}"),
-                    );
-                    continue;
-                }
-            };
+            match entry {
+                Ok(e) => sorted.push(e),
+                Err(err) => self.report(
+                    format!("{}/<entry>", dir.display()),
+                    format!("skill dir entry unreadable: {err}"),
+                ),
+            }
+        }
+        sorted.sort_by_key(|e| e.file_name());
+        let mut recorded_skill = false;
+
+        for entry in sorted {
             let path = entry.path();
             // `DirEntry::file_type` does not follow symlinks; a skill
             // installed as a link (`skills/foo -> ~/src/foo`) must be
@@ -236,21 +274,65 @@ impl Walker<'_> {
             if !name.eq_ignore_ascii_case("SKILL.md") && !name.eq_ignore_ascii_case("skill.md") {
                 continue;
             }
+            // One skill per directory, even where `SKILL.md` and
+            // `skill.md` both exist.
+            if recorded_skill {
+                continue;
+            }
+            recorded_skill = true;
             self.record(&path);
         }
     }
 
     fn record(&mut self, path: &Path) {
-        let bytes = match std::fs::read(path) {
-            Ok(b) => b,
+        let meta = match std::fs::metadata(path) {
+            Ok(m) => m,
             Err(err) => {
-                self.report(path.display().to_string(), format!("read failed: {err}"));
+                self.report(path.display().to_string(), format!("stat failed: {err}"));
                 return;
             }
         };
-        // Same estimator as `skrills analyze`, so one SKILL.md shows
-        // one token count everywhere.
-        let tokens = count_tokens(&String::from_utf8_lossy(&bytes)).total as u64;
+        if meta.len() > MAX_SKILL_BYTES {
+            self.report(
+                path.display().to_string(),
+                format!(
+                    "skill file is {} bytes, over the {MAX_SKILL_BYTES}-byte limit; not counted",
+                    meta.len()
+                ),
+            );
+            return;
+        }
+        self.seen.insert(path.to_path_buf());
+        let modified = meta.modified().ok();
+        let cached = self
+            .cache
+            .get(path)
+            .filter(|c| c.modified.is_some() && c.modified == modified && c.len == meta.len())
+            .map(|c| c.tokens);
+        let tokens = match cached {
+            Some(tokens) => tokens,
+            None => {
+                let bytes = match std::fs::read(path) {
+                    Ok(b) => b,
+                    Err(err) => {
+                        self.report(path.display().to_string(), format!("read failed: {err}"));
+                        return;
+                    }
+                };
+                // Same estimator as `skrills analyze`, so one SKILL.md
+                // shows one token count everywhere.
+                let tokens = count_tokens(&String::from_utf8_lossy(&bytes)).total as u64;
+                self.cache.insert(
+                    path.to_path_buf(),
+                    CachedCount {
+                        modified,
+                        len: meta.len(),
+                        tokens,
+                    },
+                );
+                tokens
+            }
+        };
         let dir = path.parent().unwrap_or(self.root).to_path_buf();
         let name = dir
             .file_name()
@@ -282,6 +364,76 @@ mod tests {
         fs::write(skill_dir.join("SKILL.md"), body).unwrap();
     }
 
+    /// M296: when two links name one skill directory, the walk keeps
+    /// the name that sorts first, whatever order readdir returns.
+    #[cfg(unix)]
+    #[test]
+    fn aliased_skill_dir_is_attributed_to_the_first_name_in_sort_order() {
+        let tmp = TempDir::new().unwrap();
+        let real = TempDir::new().unwrap();
+        write_skill(real.path(), "target", "body");
+        let target = real.path().join("target");
+        for name in ["zeta", "mid", "alpha", "omega", "beta"] {
+            std::os::unix::fs::symlink(&target, tmp.path().join(name)).unwrap();
+        }
+        let output = SkillCollector::new(vec![tmp.path().to_path_buf()]).collect();
+        let sources: Vec<&str> = output.entries.iter().map(|e| e.source.as_str()).collect();
+        assert_eq!(sources, ["skill://alpha"]);
+    }
+
+    /// M297: `SKILL.md` and `skill.md` in one directory are one skill.
+    #[test]
+    fn skill_md_in_both_cases_is_recorded_once() {
+        let tmp = TempDir::new().unwrap();
+        write_skill(tmp.path(), "dup", "canonical");
+        let dir = tmp.path().join("dup");
+        fs::write(dir.join("skill.md"), "legacy body that is longer").unwrap();
+        let output = SkillCollector::new(vec![tmp.path().to_path_buf()]).collect();
+        assert_eq!(output.entries.len(), 1, "{:?}", output.entries);
+        // Where the filesystem keeps both, SKILL.md is the one counted.
+        if fs::read_dir(&dir).unwrap().count() == 2 {
+            assert_eq!(
+                output.entries[0].tokens,
+                count_tokens("canonical").total as u64
+            );
+        }
+    }
+
+    /// M286: an unchanged SKILL.md (same mtime and length) is not
+    /// re-read; a file over MAX_SKILL_BYTES is reported, not read.
+    #[test]
+    fn unchanged_skill_files_are_not_reread_and_huge_ones_are_skipped() {
+        let tmp = TempDir::new().unwrap();
+        write_skill(tmp.path(), "memo", "aaaa aaaa aaaa");
+        let file = tmp.path().join("memo/SKILL.md");
+        let collector = SkillCollector::new(vec![tmp.path().to_path_buf()]);
+        let first = collector.collect();
+
+        let mtime = fs::metadata(&file).unwrap().modified().unwrap();
+        fs::write(&file, "```\nb\n```\n\n\n").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        let second = collector.collect();
+        assert_eq!(first.entries, second.entries);
+
+        write_skill(
+            tmp.path(),
+            "huge",
+            &"x".repeat(MAX_SKILL_BYTES as usize + 1),
+        );
+        let third = collector.collect();
+        assert!(third.entries.iter().all(|e| e.source != "skill://huge"));
+        assert!(
+            third.malformed.iter().any(|m| m.source.contains("huge")),
+            "{:?}",
+            third.malformed
+        );
+    }
+
     #[test]
     fn empty_collector_returns_empty_output() {
         let collector = SkillCollector::new(vec![]);
@@ -307,10 +459,10 @@ mod tests {
         assert_eq!(output.entries[0].source, "skill://alpha");
         assert_eq!(output.entries[1].source, "skill://beta");
 
-        // Prose ratio is 4 chars/token, rounded up, newline included:
-        // alpha is 3000 + 1 chars -> 751 tokens; beta is 4 + 1 -> 2.
-        assert_eq!(output.entries[0].tokens, 751);
-        assert_eq!(output.entries[1].tokens, 2);
+        // Prose ratio is 4 chars/token, rounded up; the files end with
+        // no newline: alpha is 3000 chars -> 750 tokens; beta is 4 -> 1.
+        assert_eq!(output.entries[0].tokens, 750);
+        assert_eq!(output.entries[1].tokens, 1);
     }
 
     #[test]

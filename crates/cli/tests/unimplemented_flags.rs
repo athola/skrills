@@ -108,10 +108,7 @@ fn sync_all_validate_with_a_valid_source_syncs() {
 
     assert_succeeded(&output);
     assert!(
-        home.path()
-            .join(".codex/skills/skills/good/SKILL.md")
-            .exists()
-            || home.path().join(".codex/skills/good/SKILL.md").exists(),
+        home.path().join(".agents/skills/good/SKILL.md").exists(),
         "the validated skill should reach the target"
     );
 }

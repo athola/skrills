@@ -33,7 +33,7 @@ fn targets(root: &Path) -> Vec<(Box<dyn AgentAdapter>, std::path::PathBuf)> {
     vec![
         (
             Box::new(ClaudeAdapter::with_root(root.join("claude"))),
-            root.join("claude/settings.json"),
+            root.join("claude/.claude.json"),
         ),
         (
             Box::new(CopilotAdapter::with_root(root.join("copilot"))),

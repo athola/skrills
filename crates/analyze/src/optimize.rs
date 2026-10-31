@@ -7,8 +7,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::deps::DependencyAnalysis;
-use crate::tokens::{TokenBreakdown, TokenCategory};
+use crate::deps::{DependencyAnalysis, DependencyType};
+use crate::fence::FenceTracker;
+use crate::tokens::{frontmatter_lines, TokenBreakdown, TokenCategory};
 
 /// Priority level for optimization suggestions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +48,23 @@ pub struct Suggestion {
     pub token_savings: Option<usize>,
     /// Specific action to take.
     pub action: Option<String>,
+    /// Which condition the suggestion reports, when `quality_score`
+    /// deducts for that condition directly. Matching on this, not on the
+    /// message text, keeps a reworded message from changing the score.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<SuggestionKind>,
+}
+
+/// Conditions that `quality_score` deducts for directly, so suggestions
+/// reporting them are not counted a second time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SuggestionKind {
+    /// The skill is in the very-large token category.
+    VeryLarge,
+    /// The skill is in the large token category.
+    Large,
+    /// Referenced local files are missing.
+    MissingFiles,
 }
 
 impl Suggestion {
@@ -57,6 +75,7 @@ impl Suggestion {
             message: message.into(),
             token_savings: None,
             action: None,
+            kind: None,
         }
     }
 
@@ -67,6 +86,7 @@ impl Suggestion {
             message: message.into(),
             token_savings: None,
             action: None,
+            kind: None,
         }
     }
 
@@ -77,7 +97,13 @@ impl Suggestion {
             message: message.into(),
             token_savings: None,
             action: None,
+            kind: None,
         }
+    }
+
+    pub fn with_kind(mut self, kind: SuggestionKind) -> Self {
+        self.kind = Some(kind);
+        self
     }
 
     pub fn with_savings(mut self, tokens: usize) -> Self {
@@ -107,10 +133,11 @@ pub fn suggest_optimizations(
                 Suggestion::high(
                     OptimizationType::ReduceSize,
                     format!(
-                        "{VERY_LARGE_PREFIX}{} tokens). Consider splitting into smaller skills.",
+                        "Skill is very large ({} tokens). Consider splitting into smaller skills.",
                         tokens.total
                     ),
                 )
+                .with_kind(SuggestionKind::VeryLarge)
                 .with_action("Split into focused, single-responsibility skills"),
             );
         }
@@ -119,10 +146,11 @@ pub fn suggest_optimizations(
                 Suggestion::medium(
                     OptimizationType::ReduceSize,
                     format!(
-                        "{LARGE_PREFIX}{} tokens). Review for unnecessary content.",
+                        "Skill is large ({} tokens). Review for unnecessary content.",
                         tokens.total
                     ),
                 )
+                .with_kind(SuggestionKind::Large)
                 .with_action("Remove redundant examples or verbose explanations"),
             );
         }
@@ -155,8 +183,9 @@ pub fn suggest_optimizations(
         suggestions.push(
             Suggestion::high(
                 OptimizationType::FixIssue,
-                format!("{}{MISSING_FILES_SUFFIX}", deps.missing.len()),
+                format!("{} referenced files are missing", deps.missing.len()),
             )
+            .with_kind(SuggestionKind::MissingFiles)
             .with_action("Create missing files or update references"),
         );
     }
@@ -181,21 +210,24 @@ pub fn suggest_optimizations(
 }
 
 fn check_large_code_blocks(content: &str, suggestions: &mut Vec<Suggestion>) {
-    let mut in_code_block = false;
+    let mut fence = FenceTracker::default();
     let mut block_lines = 0;
     let mut large_blocks = 0;
 
     for line in content.lines() {
-        if line.trim().starts_with("```") {
-            if in_code_block {
-                // End of block
-                if block_lines > 50 {
-                    large_blocks += 1;
-                }
-                block_lines = 0;
+        let was_open = fence.in_block();
+        if !fence.is_code(line) {
+            continue;
+        }
+        if !was_open {
+            // Opening fence
+            block_lines = 0;
+        } else if !fence.in_block() {
+            // Closing fence
+            if block_lines > 50 {
+                large_blocks += 1;
             }
-            in_code_block = !in_code_block;
-        } else if in_code_block {
+        } else {
             block_lines += 1;
         }
     }
@@ -217,7 +249,11 @@ fn check_large_code_blocks(content: &str, suggestions: &mut Vec<Suggestion>) {
 fn check_directory_usage(deps: &DependencyAnalysis, suggestions: &mut Vec<Suggestion>) {
     // Check if directories exist but aren't referenced
     for dir in &deps.directories {
-        let has_refs = deps.dependencies.iter().any(|d| d.target.contains(dir));
+        let prefix = format!("{dir}/");
+        let has_refs = deps.dependencies.iter().any(|d| {
+            d.dep_type != DependencyType::ExternalUrl
+                && d.target.trim_start_matches("./").starts_with(&prefix)
+        });
         if !has_refs && deps.total_dep_size > 0 {
             suggestions.push(
                 Suggestion::low(
@@ -233,17 +269,17 @@ fn check_directory_usage(deps: &DependencyAnalysis, suggestions: &mut Vec<Sugges
     }
 }
 
-/// Lines outside fenced code blocks, with their 1-based line numbers.
-/// Fence lines themselves are dropped, as in `check_large_code_blocks`.
+/// Lines outside the frontmatter and fenced code blocks, with their
+/// 1-based line numbers. Fence lines themselves are dropped.
 fn prose_lines(content: &str) -> Vec<(usize, &str)> {
-    let mut in_code_block = false;
+    let frontmatter = frontmatter_lines(content);
+    let mut fence = FenceTracker::default();
     let mut out = Vec::new();
     for (i, line) in content.lines().enumerate() {
-        if line.trim().starts_with("```") {
-            in_code_block = !in_code_block;
+        if frontmatter.as_ref().is_some_and(|r| r.contains(&i)) {
             continue;
         }
-        if !in_code_block {
+        if !fence.is_code(line) {
             out.push((i + 1, line));
         }
     }
@@ -255,16 +291,19 @@ fn check_content_patterns(content: &str, suggestions: &mut Vec<Suggestion>) {
     // neither is a markdown heading or paragraph.
     let prose = prose_lines(content);
 
-    // Check for duplicate headings
-    let mut headings: Vec<&str> = Vec::new();
+    // Check for duplicate headings: same level and text, so `# Usage`
+    // and `## Usage` in different sections are not duplicates.
+    let mut headings: Vec<(usize, &str)> = Vec::new();
     for &(_, line) in &prose {
         if line.starts_with('#') {
-            let heading = line.trim_start_matches('#').trim();
+            let text = line.trim_start_matches('#');
+            let level = line.len() - text.len();
+            let heading = (level, text.trim());
             if headings.contains(&heading) {
                 suggestions.push(
                     Suggestion::low(
                         OptimizationType::ImproveStructure,
-                        format!("Duplicate heading found: '{}'", heading),
+                        format!("Duplicate heading found: '{}'", heading.1),
                     )
                     .with_action("Rename or consolidate duplicate sections"),
                 );
@@ -281,14 +320,14 @@ fn check_content_patterns(content: &str, suggestions: &mut Vec<Suggestion>) {
             continue;
         }
 
-        if line.len() > 500 {
+        let chars = line.chars().count();
+        if chars > 500 {
             suggestions.push(
                 Suggestion::low(
                     OptimizationType::ImproveStructure,
                     format!(
                         "Very long paragraph at line {} ({} chars)",
-                        line_number,
-                        line.len()
+                        line_number, chars
                     ),
                 )
                 .with_action("Break into shorter paragraphs for readability"),
@@ -297,8 +336,16 @@ fn check_content_patterns(content: &str, suggestions: &mut Vec<Suggestion>) {
         }
     }
 
-    // Check for TODO/FIXME markers
-    let todo_count = content.matches("TODO").count() + content.matches("FIXME").count();
+    // Check for TODO/FIXME markers: whole words in prose, so `TODOS`
+    // and a TODO inside a code example do not count.
+    let todo_count: usize = prose
+        .iter()
+        .map(|&(_, line)| {
+            line.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .filter(|w| *w == "TODO" || *w == "FIXME")
+                .count()
+        })
+        .sum();
     if todo_count > 0 {
         suggestions.push(
             Suggestion::low(
@@ -310,20 +357,10 @@ fn check_content_patterns(content: &str, suggestions: &mut Vec<Suggestion>) {
     }
 }
 
-const VERY_LARGE_PREFIX: &str = "Skill is very large (";
-const LARGE_PREFIX: &str = "Skill is large (";
-const MISSING_FILES_SUFFIX: &str = " referenced files are missing";
-
-/// Whether `s` is one of the suggestions `suggest_optimizations` emits
-/// for a condition `quality_score` already deducts for directly (skill
-/// size, missing referenced files).
+/// Whether `s` reports a condition `quality_score` already deducts for
+/// directly (skill size, missing referenced files).
 fn mirrors_direct_deduction(s: &Suggestion) -> bool {
-    match (s.priority, s.opt_type) {
-        (Priority::High, OptimizationType::ReduceSize) => s.message.starts_with(VERY_LARGE_PREFIX),
-        (Priority::Medium, OptimizationType::ReduceSize) => s.message.starts_with(LARGE_PREFIX),
-        (Priority::High, OptimizationType::FixIssue) => s.message.ends_with(MISSING_FILES_SUFFIX),
-        _ => false,
-    }
+    s.kind.is_some()
 }
 
 /// Calculate a quality score (0.0 - 1.0) for a skill.
@@ -444,6 +481,91 @@ mod tests {
             suggest_optimizations("# Skill\n", &large, &DependencyAnalysis::default());
         let score = quality_score(&large, &DependencyAnalysis::default(), &suggestions);
         assert!((score - 0.85).abs() < 1e-9, "score {score}");
+    }
+
+    fn messages(content: &str, deps: &DependencyAnalysis) -> Vec<String> {
+        suggest_optimizations(content, &TokenBreakdown::default(), deps)
+            .into_iter()
+            .map(|s| s.message)
+            .collect()
+    }
+
+    /// M299: a URL that merely contains `scripts/` is not a reference to
+    /// the skill's scripts directory.
+    #[test]
+    fn external_url_is_not_a_reference_to_a_local_directory() {
+        let mut deps = DependencyAnalysis::default();
+        deps.directories.push("scripts".into());
+        deps.total_dep_size = 10;
+        deps.dependencies.push(crate::deps::Dependency {
+            dep_type: crate::deps::DependencyType::ExternalUrl,
+            target: "https://example.com/scripts/x".into(),
+            line: Some(1),
+            exists: None,
+        });
+        let msgs = messages("# Skill\n", &deps);
+        assert!(
+            msgs.iter().any(|m| m.contains("Directory 'scripts/'")),
+            "{msgs:?}"
+        );
+    }
+
+    /// M300: frontmatter is not prose; heading duplicates compare level;
+    /// paragraph length counts characters.
+    #[test]
+    fn frontmatter_heading_levels_and_char_lengths() {
+        let desc = "d".repeat(600);
+        let content = format!(
+            "---\n# comment\ndescription: {desc}\n# comment\n---\n# Usage\n## Usage\n{}\n",
+            "é".repeat(300)
+        );
+        let msgs = messages(&content, &DependencyAnalysis::default());
+        assert!(
+            !msgs
+                .iter()
+                .any(|m| m.contains("Duplicate heading") || m.contains("long paragraph")),
+            "{msgs:?}"
+        );
+    }
+
+    /// M301: TODO markers count as words in prose only.
+    #[test]
+    fn todo_markers_count_whole_words_outside_code() {
+        let content =
+            "# Skill\nTODOS are listed elsewhere.\n```\n// TODO: example\n```\nTODO: real one\n";
+        let msgs = messages(content, &DependencyAnalysis::default());
+        assert!(
+            msgs.iter().any(|m| m == "Found 1 TODO/FIXME marker(s)"),
+            "{msgs:?}"
+        );
+    }
+
+    /// M302: deductions follow the suggestion kind, not its wording.
+    #[test]
+    fn quality_score_ignores_message_wording() {
+        let tokens = TokenBreakdown {
+            total: 12_000,
+            prose: 12_000,
+            ..Default::default()
+        };
+        let deps = DependencyAnalysis::default();
+        let mut suggestions = suggest_optimizations("# Skill\n", &tokens, &deps);
+        for s in &mut suggestions {
+            s.message = format!("reworded: {}", s.message);
+        }
+        let score = quality_score(&tokens, &deps, &suggestions);
+        assert!((score - 0.7).abs() < 1e-9, "score {score}");
+    }
+
+    /// M303: a `~~~` fence hides its contents like a backtick fence.
+    #[test]
+    fn tilde_fenced_code_is_not_prose() {
+        let content = "# Title\n~~~\n# Title\n~~~\n";
+        let msgs = messages(content, &DependencyAnalysis::default());
+        assert!(
+            !msgs.iter().any(|m| m.contains("Duplicate heading")),
+            "{msgs:?}"
+        );
     }
 
     #[test]

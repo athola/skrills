@@ -9,27 +9,18 @@
 
 #![deny(unsafe_code)]
 
+mod agents_doc;
 #[cfg_attr(test, allow(dead_code))]
 pub mod app;
 pub(crate) mod cache;
-pub mod config;
 mod handler;
 pub mod mcp_gateway;
 mod mcp_result;
 pub(crate) mod metrics_types;
-pub mod setup;
 mod skill_trace;
-pub mod sync;
 #[cfg(test)]
 mod test_support;
 pub mod tool_schemas;
-
-/// Skills manifest for caching and quick loading.
-#[deprecated(
-    since = "0.9.0",
-    note = "nothing in skrills reads or writes the skills manifest; unused, will be removed in a future release"
-)]
-pub mod manifest;
 
 /// HTTP transport for remote MCP access.
 #[cfg(feature = "http-transport")]
@@ -48,12 +39,5 @@ pub mod ui;
 pub mod tls_auto;
 
 /// Skill discovery mechanism.
-pub mod discovery;
-/// Server runtime.
-#[deprecated(
-    since = "0.9.0",
-    note = "only re-exports skrills_state::runtime_overrides_path; use that instead. Will be removed in a future release"
-)]
-pub mod runtime;
 /// Tracing and logging configuration.
 pub mod trace;

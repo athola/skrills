@@ -1,7 +1,8 @@
 [package]
 name = "skrills-discovery"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2021"
+rust-version.workspace = true
 description = "Filesystem discovery and hashing utilities used by the skrills MCP server."
 license = "MIT"
 repository = "https://github.com/athola/skrills"
@@ -15,13 +16,14 @@ categories = ["development-tools", "filesystem"]
 path = "src/lib.rs"
 
 [dependencies]
-skrills-validate = { path = "../validate", version = "0.9.0" }
+skrills-validate = { path = "../validate", version = "0.9.1" }
+skrills-state = { path = "../state", version = "0.9.1" }
 anyhow.workspace = true
 thiserror.workspace = true
 dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml.workspace = true
+serde_norway.workspace = true
 blake2.workspace = true
 hex = "0.4.3"
 walkdir.workspace = true
@@ -29,3 +31,6 @@ pathdiff.workspace = true
 tempfile.workspace = true
 rayon.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+skrills-test-utils = { path = "../test-utils" }

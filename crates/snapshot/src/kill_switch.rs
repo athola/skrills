@@ -5,6 +5,10 @@
 //! same switch before performing any mutating I/O and refuse with a typed
 //! error when it is engaged.
 //!
+//! The flag is per process. `skrills cold-window` also records an engaged
+//! switch as a pid file that syncs in other processes check; see
+//! `skrills_sync::kill_switch_marker`.
+//!
 //! `KillSwitch` is in the snapshot crate because it is the only crate
 //! already shared between the producer (`skrills_analyze::cold_window`) and
 //! the consumer (`skrills_sync`); placing the type here avoids a circular

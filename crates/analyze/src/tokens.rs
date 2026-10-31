@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::fence::FenceTracker;
+
 /// Approximate characters per token for prose/markdown content.
 /// English text averages ~4 characters per token.
 const PROSE_CHARS_PER_TOKEN: f64 = 4.0;
@@ -46,53 +48,24 @@ fn estimate_tokens_with_ratio(chars: usize, chars_per_token: f64) -> usize {
 pub fn count_tokens(content: &str) -> TokenBreakdown {
     let mut breakdown = TokenBreakdown::default();
 
-    let mut in_frontmatter = false;
-    let mut in_code_block = false;
+    let mut fence = FenceTracker::default();
     let mut frontmatter_chars = 0usize;
     let mut code_chars = 0usize;
     let mut prose_chars = 0usize;
 
-    // Frontmatter can only open on the first non-empty line. After
-    // that, a `---` line is a markdown horizontal rule.
-    let mut frontmatter_started = false;
-    let mut seen_content = false;
+    let frontmatter = frontmatter_lines(content);
 
-    for line in content.lines() {
+    // `split_inclusive` keeps each line's own newline, so a last line
+    // without one is not charged for a newline that is not there.
+    for (index, segment) in content.split_inclusive('\n').enumerate() {
         // The ratios are characters per token, so count characters,
-        // not UTF-8 bytes. +1 for the newline.
-        let line_len = line.chars().count() + 1;
-        let opens_document = !seen_content;
-        if !line.trim().is_empty() {
-            seen_content = true;
-        }
+        // not UTF-8 bytes.
+        let line_len = segment.chars().count();
+        let line = segment.trim_end_matches(['\n', '\r']);
 
-        // Handle frontmatter delimiters
-        if line.trim() == "---" {
-            if !frontmatter_started && opens_document {
-                frontmatter_started = true;
-                in_frontmatter = true;
-                frontmatter_chars += line_len;
-                continue;
-            } else if in_frontmatter {
-                in_frontmatter = false;
-                frontmatter_chars += line_len;
-                continue;
-            }
-        }
-
-        if in_frontmatter {
+        if frontmatter.as_ref().is_some_and(|r| r.contains(&index)) {
             frontmatter_chars += line_len;
-            continue;
-        }
-
-        // Handle code blocks
-        if line.trim().starts_with("```") {
-            in_code_block = !in_code_block;
-            code_chars += line_len;
-            continue;
-        }
-
-        if in_code_block {
+        } else if fence.is_code(line) {
             code_chars += line_len;
         } else {
             prose_chars += line_len;
@@ -104,9 +77,30 @@ pub fn count_tokens(content: &str) -> TokenBreakdown {
         estimate_tokens_with_ratio(frontmatter_chars, FRONTMATTER_CHARS_PER_TOKEN);
     breakdown.code = estimate_tokens_with_ratio(code_chars, CODE_CHARS_PER_TOKEN);
     breakdown.prose = estimate_tokens_with_ratio(prose_chars, PROSE_CHARS_PER_TOKEN);
-    breakdown.total = breakdown.frontmatter + breakdown.code + breakdown.prose;
+    // Rounded once: each section rounded up and then summed overstated
+    // the total by up to 2.
+    breakdown.total = (frontmatter_chars as f64 / FRONTMATTER_CHARS_PER_TOKEN
+        + code_chars as f64 / CODE_CHARS_PER_TOKEN
+        + prose_chars as f64 / PROSE_CHARS_PER_TOKEN)
+        .ceil() as usize;
 
     breakdown
+}
+
+/// Line indices of the frontmatter block, delimiters included.
+///
+/// Frontmatter opens only on the first non-empty line and counts only
+/// once a closing `---` is found; an unclosed opener is body text, not a
+/// file-long frontmatter block. After the opener's line, a `---` is a
+/// horizontal rule unless it closes the block.
+pub(crate) fn frontmatter_lines(content: &str) -> Option<std::ops::RangeInclusive<usize>> {
+    let mut lines = content.lines().enumerate();
+    let (open, _) = lines.find(|(_, l)| !l.trim().is_empty())?;
+    if content.lines().nth(open)?.trim() != "---" {
+        return None;
+    }
+    let (close, _) = lines.find(|(_, l)| l.trim() == "---")?;
+    Some(open..=close)
 }
 
 /// Token budget categories.
@@ -257,6 +251,68 @@ mod tests {
         assert!(breakdown.code > 0);
     }
 
+    /// M309: the same 70 characters cost more tokens as code than as
+    /// prose, and more as frontmatter than as code, through count_tokens.
+    #[test]
+    fn same_length_content_costs_most_as_frontmatter_and_least_as_prose() {
+        let body = "x".repeat(61);
+        let prose = count_tokens(&format!("{}\n", "x".repeat(69)));
+        let code = count_tokens(&format!("```\n{body}\n```\n"));
+        let frontmatter = count_tokens(&format!("---\n{body}\n---\n"));
+        assert_eq!((prose.prose, prose.total), (18, 18));
+        assert_eq!((code.code, code.total), (20, 20));
+        assert_eq!((frontmatter.frontmatter, frontmatter.total), (22, 22));
+    }
+
+    /// M304: no newline is counted past the end of the file.
+    #[test]
+    fn final_line_without_newline_counts_no_newline() {
+        assert_eq!(count_tokens("abcd").total, 1);
+        assert_eq!(count_tokens("abcd\n").total, 2);
+    }
+
+    /// M304: the total is rounded once, not once per section.
+    #[test]
+    fn total_is_rounded_once_over_all_sections() {
+        // 10/3.2 + 2/4 + 10/3.5 = 6.48 tokens, so 7, not 4 + 1 + 3.
+        let t = count_tokens("---\nx\n---\np\n```\nq\n```\n");
+        assert_eq!((t.frontmatter, t.prose, t.code), (4, 1, 3));
+        assert_eq!(t.total, 7);
+    }
+
+    /// M303: a `~~~` fence is code like a backtick fence.
+    #[test]
+    fn tilde_fence_counts_as_code() {
+        let t = count_tokens("~~~\nfn a() {}\n~~~\n");
+        assert_eq!(t.prose, 0, "{t:?}");
+        assert!(t.code > 0);
+    }
+
+    /// M304: category boundaries.
+    #[test]
+    fn token_category_boundaries() {
+        use TokenCategory::*;
+        for (n, cat) in [
+            (500, Small),
+            (501, Medium),
+            (2000, Medium),
+            (2001, Large),
+            (8000, Large),
+            (8001, VeryLarge),
+        ] {
+            assert_eq!(TokenCategory::from_count(n), cat, "{n}");
+        }
+    }
+
+    #[test]
+    fn unterminated_frontmatter_counts_as_body() {
+        let content = "---\n# Title\n\nSome prose here.\n\n```rust\nfn main() {}\n```\n";
+        let tokens = count_tokens(content);
+        assert_eq!(tokens.frontmatter, 0, "{tokens:?}");
+        assert!(tokens.prose > 0, "{tokens:?}");
+        assert!(tokens.code > 0, "{tokens:?}");
+    }
+
     #[test]
     fn frontmatter_opener_may_follow_leading_blank_lines() {
         let breakdown = count_tokens("\n---\nname: x\n---\nBody.");
@@ -266,10 +322,10 @@ mod tests {
     #[test]
     fn non_ascii_text_is_counted_in_characters_not_bytes() {
         // IN-59: the ratios are chars-per-token. 40 CJK characters are
-        // 120 UTF-8 bytes; 40 chars plus the newline gives 41 / 4.0.
+        // 120 UTF-8 bytes; 40 chars (no trailing newline) gives 40 / 4.0.
         let line = "漢".repeat(40);
         let breakdown = count_tokens(&line);
-        assert_eq!(breakdown.prose, 11);
+        assert_eq!(breakdown.prose, 10);
     }
 
     #[test]
@@ -292,53 +348,6 @@ mod tests {
     // -------------------------------------------------------------------------
     // Content-Aware Token Estimation Tests
     // -------------------------------------------------------------------------
-
-    #[test]
-    fn test_code_tokens_higher_than_prose_for_same_chars() {
-        // Code should produce MORE tokens than prose for the same character count
-        // because code has shorter average token length
-        let code_content = "```rust\nfn main() { println!(\"hello\"); }\n```";
-        let prose_content = "This is some regular prose text here.";
-
-        // For similar character counts, code should estimate higher
-        let code_chars = code_content.len();
-        let prose_chars = prose_content.len();
-
-        // Using the ratios: code = chars/3.5, prose = chars/4.0
-        // So for same chars: code_tokens > prose_tokens
-        let code_tokens = (code_chars as f64 / 3.5).ceil() as usize;
-        let prose_tokens = (prose_chars as f64 / 4.0).ceil() as usize;
-
-        // Normalize by character count to compare rates
-        let code_rate = code_tokens as f64 / code_chars as f64;
-        let prose_rate = prose_tokens as f64 / prose_chars as f64;
-
-        assert!(
-            code_rate > prose_rate,
-            "Code should have higher token rate: {} vs {}",
-            code_rate,
-            prose_rate
-        );
-    }
-
-    #[test]
-    fn test_frontmatter_tokens_highest_rate() {
-        // Frontmatter (YAML) should have the highest token rate due to short keys
-        // Using ratios: frontmatter=3.2, code=3.5, prose=4.0
-
-        let frontmatter_rate = 1.0 / 3.2;
-        let code_rate = 1.0 / 3.5;
-        let prose_rate = 1.0 / 4.0;
-
-        assert!(
-            frontmatter_rate > code_rate,
-            "Frontmatter should have higher token rate than code"
-        );
-        assert!(
-            code_rate > prose_rate,
-            "Code should have higher token rate than prose"
-        );
-    }
 
     #[test]
     fn test_count_tokens_mixed_content_accuracy() {
@@ -366,11 +375,11 @@ More prose here.
         assert!(breakdown.code > 0, "Should have code tokens");
         assert!(breakdown.prose > 0, "Should have prose tokens");
 
-        // Total should equal sum of parts
-        assert_eq!(
-            breakdown.total,
-            breakdown.frontmatter + breakdown.code + breakdown.prose,
-            "Total should equal sum of parts"
+        // Each part is rounded up on its own; the total is rounded once,
+        // so it is at most their sum.
+        assert!(
+            breakdown.total <= breakdown.frontmatter + breakdown.code + breakdown.prose,
+            "{breakdown:?}"
         );
     }
 }

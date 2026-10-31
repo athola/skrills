@@ -196,6 +196,9 @@ pub enum BandError {
     MisorderedThresholds,
     /// One or more thresholds is `NaN`.
     NaNValue,
+    /// One or more thresholds is infinite. JSON has no infinity, so it
+    /// serializes as `null` and the band could not be read back.
+    NonFinite,
     /// A `*_clear` value sits on the wrong side of its fire threshold,
     /// so hysteresis can never re-arm. The expected ordering is
     /// `low <= low_clear <= high_clear <= high`.
@@ -206,6 +209,7 @@ impl core::fmt::Display for BandError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::MisorderedThresholds => write!(f, "AlertBand: low must be <= high"),
+            Self::NonFinite => write!(f, "AlertBand: thresholds must be finite"),
             Self::NaNValue => write!(f, "AlertBand: thresholds may not be NaN"),
             Self::InvalidClear => write!(
                 f,
@@ -229,6 +233,12 @@ impl AlertBand {
             .any(|v| v.is_nan())
         {
             return Err(BandError::NaNValue);
+        }
+        if [low, low_clear, high, high_clear]
+            .iter()
+            .any(|v| v.is_infinite())
+        {
+            return Err(BandError::NonFinite);
         }
         if low > high {
             return Err(BandError::MisorderedThresholds);
@@ -361,7 +371,9 @@ pub struct ScoredHint {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ResearchChannel {
-    /// GitHub code search.
+    /// GitHub code search. Named explicitly: kebab-case splits `GitHub`
+    /// into `git-hub`, which is not what producers or the server send.
+    #[serde(rename = "github")]
     GitHub,
     /// Hacker News discourse.
     HackerNews,

@@ -124,14 +124,21 @@ Helps debug complex issues.
         )
         .unwrap();
 
-        // Create settings.json with MCP servers
-        let settings = serde_json::json!({
+        // User-scope MCP servers live in ~/.claude.json, the model in settings.json
+        let user_config = serde_json::json!({
             "mcpServers": {
                 "claude-server": {
                     "command": "/usr/bin/claude-mcp",
                     "args": ["--verbose"]
                 }
-            },
+            }
+        });
+        fs::write(
+            root.join(".claude.json"),
+            serde_json::to_string_pretty(&user_config).unwrap(),
+        )
+        .unwrap();
+        let settings = serde_json::json!({
             "model": "claude-sonnet-4",
             "preferences": {
                 "theme": "dark"
@@ -210,6 +217,7 @@ mod copilot_to_claude_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -238,7 +246,7 @@ mod copilot_to_claude_tests {
         GIVEN a Copilot configuration with MCP servers in mcp-config.json
         WHEN syncing to Claude
         THEN MCP servers should be read from mcp-config.json (not config.json)
-        AND written to Claude's settings.json
+        AND written to Claude's ~/.claude.json
         */
         let setup = CopilotSyncTestSetup::new().unwrap();
 
@@ -265,6 +273,7 @@ mod copilot_to_claude_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -313,6 +322,7 @@ mod copilot_to_claude_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -365,6 +375,7 @@ mod claude_to_copilot_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -390,7 +401,7 @@ mod claude_to_copilot_tests {
     #[test]
     fn test_sync_claude_mcp_to_copilot_mcp_config() {
         /*
-        GIVEN a Claude configuration with MCP servers in settings.json
+        GIVEN a Claude configuration with MCP servers in ~/.claude.json
         WHEN syncing to Copilot
         THEN MCP servers should be written to mcp-config.json (not config.json)
         */
@@ -419,6 +430,7 @@ mod claude_to_copilot_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -473,6 +485,7 @@ mod claude_to_copilot_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -529,6 +542,7 @@ mod copilot_to_codex_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -577,6 +591,7 @@ mod copilot_to_codex_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -630,6 +645,7 @@ mod copilot_dry_run_tests {
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -719,8 +735,8 @@ mod copilot_security_tests {
         let skills_dir = tmp.path().join("skills");
         assert!(skills_dir.exists(), "Skills directory should exist");
 
-        // The sanitized name should be "etc/passwd" (dots and slashes stripped from leading segments)
-        let safe_path = skills_dir.join("etc/passwd").join("SKILL.md");
+        // Only the last segment names the folder, so no `..` can survive
+        let safe_path = skills_dir.join("passwd").join("SKILL.md");
         assert!(
             safe_path.exists(),
             "Skill should be at safe path {:?}, not at system /etc/passwd",
@@ -736,11 +752,12 @@ mod copilot_security_tests {
     }
 
     #[test]
-    fn test_nested_skill_paths_preserved() {
+    fn test_nested_skill_lands_in_its_leaf_folder() {
         /*
-        GIVEN a skill with a legitimate nested path (category/skill-name)
+        GIVEN a skill with a nested path (category/skill-name)
         WHEN syncing to Copilot
-        THEN the nested path structure should be preserved
+        THEN it is written one level deep, under its last segment, like
+        every other adapter writes it
         */
         let tmp = TempDir::new().unwrap();
         let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
@@ -760,8 +777,7 @@ mod copilot_security_tests {
         let result = adapter.write_skills(&[nested_skill]);
         let _ = result.expect("Write should succeed");
 
-        // Verify nested structure is preserved
-        let nested_path = tmp.path().join("skills/category/my-skill/SKILL.md");
+        let nested_path = tmp.path().join("skills/my-skill/SKILL.md");
         assert!(
             nested_path.exists(),
             "Nested skill should be at {:?}",
@@ -774,7 +790,7 @@ mod copilot_security_tests {
         /*
         GIVEN a skill with mixed traversal attempts and legitimate nesting
         WHEN syncing to Copilot
-        THEN traversal segments should be removed but legitimate paths preserved
+        THEN only the last segment names the folder
         */
         let tmp = TempDir::new().unwrap();
         let adapter = CopilotAdapter::with_root(tmp.path().to_path_buf());
@@ -794,8 +810,7 @@ mod copilot_security_tests {
         let result = adapter.write_skills(&[mixed_skill]);
         let _ = result.expect("Write should succeed");
 
-        // The sanitized path should be "category/other/skill" (traversal removed)
-        let safe_path = tmp.path().join("skills/category/other/skill/SKILL.md");
+        let safe_path = tmp.path().join("skills/skill/SKILL.md");
         assert!(
             safe_path.exists(),
             "Mixed path skill should be at safe location {:?}",
@@ -907,6 +922,7 @@ This is a test agent for Copilot.
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -981,6 +997,7 @@ This is a test agent for Copilot.
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -1038,6 +1055,7 @@ This is a test agent for Copilot.
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -1093,6 +1111,7 @@ This is a test agent for Copilot.
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -1148,6 +1167,7 @@ This is a test agent for Copilot.
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);
@@ -1161,8 +1181,9 @@ This is a test agent for Copilot.
             "Agents should be written to Codex as skills"
         );
 
-        // Verify agents were written as skills with "agent-" prefix
-        let skills_dir = codex_dir.path().join("skills");
+        // Verify agents were written as skills with "agent-" prefix, in the
+        // shared dir Codex loads skills from
+        let skills_dir = codex_dir.path().join(".agents/skills");
         assert!(
             skills_dir.join("agent-code-review-agent/SKILL.md").exists(),
             "Agent should be written as skill with agent- prefix"
@@ -1207,6 +1228,7 @@ This is a test agent for Copilot.
             interactive: false,
             exclude_plugins: vec![],
             full_plugin_mirror: false,
+            keep_versions: false,
         };
 
         let orchestrator = SyncOrchestrator::new(source, target);

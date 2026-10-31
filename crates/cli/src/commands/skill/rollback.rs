@@ -14,7 +14,7 @@ pub(crate) fn handle_skill_rollback_command(
     skill_dirs: Vec<PathBuf>,
     format: OutputFormat,
 ) -> Result<()> {
-    let roots = crate::commands::skill_roots_for(&skill_dirs);
+    let roots = crate::commands::skill_roots_for(&skill_dirs)?;
     let skills = discover_skills(&roots, None)?;
     let skill = find_skill(&skills, &name)?;
     let skill_path = &skill.path;
@@ -136,6 +136,12 @@ fn skill_history(skill_path: &Path) -> Result<Vec<SkillVersion>> {
         ],
     )?;
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // A skill outside any repository (the default skill roots) simply
+        // has no history to roll back to.
+        if stderr.contains("not a git repository") {
+            return Ok(Vec::new());
+        }
         bail!(
             "Git log failed for '{}': {}",
             skill_path.display(),
@@ -169,7 +175,7 @@ fn is_valid_version_hash(version: &str) -> bool {
 /// Restores `skill_path` to its content at `version`.
 ///
 /// Refuses when the file has uncommitted changes, staged or not, because
-/// `git checkout <rev> -- <file>` overwrites them with no way back.
+/// the restore overwrites them with no way back.
 fn checkout_version(skill_path: &Path, version: &str) -> Result<()> {
     if !is_valid_version_hash(version) {
         bail!(
@@ -196,13 +202,22 @@ fn checkout_version(skill_path: &Path, version: &str) -> Result<()> {
         );
     }
 
+    // `restore --worktree` leaves the index alone; `checkout <rev> -- <file>`
+    // staged the old content for the next commit to pick up.
+    let source = format!("--source={version}");
     let checkout = git_in(
         skill_path,
-        &["checkout", version, "--", path_arg(skill_path)?],
+        &[
+            "restore",
+            &source,
+            "--worktree",
+            "--",
+            path_arg(skill_path)?,
+        ],
     )?;
     if !checkout.status.success() {
         bail!(
-            "Git checkout failed: {}",
+            "Git restore failed: {}",
             String::from_utf8_lossy(&checkout.stderr)
         );
     }
@@ -225,6 +240,11 @@ mod tests {
             ])
             .args(args)
             .current_dir(repo)
+            // A git hook's GIT_DIR/GIT_INDEX_FILE would point this at the
+            // enclosing repository instead of the temp one.
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_WORK_TREE")
             .output()
             .expect("spawn git");
         assert!(out.status.success(), "git {args:?}: {out:?}");
@@ -280,6 +300,9 @@ mod tests {
 
     #[test]
     fn history_and_checkout_restore_an_earlier_version() {
+        // Doctor tests point PATH at a temp dir under this guard; git must
+        // not be spawned while they do.
+        let _g = skrills_test_utils::env_guard();
         if !git_available() {
             return;
         }
@@ -294,9 +317,51 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "v1\n");
     }
 
+    /// The default skill roots are not repositories; that is "no history",
+    /// not a git error.
+    #[test]
+    fn a_skill_outside_any_repository_has_no_history() {
+        if !git_available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("alpha/SKILL.md");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "v1\n").unwrap();
+        let _g = skrills_test_utils::env_guard();
+        let _c = skrills_test_utils::set_env_var(
+            "GIT_CEILING_DIRECTORIES",
+            Some(dir.path().parent().unwrap().to_str().unwrap()),
+        );
+
+        assert!(skill_history(&file).unwrap().is_empty());
+    }
+
+    /// `git checkout <rev> -- <file>` also staged the old content, which the
+    /// next commit then picked up.
+    #[test]
+    fn checkout_restores_the_worktree_without_staging_it() {
+        // Doctor tests point PATH at a temp dir under this guard; git must
+        // not be spawned while they do.
+        let _g = skrills_test_utils::env_guard();
+        if !git_available() {
+            return;
+        }
+        let repo = tempfile::tempdir().unwrap();
+        let (file, first) = repo_with_two_versions(repo.path());
+
+        checkout_version(&file, &first).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "v1\n");
+        assert_eq!(git(repo.path(), &["diff", "--cached", "--name-only"]), "");
+    }
+
     /// SB-18: rollback overwrote uncommitted edits.
     #[test]
     fn checkout_refuses_a_file_with_uncommitted_changes() {
+        // Doctor tests point PATH at a temp dir under this guard; git must
+        // not be spawned while they do.
+        let _g = skrills_test_utils::env_guard();
         if !git_available() {
             return;
         }

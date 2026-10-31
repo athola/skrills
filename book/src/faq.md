@@ -53,7 +53,7 @@ No. The MCP server only reads from configured directories, set either via `--ski
 
 ### What is the process for contributing new skills?
 
-To contribute, add your new skills to your directory (`~/.claude/skills/` or `~/.codex/skills/`) and run `skrills validate --target both` to verify compatibility. For upstream contributions, follow the repository's PR process.
+To contribute, add your new skills to your directory (`~/.claude/skills/` or `~/.agents/skills/`) and run `skrills validate --target both` to verify compatibility. For upstream contributions, follow the repository's PR process.
 
 ### Does the system work offline?
 

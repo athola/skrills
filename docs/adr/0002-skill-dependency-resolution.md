@@ -36,4 +36,4 @@ Implement a dependency tracking and resolution system with these key choices:
 ## References
 
 - Full specification: [docs/dependency-resolution.md](../dependency-resolution.md)
-- Implementation: `crates/analyze/src/resolve.rs`
+- Implementation: `crates/analyze/src/resolve/`

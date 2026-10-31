@@ -32,11 +32,7 @@ pub const MAX_CONTENT_LENGTH: usize = 30_000;
 
 /// Validate a skill for Copilot CLI compatibility.
 pub fn validate_copilot(path: &Path, content: &str) -> ValidationResult {
-    let name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown")
-        .to_string();
+    let name = crate::autofix::derive_name_from_path(path);
 
     let mut result = ValidationResult::new(path.to_path_buf(), name.clone());
 
@@ -83,7 +79,7 @@ pub fn validate_copilot(path: &Path, content: &str) -> ValidationResult {
     }
 
     // Validate required fields
-    validate_copilot_frontmatter(&mut result, fm);
+    validate_copilot_frontmatter(&mut result, fm, content);
 
     // Validate content
     validate_copilot_content(&mut result, &parsed);
@@ -94,13 +90,17 @@ pub fn validate_copilot(path: &Path, content: &str) -> ValidationResult {
 fn validate_copilot_frontmatter(
     result: &mut ValidationResult,
     fm: &crate::frontmatter::SkillFrontmatter,
+    content: &str,
 ) {
+    // Missing keys have no line to point at; present ones cite their own.
+    let name_line = crate::frontmatter::frontmatter_key_line(content, "name");
+    let desc_line = crate::frontmatter::frontmatter_key_line(content, "description");
+
     // Name is required
     match &fm.name {
         None => {
             result.add_issue(
                 ValidationIssue::error(ValidationTarget::Copilot, "Missing required 'name' field")
-                    .with_line(2)
                     .with_suggestion("Add 'name: your-skill-name' to frontmatter"),
             );
         }
@@ -111,19 +111,19 @@ fn validate_copilot_frontmatter(
                         ValidationTarget::Copilot,
                         "'name' field cannot be empty",
                     )
-                    .with_line(2),
+                    .with_optional_line(name_line),
                 );
-            } else if name.len() > MAX_NAME_LENGTH {
+            } else if name.chars().count() > MAX_NAME_LENGTH {
                 result.add_issue(
                     ValidationIssue::error(
                         ValidationTarget::Copilot,
                         format!(
                             "'name' exceeds maximum length ({} > {} chars)",
-                            name.len(),
+                            name.chars().count(),
                             MAX_NAME_LENGTH
                         ),
                     )
-                    .with_line(2),
+                    .with_optional_line(name_line),
                 );
             }
 
@@ -134,7 +134,7 @@ fn validate_copilot_frontmatter(
                         ValidationTarget::Copilot,
                         "'name' cannot contain newlines",
                     )
-                    .with_line(2),
+                    .with_optional_line(name_line),
                 );
             }
         }
@@ -148,7 +148,6 @@ fn validate_copilot_frontmatter(
                     ValidationTarget::Copilot,
                     "Missing required 'description' field",
                 )
-                .with_line(3)
                 .with_suggestion(
                     "Add 'description: Brief description of what the skill does' to frontmatter",
                 ),
@@ -161,19 +160,19 @@ fn validate_copilot_frontmatter(
                         ValidationTarget::Copilot,
                         "'description' field cannot be empty",
                     )
-                    .with_line(3),
+                    .with_optional_line(desc_line),
                 );
-            } else if desc.len() > MAX_DESCRIPTION_LENGTH {
+            } else if desc.chars().count() > MAX_DESCRIPTION_LENGTH {
                 result.add_issue(
                     ValidationIssue::error(
                         ValidationTarget::Copilot,
                         format!(
                             "'description' exceeds maximum length ({} > {} chars)",
-                            desc.len(),
+                            desc.chars().count(),
                             MAX_DESCRIPTION_LENGTH
                         ),
                     )
-                    .with_line(3)
+                    .with_optional_line(desc_line)
                     .with_suggestion("Shorten the description to 500 characters or less"),
                 );
             }
@@ -449,5 +448,23 @@ mod tests {
         assert!(!is_copilot_compatible(
             "---\ndescription: desc\n---\n# Missing name"
         ));
+    }
+
+    /// Codex and the Agent Skills spec count characters, not UTF-8 bytes.
+    #[test]
+    fn copilot_counts_name_and_description_length_in_characters() {
+        let name = "и".repeat(MAX_NAME_LENGTH); // 2 bytes per char
+        let desc = "あ".repeat(MAX_DESCRIPTION_LENGTH); // 3 bytes per char
+        let content = skrills_test_utils::skill_md(&name, &desc, "# Content\nBody.");
+        let result = validate_copilot(&PathBuf::from("skill.md"), &content);
+        assert!(result.copilot_valid, "{:?}", result.issues);
+        assert!(is_copilot_compatible(&content));
+
+        let over = skrills_test_utils::skill_md("n", &format!("{desc}あ"), "# Content\nBody.");
+        let result = validate_copilot(&PathBuf::from("skill.md"), &over);
+        assert!(result
+            .issues
+            .iter()
+            .any(|i| i.message.contains("(501 > 500 chars)")));
     }
 }

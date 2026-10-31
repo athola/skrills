@@ -21,9 +21,7 @@
 //! incoming names to support both conventions for compatibility.
 
 use crate::app::SkillService;
-use crate::discovery::priority_labels_and_rank_map;
 use crate::mcp_result::tool_ok;
-use crate::sync::mirror_source_root;
 use crate::tool_schemas;
 use anyhow::Result;
 use rmcp::model::{
@@ -33,7 +31,10 @@ use rmcp::model::{
 };
 use rmcp::ServerHandler;
 use serde_json::json;
+use skrills_discovery::priority_labels_and_rank_map;
 use skrills_state::home_dir;
+use skrills_sync::mirror_source_root;
+use skrills_sync::Platform;
 use std::borrow::Cow;
 use std::fs;
 
@@ -87,10 +88,65 @@ pub(crate) fn invalid_params(message: impl Into<String>) -> anyhow::Error {
     InvalidParams(message.into()).into()
 }
 
-/// Converts a tool error to the JSON-RPC error the client sees.
+/// Parses one platform argument of a sync tool. Names are matched exactly,
+/// as the tools document them.
+pub(crate) fn parse_sync_platform(field: &str, value: &str) -> Result<Platform> {
+    Platform::ALL
+        .into_iter()
+        .find(|p| p.as_str() == value)
+        .ok_or_else(|| {
+            let names: Vec<&str> = Platform::ALL.iter().map(|p| p.as_str()).collect();
+            invalid_params(format!(
+                "Invalid '{field}' value '{value}': expected one of {}",
+                names.join(", ")
+            ))
+        })
+}
+
+/// Parses a sync tool's `from` and optional `to` (defaulting to
+/// [`Platform::default_target`]), refusing a sync from a platform to itself,
+/// which would read a tool's configuration and write it back through its own
+/// lossy writer.
+pub(crate) fn sync_pair(from: &str, to: Option<&str>) -> Result<(Platform, Platform)> {
+    let from = parse_sync_platform("from", from)?;
+    let to = match to {
+        Some(to) => parse_sync_platform("to", to)?,
+        None => from.default_target(),
+    };
+    if from == to {
+        return Err(invalid_params(format!(
+            "Source and target cannot be the same: {from}"
+        )));
+    }
+    Ok((from, to))
+}
+
+/// A resource URI that names nothing (a deleted skill, a hidden document).
+/// Mapped to `resource_not_found` (-32002).
+#[derive(Debug)]
+struct ResourceNotFound(String);
+
+impl std::fmt::Display for ResourceNotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ResourceNotFound {}
+
+pub(crate) fn resource_not_found(message: impl Into<String>) -> anyhow::Error {
+    ResourceNotFound(message.into()).into()
+}
+
+/// Converts a tool or resource error to the JSON-RPC error the client sees.
 fn tool_error(e: anyhow::Error) -> rmcp::ErrorData {
     if e.downcast_ref::<InvalidParams>().is_some() {
         rmcp::ErrorData::invalid_params(e.to_string(), None)
+    } else if e.downcast_ref::<ResourceNotFound>().is_some()
+        || e.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+    {
+        rmcp::ErrorData::resource_not_found(e.to_string(), None)
     } else {
         rmcp::ErrorData::internal_error(e.to_string(), None)
     }
@@ -102,7 +158,7 @@ fn tool_error(e: anyhow::Error) -> rmcp::ErrorData {
 /// tasks to another thread first, so a directory walk in one tool call does
 /// not stall concurrent requests. A current-thread runtime cannot do that, so
 /// the work runs inline there, as it did before.
-fn run_blocking<T>(work: impl FnOnce() -> T) -> T {
+pub(crate) fn run_blocking<T>(work: impl FnOnce() -> T) -> T {
     match tokio::runtime::Handle::try_current() {
         Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
             tokio::task::block_in_place(work)
@@ -127,6 +183,17 @@ fn synced_file_count(value: &serde_json::Value) -> usize {
             .map(synced_file_count)
             .fold(0usize, usize::saturating_add),
         _ => 0,
+    }
+}
+
+/// The direction a sync tool moves configuration, from skrills' side:
+/// `sync-from-<peer>` pulls a peer's configuration into Claude or Codex;
+/// every other sync tool (including `sync-from-claude`, which copies Claude
+/// out) pushes.
+fn sync_operation(tool: &str) -> skrills_metrics::SyncOperation {
+    match tool.strip_prefix("sync-from-") {
+        Some(peer) if peer != "claude" => skrills_metrics::SyncOperation::Pull,
+        _ => skrills_metrics::SyncOperation::Push,
     }
 }
 
@@ -171,7 +238,7 @@ impl SkillService {
         args: Option<&serde_json::Map<String, serde_json::Value>>,
         result: &Result<CallToolResult>,
     ) {
-        use skrills_metrics::{SyncOperation, SyncStatus};
+        use skrills_metrics::SyncStatus;
 
         let dry_run = args
             .and_then(|a| a.get("dry_run"))
@@ -187,9 +254,8 @@ impl SkillService {
             ),
             _ => (0, SyncStatus::Failed),
         };
-        // Every sync tool writes into another tool's configuration.
         self.record_metric("sync", |m| {
-            m.record_sync_event(SyncOperation::Push, files, status)
+            m.record_sync_event(sync_operation(tool), files, status)
         });
     }
 }
@@ -229,7 +295,7 @@ impl ServerHandler for SkillService {
     {
         let result = run_blocking(|| self.read_resource_sync(&request.uri))
             .map(ReadResourceResponse::from)
-            .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None));
+            .map_err(tool_error);
         std::future::ready(result)
     }
 
@@ -336,45 +402,29 @@ impl ServerHandler for SkillService {
                             .unwrap_or(false);
                         let home = home_dir()?;
                         let claude_root = mirror_source_root(&home);
-                        let codex_skills_root = home.join(".codex/skills");
-                        let report = crate::sync::sync_skills_only_from_claude(
+                        let report = skrills_sync::sync_claude_skills_to_codex(
                             &claude_root,
-                            &codex_skills_root,
+                            &home,
                             include_marketplace,
+                            false,
                         )?;
-                        let mut text = if report.copied_names.is_empty() {
-                            format!("copied: {}, skipped: {}", report.copied, report.skipped)
-                        } else {
-                            format!(
-                                "copied: {}, skipped: {}\nsynced: {}",
-                                report.copied,
-                                report.skipped,
-                                report.copied_names.join(", ")
-                            )
-                        };
-                        if let Err(err) = crate::setup::ensure_codex_skills_feature_enabled(
-                            &home.join(".codex/config.toml"),
-                        ) {
-                            // Surface filesystem errors (read-only home, disk full,
-                            // malformed TOML) so the caller learns why Codex loads
-                            // nothing despite the skills landing on disk.
-                            tracing::warn!(
-                                error = %err,
-                                "could not ensure codex skills feature flag"
-                            );
-                            text.push_str(&format!(
-                                "\nwarning: could not enable the codex skills feature in \
-                                 ~/.codex/config.toml: {err}"
-                            ));
+                        let skills = &report.skills;
+                        let mut text = format!(
+                            "copied: {}, skipped: {}",
+                            skills.written,
+                            skills.skipped.len()
+                        );
+                        for warning in &skills.warnings {
+                            text.push_str(&format!("\nwarning: {warning}"));
                         }
                         let (priority, rank_map) = priority_labels_and_rank_map();
                         Ok(tool_ok(
                             vec![ContentBlock::text(text)],
                             Some(json!({
                                 "report": {
-                                    "copied": report.copied,
-                                    "skipped": report.skipped,
-                                    "synced": report.copied_names
+                                    "copied": skills.written,
+                                    "skipped": skills.skipped.len(),
+                                    "warnings": skills.warnings
                                 },
                                 "_meta": {
                                     "priority": priority,
@@ -407,15 +457,17 @@ impl ServerHandler for SkillService {
                         self.sync_skills_tool(args)
                     }
                     "sync-commands" => {
-                        use skrills_sync::{default_target_for, sync_between, SyncParams};
+                        use skrills_sync::{sync_between, SyncParams};
 
                         let args = SyncToolArgs::from_request(&request);
-                        let to = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("to"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_else(|| default_target_for(&args.from));
+                        let (from, to) = sync_pair(
+                            &args.from,
+                            request
+                                .arguments
+                                .as_ref()
+                                .and_then(|obj| obj.get("to"))
+                                .and_then(|v| v.as_str()),
+                        )?;
 
                         let params = SyncParams {
                             from: Some(args.from.clone()),
@@ -431,13 +483,13 @@ impl ServerHandler for SkillService {
                             ..Default::default()
                         };
 
-                        let report = sync_between(&args.from, to, &params)?;
+                        let report = sync_between(from, to, &params)?;
 
                         Ok(tool_ok(
                             vec![ContentBlock::text(report.summary.clone())],
                             Some(json!({
                                 "from": args.from,
-                                "to": to,
+                                "to": to.as_str(),
                                 "report": report,
                                 "dry_run": args.dry_run,
                                 "skip_existing_commands": args.skip_existing_commands
@@ -445,15 +497,17 @@ impl ServerHandler for SkillService {
                         ))
                     }
                     "sync-mcp-servers" => {
-                        use skrills_sync::{default_target_for, sync_between, SyncParams};
+                        use skrills_sync::{sync_between, SyncParams};
 
                         let args = SyncToolArgs::from_request(&request);
-                        let to = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("to"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_else(|| default_target_for(&args.from));
+                        let (from, to) = sync_pair(
+                            &args.from,
+                            request
+                                .arguments
+                                .as_ref()
+                                .and_then(|obj| obj.get("to"))
+                                .and_then(|v| v.as_str()),
+                        )?;
 
                         let params = SyncParams {
                             from: Some(args.from.clone()),
@@ -467,28 +521,30 @@ impl ServerHandler for SkillService {
                             ..Default::default()
                         };
 
-                        let report = sync_between(&args.from, to, &params)?;
+                        let report = sync_between(from, to, &params)?;
 
                         Ok(tool_ok(
                             vec![ContentBlock::text(report.summary.clone())],
                             Some(json!({
                                 "from": args.from,
-                                "to": to,
+                                "to": to.as_str(),
                                 "report": report,
                                 "dry_run": args.dry_run
                             })),
                         ))
                     }
                     "sync-preferences" => {
-                        use skrills_sync::{default_target_for, sync_between, SyncParams};
+                        use skrills_sync::{sync_between, SyncParams};
 
                         let args = SyncToolArgs::from_request(&request);
-                        let to = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("to"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_else(|| default_target_for(&args.from));
+                        let (from, to) = sync_pair(
+                            &args.from,
+                            request
+                                .arguments
+                                .as_ref()
+                                .and_then(|obj| obj.get("to"))
+                                .and_then(|v| v.as_str()),
+                        )?;
 
                         let params = SyncParams {
                             from: Some(args.from.clone()),
@@ -502,13 +558,13 @@ impl ServerHandler for SkillService {
                             ..Default::default()
                         };
 
-                        let report = sync_between(&args.from, to, &params)?;
+                        let report = sync_between(from, to, &params)?;
 
                         Ok(tool_ok(
                             vec![ContentBlock::text(report.summary.clone())],
                             Some(json!({
                                 "from": args.from,
-                                "to": to,
+                                "to": to.as_str(),
                                 "report": report,
                                 "dry_run": args.dry_run
                             })),
@@ -519,16 +575,18 @@ impl ServerHandler for SkillService {
                         self.sync_all_tool(args)
                     }
                     "sync-status" => {
-                        use skrills_sync::{default_target_for, sync_between, SyncParams};
+                        use skrills_sync::{sync_between, SyncParams};
 
                         let args = SyncToolArgs::from_request(&request);
 
-                        let to = request
-                            .arguments
-                            .as_ref()
-                            .and_then(|obj| obj.get("to"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_else(|| default_target_for(&args.from));
+                        let (from, to) = sync_pair(
+                            &args.from,
+                            request
+                                .arguments
+                                .as_ref()
+                                .and_then(|obj| obj.get("to"))
+                                .and_then(|v| v.as_str()),
+                        )?;
 
                         let params = SyncParams {
                             from: Some(args.from.clone()),
@@ -542,7 +600,7 @@ impl ServerHandler for SkillService {
                             ..Default::default()
                         };
 
-                        let report = sync_between(&args.from, to, &params)?;
+                        let report = sync_between(from, to, &params)?;
 
                         Ok(tool_ok(
                             vec![ContentBlock::text(format!(
@@ -552,7 +610,7 @@ impl ServerHandler for SkillService {
                             Some(json!({
                                 "preview": true,
                                 "from": args.from,
-                                "to": to,
+                                "to": to.as_str(),
                                 "report": report
                             })),
                         ))
@@ -753,11 +811,10 @@ impl ServerHandler for SkillService {
                             .and_then(|v| v.as_str())
                             .ok_or_else(|| invalid_params("uri parameter is required"))?;
 
-                        let limit = args
-                            .get("limit")
-                            .and_then(|v| v.as_u64())
-                            .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
-                            .unwrap_or(10);
+                        let limit = crate::app::clamp_limit(
+                            args.get("limit").and_then(|v| v.as_u64()),
+                            10,
+                        );
 
                         let include_quality = args
                             .get("include_quality")
@@ -833,14 +890,22 @@ impl ServerHandler for SkillService {
                     "describe-mcp-tool" => {
                         // Lookup tool in all_tools by name; only a schema that
                         // was actually returned counts as loaded.
-                        let all = tool_schemas::all_tools();
-                        let gateway_tools = crate::mcp_gateway::mcp_gateway_tools();
+                        // The same set `list_tools` advertises, found by
+                        // either spelling `call_tool` accepts.
+                        #[cfg_attr(not(feature = "subagents"), allow(unused_mut))]
+                        let mut all = tool_schemas::all_tools();
+                        all.extend(crate::mcp_gateway::mcp_gateway_tools());
+                        #[cfg(feature = "subagents")]
+                        if let Some(subagents) = &self.subagents {
+                            all.extend(subagents.tools());
+                        }
                         crate::mcp_gateway::describe_mcp_tool(request.arguments.as_ref(), |name| {
+                            let kebab = name.replace('_', "-");
                             let found = all
                                 .iter()
                                 .find(|t| t.name.as_ref() == name)
-                                .cloned()
-                                .or_else(|| gateway_tools.iter().find(|t| t.name.as_ref() == name).cloned());
+                                .or_else(|| all.iter().find(|t| t.name.as_ref() == kebab))
+                                .cloned();
                             if found.is_some() {
                                 self.context_stats.record_schema_load();
                             }
@@ -889,7 +954,7 @@ impl ServerHandler for SkillService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::discovery::{AGENTS_DESCRIPTION, AGENTS_URI};
+    use crate::agents_doc::{AGENTS_DESCRIPTION, AGENTS_URI};
     use crate::test_support;
     use rmcp::model::{
         ClientCapabilities, Implementation, InitializeRequestParams, ProtocolVersion, RequestId,
@@ -1113,6 +1178,10 @@ mod tests {
         // of it fail, which is the shape of a read-only or corrupted home.
         std::fs::create_dir_all(temp.path().join(".codex/config.toml"))
             .expect("create config.toml as a directory");
+        // The flag is only set when there is a skill for Codex to load.
+        let claude_skill = temp.path().join(".claude/skills/demo");
+        std::fs::create_dir_all(&claude_skill).expect("create claude skill");
+        std::fs::write(claude_skill.join("SKILL.md"), "demo skill").expect("write skill");
 
         let service = build_service(&temp);
         let result = run_async(async move {
@@ -1271,14 +1340,9 @@ mod tests {
     fn snake_case_aliases_accepted_for_all_sync_research_tools() {
         let _guard = test_support::env_guard();
         let temp = tempdir().expect("tempdir");
-        let _home = set_env_var(
-            "HOME",
-            Some(
-                temp.path()
-                    .to_str()
-                    .expect("temp home should be valid utf-8"),
-            ),
-        );
+        // HOME alone left XDG_CACHE_HOME/LOCALAPPDATA pointing at the
+        // developer's real research databases.
+        let _env = isolate_home(&temp);
 
         // Each (snake_case_name, minimal_valid_args) pair for sync research tools
         let cases: Vec<(&str, serde_json::Value)> = vec![
@@ -1319,12 +1383,13 @@ mod tests {
                     .await
             });
 
-            assert!(
-                result.is_ok(),
-                "snake_case tool '{}' should be dispatched, got error: {:?}",
-                name,
-                result.err()
-            );
+            let response = result.unwrap_or_else(|e| {
+                panic!("snake_case tool '{name}' should be dispatched, got error: {e:?}")
+            });
+            let CallToolResponse::Complete(result) = response else {
+                panic!("{name}: expected a tool result");
+            };
+            assert_ne!(result.is_error, Some(true), "{name}: {:?}", result.content);
         }
     }
 
@@ -1390,6 +1455,293 @@ mod tests {
                 )
                 .await
         })
+    }
+
+    /// Points HOME and the platform cache dir at `temp`, so tools that write
+    /// research databases or sync output stay inside it.
+    fn isolate_home(temp: &tempfile::TempDir) -> Vec<skrills_test_utils::EnvVarGuard> {
+        let home = temp.path().to_str().map(str::to_string);
+        let cache = temp.path().join("cache");
+        vec![
+            set_env_var("HOME", home.as_deref()),
+            set_env_var("XDG_CACHE_HOME", cache.to_str()),
+            set_env_var("LOCALAPPDATA", cache.to_str()),
+        ]
+    }
+
+    /// Every tool `list_tools` advertises must reach a handler; a name that
+    /// falls through to "unknown tool" is a listing the server cannot serve.
+    #[test]
+    fn every_listed_tool_dispatches() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _env = isolate_home(&temp);
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).expect("project dir");
+
+        let service = build_service(&temp);
+        let names: Vec<String> = run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            running
+                .service()
+                .list_tools(None, context)
+                .await
+                .expect("list_tools")
+                .tools
+                .into_iter()
+                .map(|t| t.name.to_string())
+                .collect()
+        });
+        for name in names {
+            // Keep context-analysing tools off the developer's checkout.
+            let args = json!({"project_dir": project.to_str().unwrap()});
+            let args = match name.as_str() {
+                "recommend-skills-smart" | "analyze-project-context" | "suggest-new-skills" => args,
+                _ => json!({}),
+            };
+            let tool = name.clone();
+            let service = build_service(&temp);
+            let result = run_async(async move {
+                let (running, context, _client) = service_with_context(service);
+                running
+                    .service()
+                    .call_tool(
+                        CallToolRequestParams::new(tool)
+                            .with_arguments(args.as_object().cloned().unwrap_or_default()),
+                        context,
+                    )
+                    .await
+            });
+            if let Err(err) = result {
+                assert!(
+                    !err.message.contains("unknown tool"),
+                    "{name} is listed but not dispatched: {}",
+                    err.message
+                );
+            }
+        }
+    }
+
+    /// Missing or invalid arguments are -32602 so clients do not retry a
+    /// call that can never succeed.
+    #[test]
+    fn argument_mistakes_are_invalid_params_for_every_tool() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _env = isolate_home(&temp);
+        let outside = temp.path().join("elsewhere");
+        let cases: Vec<(&'static str, serde_json::Value)> = vec![
+            ("search-papers", json!({})),
+            ("search-discussions", json!({})),
+            ("resolve-doi", json!({})),
+            ("fetch-pdf", json!({})),
+            (
+                "query-knowledge-graph",
+                json!({"query": "x", "kind": "bogus"}),
+            ),
+            ("add-knowledge-node", json!({})),
+            (
+                "add-knowledge-node",
+                json!({"id": "a", "kind": "bogus", "label": "l"}),
+            ),
+            ("link-knowledge", json!({})),
+            (
+                "link-knowledge",
+                json!({"source_id": "a", "target_id": "b", "kind": "bogus"}),
+            ),
+            ("track-citations", json!({})),
+            (
+                "track-citations",
+                json!({"paper_id": "p", "action": "bogus"}),
+            ),
+            (
+                "track-citations",
+                json!({"paper_id": "p", "action": "track"}),
+            ),
+            ("resolve-contradiction", json!({})),
+            (
+                "resolve-contradiction",
+                json!({"improve": "bogus", "degrades": "latency"}),
+            ),
+            ("create-skill", json!({})),
+            ("create-skill", json!({"name": "x"})),
+            ("create-skill", json!({"name": "../x", "description": "d"})),
+            ("create-skill", json!({"name": ".x", "description": "d"})),
+            ("create-skill", json!({"name": "a/b", "description": "d"})),
+            (
+                "create-skill",
+                json!({"name": "x", "description": "d", "method": "bogus"}),
+            ),
+            (
+                "create-skill",
+                json!({"name": "x", "description": "d", "target_dir": outside.to_str().unwrap()}),
+            ),
+            ("search-skills-github", json!({})),
+            ("search-skills-fuzzy", json!({})),
+            ("skill-diff", json!({})),
+            ("validate-skills", json!({"target": "bogus"})),
+            ("enable-skill-trace", json!({"target": "bogus"})),
+            ("sync-skills", json!({"from": "claude", "to": "claude"})),
+            ("sync-skills", json!({"from": "gemini", "to": "claude"})),
+            ("sync-to-cursor", json!({"from": "gemini"})),
+            ("describe-mcp-tool", json!({})),
+            ("sync-commands", json!({"from": "claude", "to": "claude"})),
+            ("sync-commands", json!({"from": "claude", "to": "Claude"})),
+            ("sync-mcp-servers", json!({"from": "codex", "to": "codex"})),
+            ("sync-preferences", json!({"from": "gemini"})),
+            ("sync-status", json!({"from": "cursor", "to": "cursor"})),
+            ("sync-all", json!({"from": "claude", "to": "claude"})),
+            ("sync-all", json!({"from": "claude", "to": "gemini"})),
+        ];
+        for (name, args) in cases {
+            let shown = args.to_string();
+            let err = call(build_service(&temp), name, args)
+                .expect_err(&format!("{name} {shown} should fail"));
+            assert_eq!(
+                err.code,
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                "{name} {shown}: {}",
+                err.message
+            );
+        }
+    }
+
+    /// The subagent branch of `call_tool` runs before name normalization and
+    /// has its own alias list; both spellings must reach the subagent service.
+    #[cfg(feature = "subagents")]
+    #[test]
+    fn list_subagents_dispatches_in_both_spellings() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _env = isolate_home(&temp);
+        for name in [
+            "list-subagents",
+            "list_subagents",
+            "list-agents",
+            "list_agents",
+        ] {
+            let response = call(build_service(&temp), name, json!({}))
+                .unwrap_or_else(|e| panic!("{name}: {}", e.message));
+            let CallToolResponse::Complete(result) = response else {
+                panic!("{name}: expected a tool result");
+            };
+            assert_ne!(result.is_error, Some(true), "{name}: {:?}", result.content);
+        }
+    }
+
+    /// `list_tools` advertises the subagent tools and `call_tool` accepts
+    /// snake_case names; the gateway must describe and list the same set.
+    #[cfg(feature = "subagents")]
+    #[test]
+    fn gateway_describes_and_lists_every_advertised_tool() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _env = isolate_home(&temp);
+        for name in ["run-subagent", "list_mcp_tools", "validate_skills"] {
+            let response = call(
+                build_service(&temp),
+                "describe-mcp-tool",
+                json!({"tool_name": name}),
+            )
+            .expect("describe");
+            let CallToolResponse::Complete(result) = response else {
+                panic!("{name}: expected a tool result");
+            };
+            assert_ne!(result.is_error, Some(true), "{name} not described");
+        }
+        let listing =
+            structured(call(build_service(&temp), "list-mcp-tools", json!({})).expect("list"));
+        let names: Vec<&str> = listing["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(names.contains(&"run-subagent"), "{names:?}");
+    }
+
+    fn read(service: SkillService, uri: &str) -> Result<ReadResourceResponse, rmcp::ErrorData> {
+        let uri = uri.to_string();
+        run_async(async move {
+            let (running, context, _client) = service_with_context(service);
+            running
+                .service()
+                .read_resource(ReadResourceRequestParams::new(uri), context)
+                .await
+        })
+    }
+
+    /// A deleted skill is not a server fault, a malformed URI is the
+    /// caller's, and skill text is Markdown as `list_resources` says.
+    #[test]
+    fn read_resource_reports_missing_and_malformed_uris_and_serves_markdown() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _env = isolate_home(&temp);
+
+        let err = read(build_service(&temp), "skill://skrills/codex/nope").unwrap_err();
+        assert_eq!(
+            err.code,
+            rmcp::model::ErrorCode::RESOURCE_NOT_FOUND,
+            "{}",
+            err.message
+        );
+        let err = read(build_service(&temp), "https://example.com/x").unwrap_err();
+        assert_eq!(
+            err.code,
+            rmcp::model::ErrorCode::INVALID_PARAMS,
+            "{}",
+            err.message
+        );
+
+        for uri in ["skill://skrills/codex/demo/SKILL.md", AGENTS_URI] {
+            let ReadResourceResponse::Complete(result) =
+                read(build_service(&temp), uri).expect("read")
+            else {
+                panic!("expected a completed read");
+            };
+            let ResourceContents::TextResourceContents { mime_type, .. } = &result.contents[0]
+            else {
+                panic!("expected text");
+            };
+            assert_eq!(mime_type.as_deref(), Some("text/markdown"), "{uri}");
+        }
+    }
+
+    /// `limit` was taken as given: 0 silently returned nothing. It is
+    /// clamped to 1..=100 like every other tool's.
+    #[test]
+    fn recommend_skills_clamps_its_limit() {
+        let _guard = test_support::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _env = isolate_home(&temp);
+        let skills = temp.path().join("extra");
+        for (name, body) in [
+            ("a", "See [b](../b/SKILL.md) and [c](../c/SKILL.md)."),
+            ("b", "b"),
+            ("c", "c"),
+        ] {
+            std::fs::create_dir_all(skills.join(name)).unwrap();
+            std::fs::write(
+                skills.join(name).join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: fixture {name}\n---\n{body}\n"),
+            )
+            .unwrap();
+        }
+        let service = SkillService::new_with_ttl(vec![skills], Duration::from_secs(60)).unwrap();
+        let result = structured(
+            call(
+                service,
+                "recommend-skills",
+                json!({"uri": "skill://skrills/extra0/a/SKILL.md", "limit": 0}),
+            )
+            .expect("recommend"),
+        );
+        assert_eq!(
+            result["recommendations"].as_array().unwrap().len(),
+            1,
+            "{result}"
+        );
     }
 
     /// A missing argument is the caller's mistake, not the server's.
@@ -1699,12 +2051,23 @@ mod tests {
     /// nothing wrote. These pin the writers, using an in-memory collector.
     mod metrics_writers {
         use super::*;
-        use skrills_metrics::{MetricEvent, MetricsCollector, SyncStatus};
+        use skrills_metrics::{MetricEvent, MetricsCollector, SyncOperation, SyncStatus};
         use std::sync::Arc;
 
         /// The skill `build_service` writes, by the name `/api/skills`
         /// reports, so the dashboard can join the two.
         const DEMO: &str = "demo/SKILL.md";
+
+        /// `sync-from-copilot` and `sync-from-cursor` pull into Claude or
+        /// Codex but were recorded as pushes.
+        #[test]
+        fn sync_direction_follows_the_tool_name() {
+            assert_eq!(sync_operation("sync-from-copilot"), SyncOperation::Pull);
+            assert_eq!(sync_operation("sync-from-cursor"), SyncOperation::Pull);
+            assert_eq!(sync_operation("sync-from-claude"), SyncOperation::Push);
+            assert_eq!(sync_operation("sync-to-cursor"), SyncOperation::Push);
+            assert_eq!(sync_operation("sync-all"), SyncOperation::Push);
+        }
 
         fn events(collector: &MetricsCollector) -> Vec<MetricEvent> {
             collector.get_recent_events(100).expect("read events")

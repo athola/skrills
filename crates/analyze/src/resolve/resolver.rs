@@ -60,27 +60,6 @@ impl<'a, R: SkillRegistry> DependencyResolver<'a, R> {
             return Err(ResolveError::MaxDepthExceeded(self.options.max_depth));
         }
 
-        let key = match source_constraint {
-            Some(src) => format!("{}:{}", src, skill_name),
-            None => skill_name.to_string(),
-        };
-
-        if walk.in_stack.contains(&key) {
-            let cycle_start = walk.stack_order.iter().position(|s| s == &key).unwrap_or(0);
-            let cycle: Vec<_> = walk.stack_order[cycle_start..]
-                .iter()
-                .chain(std::iter::once(&key))
-                .cloned()
-                .collect();
-            return Err(ResolveError::CircularDependency {
-                chain: cycle.join(" -> "),
-            });
-        }
-
-        if walk.visited.contains(&key) {
-            return Ok(());
-        }
-
         let info = match self.registry.lookup(skill_name, source_constraint) {
             Some(i) => i,
             None => {
@@ -97,9 +76,37 @@ impl<'a, R: SkillRegistry> DependencyResolver<'a, R> {
                 });
             }
         };
+        // Keyed by the skill found, not the name used to reach it, so
+        // `user:a` and `a` naming one skill are one visit (as in the graph).
+        let key = info.uri.clone();
+
+        if walk.in_stack.contains(&key) {
+            let cycle_start = walk
+                .stack_order
+                .iter()
+                .position(|(uri, _)| uri == &key)
+                .unwrap_or(0);
+            let cycle: Vec<&str> = walk.stack_order[cycle_start..]
+                .iter()
+                .map(|(_, name)| name.as_str())
+                .chain(std::iter::once(info.name.as_str()))
+                .collect();
+            return Err(ResolveError::CircularDependency {
+                chain: cycle.join(" -> "),
+            });
+        }
+
+        // A required path to a skill first reached through an optional edge
+        // makes it, and what it requires, required.
+        if walk.visited.contains(&key) {
+            if !optional {
+                self.mark_required(walk, &info);
+            }
+            return Ok(());
+        }
 
         walk.in_stack.insert(key.clone());
-        walk.stack_order.push(key.clone());
+        walk.stack_order.push((key.clone(), info.name.clone()));
 
         if let Some(ref fm) = info.frontmatter {
             let deps = fm
@@ -140,6 +147,7 @@ impl<'a, R: SkillRegistry> DependencyResolver<'a, R> {
 
         walk.in_stack.remove(&key);
         walk.stack_order.pop();
+        walk.positions.insert(key.clone(), walk.resolved.len());
         walk.visited.insert(key);
 
         walk.resolved.push(ResolvedDependency {
@@ -153,6 +161,32 @@ impl<'a, R: SkillRegistry> DependencyResolver<'a, R> {
 
         Ok(())
     }
+
+    /// Clears the optional flag on a resolved skill and on every skill it
+    /// reaches through required edges. Recursion stops at skills already
+    /// required, so each is cleared at most once.
+    fn mark_required(&self, walk: &mut Walk, info: &SkillInfo) {
+        let Some(&pos) = walk.positions.get(&info.uri) else {
+            return;
+        };
+        if !walk.resolved[pos].optional {
+            return;
+        }
+        walk.resolved[pos].optional = false;
+        let Some(fm) = info.frontmatter.as_ref() else {
+            return;
+        };
+        // The first visit parsed these dependencies successfully; a parse
+        // error cannot appear now, and there is nothing further to clear.
+        let Ok(deps) = fm.normalized_dependencies() else {
+            return;
+        };
+        for dep in deps.iter().filter(|d| !d.optional) {
+            if let Some(dep_info) = self.registry.lookup(&dep.name, dep.source.as_deref()) {
+                self.mark_required(walk, &dep_info);
+            }
+        }
+    }
 }
 
 /// Traversal state for one `DependencyResolver::resolve` call.
@@ -160,7 +194,10 @@ impl<'a, R: SkillRegistry> DependencyResolver<'a, R> {
 struct Walk {
     visited: HashSet<String>,
     in_stack: HashSet<String>,
-    stack_order: Vec<String>,
+    /// `(uri, name)` of each skill on the current path.
+    stack_order: Vec<(String, String)>,
+    /// Position in `resolved` of each visited key.
+    positions: HashMap<String, usize>,
     resolved: Vec<ResolvedDependency>,
     warnings: Vec<String>,
 }
@@ -224,10 +261,11 @@ impl SkillRegistry for InMemoryRegistry {
     }
 
     fn list_skills(&self) -> Vec<String> {
+        // Sorted, so callers iterating skills get a stable order.
         self.skills
             .values()
             .map(|s| s.name.clone())
-            .collect::<HashSet<_>>()
+            .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect()
     }

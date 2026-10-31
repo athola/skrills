@@ -10,9 +10,9 @@ Skrills discovers skills from these directories:
 
 | Location | Purpose |
 |----------|---------|
-| `~/.codex/skills/` | Codex CLI skills |
+| `~/.agents/skills/` | Skills for Codex, also loaded by Cursor and Copilot CLI |
+| `~/.codex/skills/` | Codex skills written by skrills before 0.9.1 (still read) |
 | `~/.claude/skills/` | Claude Code skills |
-| `~/.agent/skills/` | Universal agent skills |
 
 When you run `skrills sync` or `skrills mirror`, skrills copies skills between these directories so both tools can access them.
 
@@ -61,7 +61,9 @@ Usage analytics are stored when you run analytics-building commands with persist
 
 Enable automatic persistence with:
 - `--auto-persist` flag on `recommend-skills-smart`
-- `SKRILLS_AUTO_PERSIST=1` environment variable
+- `SKRILLS_AUTO_PERSIST=1` environment variable. With it set, `skrills serve`
+  also saves analytics when the server exits, over stdio or HTTP, including
+  when it exits with an error.
 
 Manual persistence:
 ```bash
@@ -119,7 +121,7 @@ skrills doctor
 
 ### Clear synced skills
 
-Remove skills that were copied from another tool:
+Skills synced to Codex are folders under `~/.agents/skills/`. Other tools write there too, so remove the folders you no longer want rather than the whole directory. Skills synced by versions before 0.9.1 are under `~/.codex/skills/`:
 
 ```bash
 rm -rf ~/.codex/skills/
@@ -151,7 +153,7 @@ After a full reset, run `skrills setup` to reconfigure.
 
 ## Legacy Files
 
-Older versions of skrills used `~/.codex/skills-mirror/` to store a complete copy of Claude assets. Current versions sync directly to `~/.codex/skills/` instead. You can safely delete the mirror directory:
+Older versions of skrills used `~/.codex/skills-mirror/` to store a complete copy of Claude assets. Current versions sync skills to `~/.agents/skills/` instead. You can safely delete the mirror directory:
 
 ```bash
 rm -rf ~/.codex/skills-mirror/

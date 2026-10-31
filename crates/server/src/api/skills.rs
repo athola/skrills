@@ -27,7 +27,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use skrills_discovery::{discover_skills, skill_roots_or_default, SkillMeta, SkillRoot};
+use skrills_discovery::{
+    discover_skills, skill_roots_or_default, RootSettings, SkillMeta, SkillRoot,
+};
 
 /// Cache for discovered skills with TTL.
 pub struct SkillCache {
@@ -227,14 +229,26 @@ async fn load_skills(state: &Arc<ApiState>) -> Result<Vec<SkillMeta>, StatusCode
     }
     let state = Arc::clone(state);
     tokio::task::spawn_blocking(move || {
-        let roots = skill_roots_or_default(&state.skill_dirs);
-        state.cache.write().get_or_refresh(&roots)
+        let roots = api_skill_roots(&state.skill_dirs).map_err(|e| {
+            tracing::warn!(error = %e, "could not read the skill root settings");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        Ok(state.cache.write().get_or_refresh(&roots))
     })
     .await
     .map_err(|e| {
         tracing::warn!(error = %e, "skill discovery task panicked");
         StatusCode::INTERNAL_SERVER_ERROR
-    })
+    })?
+}
+
+/// The roots `/api/skills` scans: the `--skill-dir` directories, or the
+/// roots the user's settings select, as the MCP server uses.
+fn api_skill_roots(skill_dirs: &[std::path::PathBuf]) -> anyhow::Result<Vec<SkillRoot>> {
+    Ok(skill_roots_or_default(
+        skill_dirs,
+        &RootSettings::from_env()?,
+    ))
 }
 
 /// Get a specific skill by name.
@@ -272,6 +286,24 @@ pub fn skills_routes(state: Arc<ApiState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M457: `/api/skills` searched `~/.claude` whatever
+    /// `SKRILLS_INCLUDE_CLAUDE` said, unlike the MCP server.
+    #[test]
+    fn api_skill_roots_honour_include_claude() {
+        let _env = crate::test_support::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+        let claude = home.path().join(".claude/skills");
+
+        let _off = crate::test_support::set_env_var("SKRILLS_INCLUDE_CLAUDE", None);
+        let roots = api_skill_roots(&[]).unwrap();
+        assert!(!roots.iter().any(|r| r.root == claude), "{roots:?}");
+
+        let _on = crate::test_support::set_env_var("SKRILLS_INCLUDE_CLAUDE", Some("1"));
+        let roots = api_skill_roots(&[]).unwrap();
+        assert!(roots.iter().any(|r| r.root == claude), "{roots:?}");
+    }
 
     #[test]
     fn new_cache_is_empty_and_invalid() {

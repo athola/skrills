@@ -9,7 +9,7 @@
 //!
 //! - `1` filter to Token, `2` Validation, `3` Redundancy,
 //!   `4` SyncDrift, `5` Quality, `0` clear filter.
-//! - `P` toggle pin on the highest-priority visible hint (by URI).
+//! - `P` toggle pin on the selected hint (by URI).
 //!
 //! Pinned hints sort to the top of the visible list regardless of
 //! their score (matching the `MultiSignalScorer` ranking behavior).
@@ -25,7 +25,9 @@ use ratatui::widgets::{List, ListItem};
 use serde::{Deserialize, Serialize};
 use skrills_snapshot::{HintCategory, ScoredHint};
 
-use super::focus::{clamped_selection, pane_block, select_row, truncate_with_ellipsis};
+use super::focus::{
+    clamped_selection, pane_block, render_list, select_row, truncate_with_ellipsis,
+};
 use super::state::ColdWindowState;
 
 /// File name used by [`HintPaneState::with_default_persistence`].
@@ -55,7 +57,14 @@ impl HintPaneState {
     pub fn with_default_persistence() -> Self {
         let path = dirs::home_dir().map(|home| home.join(".skrills").join(PIN_FILE_NAME));
         match path {
-            Some(p) => Self::load_from_path(p).unwrap_or_else(|_| Self::default()),
+            Some(p) => Self::load_from_path(p.clone()).unwrap_or_else(|err| {
+                // Keep the path so pins made this session are still saved.
+                tracing::warn!(error = %err, path = %p.display(), "cannot read hint pin file");
+                Self {
+                    persistence_path: Some(p),
+                    ..Self::default()
+                }
+            }),
             None => Self::default(),
         }
     }
@@ -71,9 +80,23 @@ impl HintPaneState {
             });
         }
         let bytes = std::fs::read(&path)?;
-        let pinned: HashSet<String> = serde_json::from_slice::<PinnedFile>(&bytes)
-            .map(|f| f.pinned)
-            .unwrap_or_default();
+        let pinned = match serde_json::from_slice::<PinnedFile>(&bytes) {
+            Ok(file) => file.pinned,
+            Err(err) => {
+                // The next toggle rewrites the file, so set the unreadable
+                // one aside rather than lose the pins it may still hold.
+                let mut backup = path.clone().into_os_string();
+                backup.push(".corrupt");
+                tracing::warn!(
+                    error = %err,
+                    path = %path.display(),
+                    backup = ?backup,
+                    "hint pin file is not valid JSON; moved aside, starting with no pins"
+                );
+                std::fs::rename(&path, &backup)?;
+                HashSet::new()
+            }
+        };
         Ok(Self {
             filter: None,
             pinned,
@@ -94,8 +117,17 @@ impl HintPaneState {
             pinned: self.pinned.clone(),
         };
         let bytes = serde_json::to_vec_pretty(&file)?;
-        std::fs::write(path, bytes)?;
-        Ok(())
+        // Write a sibling and rename it over the file, so an interrupted
+        // save cannot leave a truncated pin file behind.
+        let mut tmp = path.clone().into_os_string();
+        tmp.push(format!(".{}.tmp", std::process::id()));
+        let tmp = PathBuf::from(tmp);
+        let written = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path));
+        if written.is_err() {
+            // Best effort: the write error below is what the caller needs.
+            let _ = std::fs::remove_file(&tmp);
+        }
+        written
     }
 
     /// Toggle the pin state of a URI. Returns `true` if newly pinned,
@@ -145,11 +177,11 @@ impl HintPaneState {
         visible.sort_by(|a, b| {
             let a_pinned = pinned.contains(&a.hint.uri);
             let b_pinned = pinned.contains(&b.hint.uri);
-            b_pinned.cmp(&a_pinned).then_with(|| {
-                b.score
-                    .partial_cmp(&a.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            // `total_cmp` is a total order even with NaN scores; a
+            // `partial_cmp` fallback to Equal lets `sort_by` panic.
+            b_pinned
+                .cmp(&a_pinned)
+                .then_with(|| b.score.total_cmp(&a.score))
         });
         visible
     }
@@ -213,7 +245,7 @@ impl HintPane {
         let list = List::new(items)
             .block(pane_block(title, focused))
             .style(Style::default());
-        frame.render_widget(list, area);
+        render_list(frame, list, area, cursor);
     }
 
     /// Build one ratatui list row for a hint, truncating with `"..."`
@@ -276,10 +308,12 @@ impl HintPane {
     }
 
     /// Handle a keystroke; mutate state if relevant, return action.
+    /// `selected` is the pane's cursor; it is clamped to the visible list.
     pub fn handle_key(
         snap_state: &ColdWindowState,
         pane_state: &mut HintPaneState,
         key: KeyCode,
+        selected: usize,
     ) -> HintAction {
         match key {
             KeyCode::Char('0') => {
@@ -307,8 +341,10 @@ impl HintPane {
                 HintAction::FilterChanged(Some(HintCategory::Quality))
             }
             KeyCode::Char('P') => {
-                if let Some(top) = pane_state.visible_hints(snap_state).first() {
-                    let uri = top.hint.uri.clone();
+                let visible = pane_state.visible_hints(snap_state);
+                let target = clamped_selection(selected, visible.len()).map(|idx| visible[idx]);
+                if let Some(target) = target {
+                    let uri = target.hint.uri.clone();
                     let pinned = pane_state.toggle_pin(&uri);
                     HintAction::PinToggled { uri, pinned }
                 } else {
@@ -376,11 +412,11 @@ mod tests {
     fn filter_keys_set_filter() {
         let snap_state = ColdWindowState::new();
         let mut pane_state = HintPaneState::new();
-        let action = HintPane::handle_key(&snap_state, &mut pane_state, KeyCode::Char('1'));
+        let action = HintPane::handle_key(&snap_state, &mut pane_state, KeyCode::Char('1'), 0);
         assert_eq!(action, HintAction::FilterChanged(Some(HintCategory::Token)));
         assert_eq!(pane_state.filter, Some(HintCategory::Token));
 
-        HintPane::handle_key(&snap_state, &mut pane_state, KeyCode::Char('0'));
+        HintPane::handle_key(&snap_state, &mut pane_state, KeyCode::Char('0'), 0);
         assert_eq!(pane_state.filter, None);
     }
 
@@ -421,7 +457,7 @@ mod tests {
             hint("b", HintCategory::Token, 2.0),
         ]));
         let mut pane_state = HintPaneState::new();
-        let action = HintPane::handle_key(&snap_state, &mut pane_state, KeyCode::Char('P'));
+        let action = HintPane::handle_key(&snap_state, &mut pane_state, KeyCode::Char('P'), 0);
         match action {
             HintAction::PinToggled { uri, pinned } => {
                 assert_eq!(uri, "b");
@@ -435,7 +471,7 @@ mod tests {
     fn pin_keystroke_with_no_hints_is_noop() {
         let snap_state = ColdWindowState::new();
         let mut pane_state = HintPaneState::new();
-        let action = HintPane::handle_key(&snap_state, &mut pane_state, KeyCode::Char('P'));
+        let action = HintPane::handle_key(&snap_state, &mut pane_state, KeyCode::Char('P'), 0);
         assert_eq!(action, HintAction::NoOp);
     }
 
@@ -465,7 +501,7 @@ mod tests {
     fn unrelated_keystroke_is_noop() {
         let snap_state = ColdWindowState::new();
         let mut pane_state = HintPaneState::new();
-        let action = HintPane::handle_key(&snap_state, &mut pane_state, KeyCode::Char('q'));
+        let action = HintPane::handle_key(&snap_state, &mut pane_state, KeyCode::Char('q'), 0);
         assert_eq!(action, HintAction::NoOp);
     }
 
@@ -586,5 +622,107 @@ mod tests {
                 .draw(|f| HintPane::render(&snap_state, &pane_state, f, f.area(), false, None))
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn corrupt_pin_file_is_backed_up_before_it_can_be_overwritten() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(PIN_FILE_NAME);
+        std::fs::write(&path, b"{not json").unwrap();
+
+        let mut state = HintPaneState::load_from_path(path.clone()).unwrap();
+        assert!(state.pinned.is_empty());
+        state.toggle_pin("skill://new");
+
+        let backup = dir.path().join(format!("{PIN_FILE_NAME}.corrupt"));
+        assert_eq!(std::fs::read(&backup).unwrap(), b"{not json");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pin_save_replaces_the_file_by_rename() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(PIN_FILE_NAME);
+        let mut state = HintPaneState::load_from_path(path.clone()).unwrap();
+        state.toggle_pin("skill://a");
+        let inode_before = std::fs::metadata(&path).unwrap().ino();
+        state.toggle_pin("skill://b");
+        assert_ne!(std::fs::metadata(&path).unwrap().ino(), inode_before);
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from(PIN_FILE_NAME)]);
+    }
+
+    #[test]
+    fn default_persistence_keeps_its_path_when_the_pin_file_is_unreadable() {
+        let _env = skrills_test_utils::env_guard();
+        let fixture = skrills_test_utils::TestFixture::new().unwrap();
+        let _home = fixture.home_guard();
+        let home = dirs::home_dir().unwrap();
+        // A directory where the file should be: reading it fails.
+        std::fs::create_dir_all(home.join(".skrills").join(PIN_FILE_NAME)).unwrap();
+
+        let state = HintPaneState::with_default_persistence();
+        assert!(state.persistence_path.is_some());
+    }
+
+    #[test]
+    fn selected_hint_below_the_fold_is_scrolled_into_view() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 5)).unwrap();
+        let mut snap_state = ColdWindowState::new();
+        snap_state.ingest(snap(
+            (0..10)
+                .map(|i| {
+                    hint(
+                        &format!("skill://h{i}"),
+                        HintCategory::Token,
+                        10.0 - f64::from(i),
+                    )
+                })
+                .collect(),
+        ));
+        let pane_state = HintPaneState::new();
+        terminal
+            .draw(|f| HintPane::render(&snap_state, &pane_state, f, f.area(), true, Some(9)))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("skill://h9"), "{text}");
+    }
+
+    #[test]
+    fn nan_scores_sort_without_panicking() {
+        let mut snap_state = ColdWindowState::new();
+        let mut hints: Vec<_> = (0..2000)
+            .map(|i| {
+                let score = f64::from((i * 7919) % 2003);
+                hint(&format!("skill://h{i}"), HintCategory::Token, score)
+            })
+            .collect();
+        for h in hints.iter_mut().step_by(3) {
+            h.score = f64::NAN;
+        }
+        snap_state.ingest(snap(hints));
+        let visible = HintPaneState::new().visible_hints(&snap_state);
+        assert_eq!(visible.len(), 2000);
+        // A total order puts every NaN together instead of scattering them.
+        let finite: Vec<f64> = visible
+            .iter()
+            .map(|h| h.score)
+            .filter(|s| !s.is_nan())
+            .collect();
+        assert!(
+            finite.windows(2).all(|w| w[0] >= w[1]),
+            "finite scores out of order"
+        );
     }
 }

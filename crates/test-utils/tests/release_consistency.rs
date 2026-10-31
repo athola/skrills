@@ -273,11 +273,34 @@ fn marketplace_json_versions_and_sources_agree() {
 /// both.
 fn top_changelog_version(path: &Path) -> String {
     let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    text.lines()
-        .find_map(|line| line.strip_prefix("## "))
-        .and_then(|heading| heading.split_whitespace().next())
+    changelog_version_in(&text)
         .unwrap_or_else(|| panic!("{} has no `## ` version heading", path.display()))
-        .to_string()
+}
+
+/// First `## ` heading outside a code fence whose first token is a version
+/// (`1.2.3`, `v1.2.3`); an `## Unreleased` section is skipped.
+fn changelog_version_in(text: &str) -> Option<String> {
+    let mut in_fence = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let Some(token) = line
+            .strip_prefix("## ")
+            .and_then(|heading| heading.split_whitespace().next())
+        else {
+            continue;
+        };
+        let digits = token.strip_prefix('v').unwrap_or(token);
+        if digits.starts_with(|c: char| c.is_ascii_digit()) {
+            return Some(token.to_string());
+        }
+    }
+    None
 }
 
 /// Invariant #6: the newest `docs/CHANGELOG.md` entry is the workspace version,
@@ -299,4 +322,10 @@ fn book_changelog_top_entry_matches_docs_changelog() {
         book, docs,
         "book/src/changelog.md leads with {book}, docs/CHANGELOG.md with {docs}"
     );
+}
+
+#[test]
+fn changelog_version_skips_unreleased_and_fenced_headings() {
+    let text = "# Changelog\n```md\n## 9.9.9\n```\n## Unreleased\n\n## 1.2.3 - x\n";
+    assert_eq!(changelog_version_in(text).as_deref(), Some("1.2.3"));
 }

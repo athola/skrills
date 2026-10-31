@@ -1,253 +1,27 @@
+use crate::scanner::{default_priority, discover_agents, discover_skills, RootSettings};
+use crate::types::{AgentMeta, SkillMeta, SkillRoot, SkillSource};
 use anyhow::{anyhow, Result};
 use pathdiff::diff_paths;
-use skrills_discovery::{
-    default_priority, discover_agents, discover_skills, load_priority_override,
-    priority_labels as disc_priority_labels,
-    priority_labels_and_rank_map as disc_priority_labels_and_rank_map, AgentMeta, SkillMeta,
-    SkillRoot, SkillSource,
-};
-use skrills_state::{
-    env_include_claude, env_include_marketplace, extra_dirs_from_env, home_dir,
-    load_manifest_settings,
-};
+use skrills_state::{env_include_claude, env_include_marketplace, extra_dirs_from_env, home_dir};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// URI for the AGENTS.md document.
-pub const AGENTS_URI: &str = "doc://agents";
-/// Name of the AGENTS.md document.
-pub const AGENTS_NAME: &str = "AGENTS.md";
-/// Description of the AGENTS.md document.
-pub const AGENTS_DESCRIPTION: &str = "AI Agent Development Guidelines";
-/// Content of the AGENTS.md document.
-pub const AGENTS_TEXT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/AGENTS.md"));
-/// Environment variable to control exposure of AGENTS.md.
-pub const ENV_EXPOSE_AGENTS: &str = "SKRILLS_EXPOSE_AGENTS";
-/// Command template used to launch an agent specification.
-pub const DEFAULT_AGENT_RUN_TEMPLATE: &str = r#"codex --yolo exec --timeout_ms 1800000 "Load agent spec at {} and execute its instructions""#;
-/// Start marker for the available skills section in AGENTS.md.
-pub const AGENTS_SECTION_START: &str = "<!-- available_skills:start -->";
-/// End marker for the available skills section in AGENTS.md.
-pub const AGENTS_SECTION_END: &str = "<!-- available_skills:end -->";
-/// Start marker for available agents.
-pub const AGENTS_AGENT_SECTION_START: &str = "<!-- available_agents:start -->";
-/// End marker for available agents.
-pub const AGENTS_AGENT_SECTION_END: &str = "<!-- available_agents:end -->";
+/// Command template used to launch an agent specification: the command
+/// `skrills agent` runs, with `{}` for the agent file path. Built by
+/// `skrills_subagents::launch`; a test keeps the two equal.
+pub const DEFAULT_AGENT_RUN_TEMPLATE: &str = r#"codex exec --sandbox workspace-write "Load the agent spec file at the path \"{}\" and execute its instructions""#;
 /// Default bytes for embedding preview.
 pub const DEFAULT_EMBED_PREVIEW_BYTES: usize = 4096;
 /// Default embedding threshold.
 pub const DEFAULT_EMBED_THRESHOLD: f32 = 0.18;
-/// Environment variable to specify CLI type for agent file selection.
-pub const ENV_CLI_TYPE: &str = "SKRILLS_CLI_TYPE";
-
-/// Represents the type of CLI that skrills is integrated with.
-///
-/// Each CLI type has its own configuration directory and agent file naming convention.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CliType {
-    /// Codex CLI (default) - uses `~/.codex/AGENTS.md`
-    Codex,
-    /// Claude CLI - uses `~/.claude/CLAUDE.md`
-    Claude,
-    /// Gemini CLI - uses `~/.gemini/GEMINI.md`
-    Gemini,
-    /// Qwen CLI - uses `~/.qwen/QWEN.md`
-    Qwen,
-}
-
-impl CliType {
-    /// Returns the config directory name for this CLI type.
-    pub fn config_dir(&self) -> &'static str {
-        match self {
-            CliType::Codex => ".codex",
-            CliType::Claude => ".claude",
-            CliType::Gemini => ".gemini",
-            CliType::Qwen => ".qwen",
-        }
-    }
-
-    /// Returns the agent file name for this CLI type.
-    pub fn agent_file(&self) -> &'static str {
-        match self {
-            CliType::Codex => "AGENTS.md",
-            CliType::Claude => "CLAUDE.md",
-            CliType::Gemini => "GEMINI.md",
-            CliType::Qwen => "QWEN.md",
-        }
-    }
-
-    /// Returns the full path to the agent file.
-    pub fn agent_path(&self, home: &Path) -> PathBuf {
-        home.join(self.config_dir()).join(self.agent_file())
-    }
-}
-
-/// Error returned when parsing an invalid CLI type string.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseCliTypeError(String);
-
-impl std::fmt::Display for ParseCliTypeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "unknown CLI type: {}", self.0)
-    }
-}
-
-impl std::error::Error for ParseCliTypeError {}
-
-impl std::str::FromStr for CliType {
-    type Err = ParseCliTypeError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "codex" => Ok(CliType::Codex),
-            "claude" => Ok(CliType::Claude),
-            "gemini" => Ok(CliType::Gemini),
-            "qwen" => Ok(CliType::Qwen),
-            _ => Err(ParseCliTypeError(s.to_string())),
-        }
-    }
-}
-
-impl std::fmt::Display for CliType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CliType::Codex => write!(f, "codex"),
-            CliType::Claude => write!(f, "claude"),
-            CliType::Gemini => write!(f, "gemini"),
-            CliType::Qwen => write!(f, "qwen"),
-        }
-    }
-}
-
-/// Detects the CLI type from environment variables.
-///
-/// Checks the `SKRILLS_CLI_TYPE` environment variable first.
-/// Returns `CliType::Codex` as the default if not set or unrecognized; an
-/// unrecognized value is logged so a typo does not pass silently.
-pub fn detect_cli_type() -> CliType {
-    let Ok(cli_type) = std::env::var(ENV_CLI_TYPE) else {
-        return CliType::Codex;
-    };
-    cli_type.parse().unwrap_or_else(|err: ParseCliTypeError| {
-        tracing::warn!(
-            target: "skrills::discovery",
-            value = %cli_type,
-            error = %err,
-            "Unrecognized {ENV_CLI_TYPE}; falling back to codex"
-        );
-        CliType::Codex
-    })
-}
-
-/// Reads the agent file content for the detected CLI type.
-///
-/// Attempts to read the appropriate agent file based on CLI type.
-/// Falls back to the embedded `AGENTS_TEXT` if the file doesn't exist.
-pub fn read_agent_file() -> Result<String> {
-    let home = home_dir()?;
-    read_agent_file_for_cli(detect_cli_type(), &home)
-}
-
-/// Reads the agent file content for a specific CLI type.
-///
-/// Attempts to read the appropriate agent file based on CLI type.
-/// Falls back to the embedded `AGENTS_TEXT` if the file doesn't exist.
-pub fn read_agent_file_for_cli(cli_type: CliType, home: &Path) -> Result<String> {
-    let path = cli_type.agent_path(home);
-    if path.exists() {
-        fs::read_to_string(&path).map_err(|e| anyhow!("failed to read agent file: {}", e))
-    } else {
-        // Fall back to embedded AGENTS.md
-        Ok(AGENTS_TEXT.to_string())
-    }
-}
-
-/// Returns the path to the agent file for the detected CLI type.
-///
-/// Returns `None` if the file doesn't exist.
-pub fn agent_file_path() -> Result<Option<PathBuf>> {
-    let home = home_dir()?;
-    agent_file_path_for_cli(detect_cli_type(), &home)
-}
-
-/// Returns the path to the agent file for a specific CLI type.
-///
-/// Returns `None` if the file doesn't exist.
-pub fn agent_file_path_for_cli(cli_type: CliType, home: &Path) -> Result<Option<PathBuf>> {
-    let path = cli_type.agent_path(home);
-    if path.exists() {
-        Ok(Some(path))
-    } else {
-        Ok(None)
-    }
-}
-
-/// Returns priority labels for skill sources.
-pub fn priority_labels() -> Vec<String> {
-    disc_priority_labels()
-}
-
-/// Returns priority labels and their corresponding rank map for skill sources.
-pub fn priority_labels_and_rank_map() -> (Vec<String>, serde_json::Map<String, serde_json::Value>) {
-    disc_priority_labels_and_rank_map()
-}
-
 /// Determines the skill root directories based on configuration and environment.
-pub fn skill_roots(extra_dirs: &[PathBuf]) -> Result<Vec<SkillRoot>> {
-    let home = home_dir()?;
-    let include_claude = env_include_claude();
-    let order = {
-        if let Some(mut override_list) =
-            load_priority_override(&|| Ok(load_manifest_settings()?.priority.clone()))?
-        {
-            let mut seen: HashSet<String> = override_list.iter().map(|s| s.label()).collect();
-            for src in default_priority() {
-                if seen.insert(src.label()) {
-                    override_list.push(src);
-                }
-            }
-            override_list
-        } else {
-            default_priority()
-        }
-    };
-    let mut roots = Vec::new();
-    for source in order {
-        let root = match source {
-            SkillSource::Codex => home.join(".codex/skills"),
-            SkillSource::Claude => {
-                if !include_claude {
-                    continue;
-                }
-                home.join(".claude/skills")
-            }
-            SkillSource::Marketplace => {
-                if !include_claude || !env_include_marketplace() {
-                    continue;
-                }
-                home.join(".claude/plugins/marketplaces")
-            }
-            SkillSource::Cache => {
-                if !include_claude {
-                    continue;
-                }
-                home.join(".claude/plugins/cache")
-            }
-            SkillSource::Mirror => home.join(".codex/skills-mirror"),
-            SkillSource::Agent => home.join(".agent/skills"),
-            SkillSource::Extra(_) => continue,
-            _ => continue, // Handle future variants
-        };
-        roots.push(SkillRoot { root, source });
-    }
-    for (idx, dir) in extra_dirs.iter().enumerate() {
-        roots.push(SkillRoot {
-            root: dir.clone(),
-            source: SkillSource::Extra(idx as u32),
-        });
-    }
-    Ok(roots)
+pub fn skill_roots_from_env(extra_dirs: &[PathBuf]) -> Result<Vec<SkillRoot>> {
+    Ok(crate::scanner::skill_roots(
+        &home_dir()?,
+        &RootSettings::from_env()?,
+        extra_dirs,
+    ))
 }
 
 /// Merges extra directories from environment variables and CLI arguments.
@@ -317,7 +91,7 @@ pub fn agents_manifest() -> Result<Option<PathBuf>> {
 
 /// Collects skills from configured directories.
 pub fn collect_skills(extra_dirs: &[PathBuf]) -> Result<Vec<SkillMeta>> {
-    discover_skills(&skill_roots(extra_dirs)?, None)
+    discover_skills(&skill_roots_from_env(extra_dirs)?, None)
 }
 
 /// Collects agents from configured directories.
@@ -428,10 +202,6 @@ pub fn resolve_agent<'a>(spec: &str, agents: &'a [AgentMeta]) -> Result<&'a Agen
         )),
     }
 }
-
-/// Checks if a directory entry is a skill file (`SKILL.md`): the rule
-/// discovery itself uses, re-exported so callers here cannot drift from it.
-pub use skrills_discovery::is_skill_file;
 
 /// Tokenizes a prompt into a set of lowercase alphanumeric words.
 pub fn tokenize_prompt(prompt: &str) -> HashSet<String> {
@@ -583,10 +353,23 @@ pub fn trigram_similarity_checked(prompt: &str, text: &str) -> f32 {
 pub fn read_prefix(path: &Path, max: usize) -> Result<String> {
     use std::io::Read;
     let mut file = fs::File::open(path)?;
-    let mut buf = Vec::with_capacity(max);
-    file.by_ref().take(max as u64).read_to_end(&mut buf)?;
+    // One byte past `max` tells a file of exactly `max` bytes from a longer one.
+    let mut buf = Vec::with_capacity(max.saturating_add(1));
+    file.by_ref()
+        .take((max as u64).saturating_add(1))
+        .read_to_end(&mut buf)?;
+    let truncated = buf.len() > max;
+    if truncated {
+        buf.truncate(max);
+        // Drop a character the cut split rather than show U+FFFD.
+        if let Err(e) = std::str::from_utf8(&buf) {
+            if e.error_len().is_none() {
+                buf.truncate(e.valid_up_to());
+            }
+        }
+    }
     let mut s = String::from_utf8_lossy(&buf).into_owned();
-    if buf.len() == max {
+    if truncated {
         s.push('…');
     }
     Ok(s)
@@ -603,7 +386,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        crate::test_support::env_guard()
+        skrills_test_utils::env_guard()
     }
 
     #[test]
@@ -693,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_priority_labels() {
-        let labels = priority_labels();
+        let labels = crate::priority_labels();
         assert_eq!(
             labels,
             vec![
@@ -712,8 +495,8 @@ mod tests {
     #[test]
     fn skill_roots_excludes_claude_when_env_disabled() {
         let _guard = env_guard();
-        let _include = crate::test_support::set_env_var("SKRILLS_INCLUDE_CLAUDE", Some("0"));
-        let roots = skill_roots(&[]).unwrap();
+        let _include = skrills_test_utils::set_env_var("SKRILLS_INCLUDE_CLAUDE", Some("0"));
+        let roots = skill_roots_from_env(&[]).unwrap();
         let labels: Vec<_> = roots.iter().map(|r| r.source.label()).collect();
         assert!(
             !labels.contains(&"claude".to_string())
@@ -723,9 +506,66 @@ mod tests {
         );
     }
 
+    /// `/api/skills` serves Copilot skills from both paths; MCP resources
+    /// must see the same roots.
+    #[test]
+    fn skill_roots_include_both_copilot_paths() {
+        let _guard = env_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let _home = skrills_test_utils::set_env_var("HOME", temp.path().to_str());
+        let roots = skill_roots_from_env(&[]).unwrap();
+        let copilot: Vec<_> = roots
+            .iter()
+            .filter(|r| r.source == SkillSource::Copilot)
+            .map(|r| r.root.clone())
+            .collect();
+        assert!(
+            copilot.contains(&temp.path().join(".copilot/skills")),
+            "{copilot:?}"
+        );
+        if let Some(config) = dirs::config_dir() {
+            assert!(
+                copilot.contains(&config.join("copilot/skills")),
+                "{copilot:?}"
+            );
+        }
+    }
+
+    /// Cursor loads skills from `~/.cursor/skills`, where sync writes them;
+    /// MCP discovery must list that root too.
+    #[test]
+    fn skill_roots_include_the_cursor_skills_dir() {
+        let _guard = env_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let _home = skrills_test_utils::set_env_var("HOME", temp.path().to_str());
+        let roots = skill_roots_from_env(&[]).unwrap();
+        assert!(
+            roots
+                .iter()
+                .any(|r| r.source == SkillSource::Cursor
+                    && r.root == temp.path().join(".cursor/skills")),
+            "{roots:?}"
+        );
+    }
+
+    /// A file of exactly `max` bytes is complete, and a cut must not split a
+    /// UTF-8 character into U+FFFD.
+    #[test]
+    fn read_prefix_marks_only_real_truncation_on_a_char_boundary() {
+        let temp = tempdir().unwrap();
+        let exact = temp.path().join("exact.md");
+        fs::write(&exact, "abcd").unwrap();
+        assert_eq!(read_prefix(&exact, 4).unwrap(), "abcd");
+
+        let long = temp.path().join("long.md");
+        fs::write(&long, "abcé more").unwrap(); // é is two bytes at 3..5
+        assert_eq!(read_prefix(&long, 4).unwrap(), "abc…");
+        assert_eq!(read_prefix(&long, 5).unwrap(), "abcé…");
+    }
+
     #[test]
     fn test_priority_labels_and_rank_map() {
-        let (labels, rank_map) = priority_labels_and_rank_map();
+        let (labels, rank_map) = crate::priority_labels_and_rank_map();
 
         assert_eq!(labels.len(), 8);
         assert_eq!(rank_map.len(), 8);
@@ -797,153 +637,5 @@ mod tests {
     fn trigram_similarity_is_ascii_case_insensitive() {
         assert_eq!(trigram_similarity("AbC", "abc"), 1.0);
         assert_eq!(trigram_similarity("abc", "abd"), 0.0);
-    }
-
-    // CliType tests
-
-    #[test]
-    fn cli_type_config_dir_returns_correct_directories() {
-        assert_eq!(CliType::Codex.config_dir(), ".codex");
-        assert_eq!(CliType::Claude.config_dir(), ".claude");
-        assert_eq!(CliType::Gemini.config_dir(), ".gemini");
-        assert_eq!(CliType::Qwen.config_dir(), ".qwen");
-    }
-
-    #[test]
-    fn cli_type_agent_file_returns_correct_filenames() {
-        assert_eq!(CliType::Codex.agent_file(), "AGENTS.md");
-        assert_eq!(CliType::Claude.agent_file(), "CLAUDE.md");
-        assert_eq!(CliType::Gemini.agent_file(), "GEMINI.md");
-        assert_eq!(CliType::Qwen.agent_file(), "QWEN.md");
-    }
-
-    #[test]
-    fn cli_type_agent_path_constructs_correct_path() {
-        let home = PathBuf::from("/home/user");
-        assert_eq!(
-            CliType::Codex.agent_path(&home),
-            PathBuf::from("/home/user/.codex/AGENTS.md")
-        );
-        assert_eq!(
-            CliType::Claude.agent_path(&home),
-            PathBuf::from("/home/user/.claude/CLAUDE.md")
-        );
-        assert_eq!(
-            CliType::Gemini.agent_path(&home),
-            PathBuf::from("/home/user/.gemini/GEMINI.md")
-        );
-        assert_eq!(
-            CliType::Qwen.agent_path(&home),
-            PathBuf::from("/home/user/.qwen/QWEN.md")
-        );
-    }
-
-    #[test]
-    fn cli_type_from_str_parses_valid_types() {
-        assert_eq!("codex".parse::<CliType>(), Ok(CliType::Codex));
-        assert_eq!("claude".parse::<CliType>(), Ok(CliType::Claude));
-        assert_eq!("gemini".parse::<CliType>(), Ok(CliType::Gemini));
-        assert_eq!("qwen".parse::<CliType>(), Ok(CliType::Qwen));
-    }
-
-    #[test]
-    fn cli_type_from_str_is_case_insensitive() {
-        assert_eq!("CODEX".parse::<CliType>(), Ok(CliType::Codex));
-        assert_eq!("Claude".parse::<CliType>(), Ok(CliType::Claude));
-        assert_eq!("GEMINI".parse::<CliType>(), Ok(CliType::Gemini));
-        assert_eq!("Qwen".parse::<CliType>(), Ok(CliType::Qwen));
-    }
-
-    #[test]
-    fn cli_type_from_str_returns_error_for_invalid() {
-        assert!("invalid".parse::<CliType>().is_err());
-        assert!("".parse::<CliType>().is_err());
-        assert!("openai".parse::<CliType>().is_err());
-    }
-
-    #[test]
-    fn cli_type_display_formats_correctly() {
-        assert_eq!(format!("{}", CliType::Codex), "codex");
-        assert_eq!(format!("{}", CliType::Claude), "claude");
-        assert_eq!(format!("{}", CliType::Gemini), "gemini");
-        assert_eq!(format!("{}", CliType::Qwen), "qwen");
-    }
-
-    #[test]
-    fn detect_cli_type_defaults_to_codex() {
-        let _guard = env_guard();
-        let _cli = crate::test_support::set_env_var(ENV_CLI_TYPE, None);
-        assert_eq!(detect_cli_type(), CliType::Codex);
-    }
-
-    #[test]
-    fn detect_cli_type_respects_env_var() {
-        let _guard = env_guard();
-        let _cli = crate::test_support::set_env_var(ENV_CLI_TYPE, Some("claude"));
-        assert_eq!(detect_cli_type(), CliType::Claude);
-
-        // Re-set within the same guard scope
-        std::env::set_var(ENV_CLI_TYPE, "gemini");
-        assert_eq!(detect_cli_type(), CliType::Gemini);
-
-        std::env::set_var(ENV_CLI_TYPE, "qwen");
-        assert_eq!(detect_cli_type(), CliType::Qwen);
-        // _cli guard restores the original value on drop
-    }
-
-    #[test]
-    fn detect_cli_type_defaults_on_invalid_value() {
-        let _guard = env_guard();
-        let _cli = crate::test_support::set_env_var(ENV_CLI_TYPE, Some("invalid-cli"));
-        assert_eq!(detect_cli_type(), CliType::Codex);
-    }
-
-    #[test]
-    fn read_agent_file_for_cli_reads_existing_file() {
-        let tmp = tempdir().unwrap();
-        let home = tmp.path();
-
-        // Create the Claude agent file
-        let claude_dir = home.join(".claude");
-        fs::create_dir_all(&claude_dir).unwrap();
-        let claude_file = claude_dir.join("CLAUDE.md");
-        fs::write(&claude_file, "# Claude Agent Config").unwrap();
-
-        let content = read_agent_file_for_cli(CliType::Claude, home).unwrap();
-        assert_eq!(content, "# Claude Agent Config");
-    }
-
-    #[test]
-    fn read_agent_file_for_cli_falls_back_to_embedded() {
-        let tmp = tempdir().unwrap();
-        let home = tmp.path();
-
-        // Don't create any files, should fall back to embedded
-        let content = read_agent_file_for_cli(CliType::Claude, home).unwrap();
-        assert_eq!(content, AGENTS_TEXT);
-    }
-
-    #[test]
-    fn agent_file_path_for_cli_returns_path_when_exists() {
-        let tmp = tempdir().unwrap();
-        let home = tmp.path();
-
-        // Create the Gemini agent file
-        let gemini_dir = home.join(".gemini");
-        fs::create_dir_all(&gemini_dir).unwrap();
-        let gemini_file = gemini_dir.join("GEMINI.md");
-        fs::write(&gemini_file, "# Gemini Config").unwrap();
-
-        let path = agent_file_path_for_cli(CliType::Gemini, home).unwrap();
-        assert_eq!(path, Some(gemini_file));
-    }
-
-    #[test]
-    fn agent_file_path_for_cli_returns_none_when_missing() {
-        let tmp = tempdir().unwrap();
-        let home = tmp.path();
-
-        let path = agent_file_path_for_cli(CliType::Qwen, home).unwrap();
-        assert_eq!(path, None);
     }
 }

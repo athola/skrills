@@ -29,6 +29,7 @@
 
 pub mod cold_window;
 pub mod deps;
+mod fence;
 pub mod graph;
 pub mod optimize;
 pub mod resolve;
@@ -39,7 +40,9 @@ pub use deps::{
     Warning, WarningKind, WarningLevel,
 };
 pub use graph::RelationshipGraph;
-pub use optimize::{quality_score, suggest_optimizations, OptimizationType, Priority, Suggestion};
+pub use optimize::{
+    quality_score, suggest_optimizations, OptimizationType, Priority, Suggestion, SuggestionKind,
+};
 pub use resolve::{
     DependencyGraph, DependencyResolver, GraphBuilder, InMemoryRegistry, ResolutionResult,
     ResolveError, ResolveOptions, ResolvedDependency, SkillInfo, SkillRegistry,
@@ -54,7 +57,8 @@ use std::path::Path;
 /// Complete analysis of a skill file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillAnalysis {
-    /// Skill name (from filename or frontmatter).
+    /// Skill name: the file stem, or the parent directory's name for a
+    /// `SKILL.md`. Frontmatter `name:` is not read.
     pub name: String,
     /// Token breakdown.
     pub tokens: TokenBreakdown,

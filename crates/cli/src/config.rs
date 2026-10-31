@@ -325,7 +325,7 @@ mod tests {
     /// SA-23: `project_roots` is a known key, and `~` expands to HOME.
     #[test]
     fn parse_project_roots() {
-        let _guard = crate::test_support::env_guard();
+        let _guard = skrills_test_utils::env_guard();
         let toml = r#"
             [serve]
             project_roots = ["~/src", "/work"]
@@ -504,9 +504,9 @@ mod tests {
 
     #[test]
     fn load_nonexistent_config_returns_none() {
-        let _g = crate::test_support::env_guard();
+        let _g = skrills_test_utils::env_guard();
         let home = tempfile::tempdir().unwrap();
-        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+        let _home = skrills_test_utils::set_env_var("HOME", home.path().to_str());
 
         assert!(load_config()
             .expect("a missing file is not an error")
@@ -518,10 +518,10 @@ mod tests {
     /// started the server without authentication.
     #[test]
     fn try_apply_config_fails_on_a_file_that_does_not_parse() {
-        let _g = crate::test_support::env_guard();
+        let _g = skrills_test_utils::env_guard();
         let home = tempfile::tempdir().unwrap();
-        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
-        let _token = crate::test_support::set_env_var("SKRILLS_AUTH_TOKEN", None);
+        let _home = skrills_test_utils::set_env_var("HOME", home.path().to_str());
+        let _token = skrills_test_utils::set_env_var("SKRILLS_AUTH_TOKEN", None);
         let dir = home.path().join(".skrills");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -537,10 +537,10 @@ mod tests {
 
     #[test]
     fn try_apply_config_exports_a_valid_file() {
-        let _g = crate::test_support::env_guard();
+        let _g = skrills_test_utils::env_guard();
         let home = tempfile::tempdir().unwrap();
-        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
-        let _http = crate::test_support::set_env_var("SKRILLS_HTTP", None);
+        let _home = skrills_test_utils::set_env_var("HOME", home.path().to_str());
+        let _http = skrills_test_utils::set_env_var("SKRILLS_HTTP", None);
         let dir = home.path().join(".skrills");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -556,8 +556,8 @@ mod tests {
 
     #[test]
     fn apply_config_respects_existing_env_vars() {
-        let _g = crate::test_support::env_guard();
-        let _http = crate::test_support::set_env_var("SKRILLS_HTTP", Some("127.0.0.1:1111"));
+        let _g = skrills_test_utils::env_guard();
+        let _http = skrills_test_utils::set_env_var("SKRILLS_HTTP", Some("127.0.0.1:1111"));
 
         // Create config with different value
         let serve = ServeConfig {
@@ -581,11 +581,11 @@ mod tests {
     /// reads `auth_token` from the file itself.
     #[test]
     fn apply_config_does_not_export_auth_token() {
-        let _g = crate::test_support::env_guard();
+        let _g = skrills_test_utils::env_guard();
         let home = tempfile::tempdir().unwrap();
-        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
-        let _token = crate::test_support::set_env_var("SKRILLS_AUTH_TOKEN", None);
-        let _http = crate::test_support::set_env_var("SKRILLS_HTTP", None);
+        let _home = skrills_test_utils::set_env_var("HOME", home.path().to_str());
+        let _token = skrills_test_utils::set_env_var("SKRILLS_AUTH_TOKEN", None);
+        let _http = skrills_test_utils::set_env_var("SKRILLS_HTTP", None);
         let dir = home.path().join(".skrills");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -605,9 +605,9 @@ mod tests {
 
     #[test]
     fn apply_config_sets_http_and_cache_ttl() {
-        let _g = crate::test_support::env_guard();
-        let _http = crate::test_support::set_env_var("SKRILLS_HTTP", None);
-        let _ttl = crate::test_support::set_env_var("SKRILLS_CACHE_TTL_MS", None);
+        let _g = skrills_test_utils::env_guard();
+        let _http = skrills_test_utils::set_env_var("SKRILLS_HTTP", None);
+        let _ttl = skrills_test_utils::set_env_var("SKRILLS_CACHE_TTL_MS", None);
 
         let serve = ServeConfig {
             http: Some("127.0.0.1:9000".to_string()),
@@ -625,8 +625,8 @@ mod tests {
     /// allow-list; it has to arrive in the env var clap reads.
     #[test]
     fn apply_config_exports_allowed_hosts_for_clap() {
-        let _g = crate::test_support::env_guard();
-        let _hosts = crate::test_support::set_env_var("SKRILLS_ALLOWED_HOSTS", None);
+        let _g = skrills_test_utils::env_guard();
+        let _hosts = skrills_test_utils::set_env_var("SKRILLS_ALLOWED_HOSTS", None);
 
         let serve = ServeConfig {
             allowed_hosts: Some("mcp.internal:8080,10.0.0.5".to_string()),
@@ -643,8 +643,8 @@ mod tests {
 
     #[test]
     fn apply_config_keeps_allowed_hosts_already_in_env() {
-        let _g = crate::test_support::env_guard();
-        let _hosts = crate::test_support::set_env_var("SKRILLS_ALLOWED_HOSTS", Some("env.example"));
+        let _g = skrills_test_utils::env_guard();
+        let _hosts = skrills_test_utils::set_env_var("SKRILLS_ALLOWED_HOSTS", Some("env.example"));
 
         let serve = ServeConfig {
             allowed_hosts: Some("config.example".to_string()),

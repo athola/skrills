@@ -26,18 +26,26 @@ pub fn read_mcp_servers(root: &Path) -> Result<HashMap<String, McpServer>> {
     let mut servers = HashMap::new();
     if let Some(mcp) = config.get("mcpServers").and_then(|v| v.as_object()) {
         for (name, server_config) in mcp {
-            // Skip MCP servers with missing or empty command and log a warning
+            if server_config.get("type").and_then(|v| v.as_str()) == Some("sse") {
+                warn!(server = %name, "Skipping SSE MCP server; sync carries only stdio and http");
+                continue;
+            }
             let command = server_config
                 .get("command")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
+            let url = server_config
+                .get("url")
+                .and_then(|v| v.as_str())
+                .filter(|u| !u.is_empty());
 
-            if command.is_empty() {
+            // Skip MCP servers with neither a command nor a url
+            if command.is_empty() && url.is_none() {
                 // Logged only: a library printing to stderr corrupted the TUI.
                 warn!(
                     server = %name,
                     path = %path.display(),
-                    "Skipping MCP server with missing or empty 'command' field"
+                    "Skipping MCP server with neither 'command' nor 'url'"
                 );
                 continue;
             }
@@ -104,14 +112,26 @@ pub fn read_mcp_servers(root: &Path) -> Result<HashMap<String, McpServer>> {
                 None => HashMap::new(),
             };
 
+            let headers = server_config
+                .get("headers")
+                .and_then(|v| v.as_object())
+                .map(|obj| {
+                    obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect()
+                });
             let server = McpServer {
                 name: name.clone(),
-                transport: McpTransport::Stdio, // Copilot only supports stdio
+                transport: if command.is_empty() {
+                    McpTransport::Http
+                } else {
+                    McpTransport::Stdio
+                },
                 command: command.to_string(),
                 args,
                 env,
-                url: None,     // Copilot doesn't support HTTP
-                headers: None, // Copilot doesn't support HTTP
+                url: url.map(str::to_string),
+                headers,
                 enabled: server_config
                     .get("disabled")
                     .and_then(|v| v.as_bool())
@@ -148,7 +168,7 @@ pub fn read_mcp_servers(root: &Path) -> Result<HashMap<String, McpServer>> {
 pub fn write_mcp_servers(root: &Path, servers: &HashMap<String, McpServer>) -> Result<WriteReport> {
     let path = mcp_config_path(root);
     let mut config = json_config::load_object(&path)?;
-    let report = json_config::merge_servers(&mut config, servers, Dialect::StdioOnly, "copilot")?;
+    let report = json_config::merge_servers(&mut config, servers, Dialect::Copilot, "copilot")?;
     if report.written > 0 {
         json_config::write_json_config(&path, &config)?;
     }

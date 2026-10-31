@@ -1,66 +1,9 @@
 //! Context usage statistics tracking.
 
 use serde::{Deserialize, Serialize};
-use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-
-/// Statistics about tool usage for context optimization.
-#[deprecated(
-    since = "0.9.0",
-    note = "per-tool counts are kept in ContextStats; ToolUsageStats is unused and will be removed in a future release"
-)]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ToolUsageStats {
-    /// Number of times each tool has been invoked.
-    pub invocation_count: HashMap<String, u64>,
-    /// Number of times each tool's full schema was requested.
-    pub schema_load_count: HashMap<String, u64>,
-    /// Tools that were invoked but schema never loaded (pure lazy).
-    pub lazy_invocations: HashMap<String, u64>,
-}
-
-impl ToolUsageStats {
-    /// Record a tool invocation.
-    pub fn record_invocation(&mut self, tool_name: &str) {
-        *self
-            .invocation_count
-            .entry(tool_name.to_string())
-            .or_default() += 1;
-    }
-
-    /// Record a schema load.
-    pub fn record_schema_load(&mut self, tool_name: &str) {
-        *self
-            .schema_load_count
-            .entry(tool_name.to_string())
-            .or_default() += 1;
-    }
-
-    /// Get most frequently invoked tools.
-    pub fn top_invoked(&self, limit: usize) -> Vec<(&str, u64)> {
-        let mut sorted: Vec<_> = self
-            .invocation_count
-            .iter()
-            .map(|(k, v)| (k.as_str(), *v))
-            .collect();
-        sorted.sort_by_key(|b| Reverse(b.1));
-        sorted.truncate(limit);
-        sorted
-    }
-
-    /// Calculate schema load ratio (loaded / invoked).
-    pub fn schema_load_ratio(&self) -> f64 {
-        let total_invocations: u64 = self.invocation_count.values().sum();
-        let total_loads: u64 = self.schema_load_count.values().sum();
-        if total_invocations == 0 {
-            0.0
-        } else {
-            total_loads as f64 / total_invocations as f64
-        }
-    }
-}
 
 /// Atomic context statistics for thread-safe updates.
 #[derive(Debug, Default)]
@@ -141,19 +84,6 @@ impl ContextStatsSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_tool_usage_stats() {
-        let mut stats = ToolUsageStats::default();
-        stats.record_invocation("browser_click");
-        stats.record_invocation("browser_click");
-        stats.record_invocation("notion_search");
-        stats.record_schema_load("browser_click");
-
-        let top = stats.top_invoked(2);
-        assert_eq!(top[0], ("browser_click", 2));
-        assert_eq!(top[1], ("notion_search", 1));
-    }
 
     #[test]
     fn test_context_stats() {

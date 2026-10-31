@@ -25,18 +25,24 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Args;
-use skrills_analyze::cold_window::cadence::read_loadavg_1min;
+use skrills_analyze::cold_window::alert::LayeredAlertPolicy;
+use skrills_analyze::cold_window::cadence::{read_loadavg_1min, LoadAwareCadence};
+use skrills_analyze::cold_window::diff::FieldwiseDiff;
 use skrills_analyze::cold_window::engine::TickInput;
-use skrills_analyze::cold_window::{ColdWindowEngine, PluginHealthCollector, SkillCollector};
+use skrills_analyze::cold_window::{
+    ColdWindowEngine, DefaultHintScorer, PluginHealthCollector, SkillCollector,
+};
+use skrills_intelligence::cold_window_hints::MultiSignalScorer;
 use skrills_snapshot::{
     Hint, HintCategory, KillSwitch, LoadSample, ResearchChannel, ResearchFinding, TokenEntry,
     TokenLedger,
 };
+use skrills_sync::kill_switch_marker::EngagedMarker;
 use skrills_tome::dispatcher::{current_ms_checked, BucketedBudget};
 use tokio::sync::watch;
 
+use skrills_discovery::merge_extra_dirs;
 use skrills_server::api::{cold_window_routes, ColdWindowDashboardState};
-use skrills_server::discovery::merge_extra_dirs;
 
 /// Floor on the adaptive tick delay (ms). Prevents the engine from
 /// busy-looping if the snapshot's `next_tick_ms` is reported as 0
@@ -47,12 +53,13 @@ const MIN_TICK_MS: u64 = 50;
 #[derive(Debug, Clone, Args)]
 pub struct ColdWindowArgs {
     /// Token budget ceiling. Above this the LayeredAlertPolicy fires
-    /// a Warning and engages the kill-switch. At least 2: 0 tripped the
-    /// kill-switch on the first tick, and 0 or 1 cannot hold ordered tiers.
-    #[arg(long, default_value_t = 100_000, value_parser = clap::value_parser!(u64).range(2..))]
+    /// a Warning and engages the kill-switch. At least 3: 0 tripped the
+    /// kill-switch on the first tick, and below 3 the tiers cannot be ordered.
+    #[arg(long, default_value_t = 100_000, value_parser = clap::value_parser!(u64).range(3..))]
     pub alert_budget: u64,
 
-    /// Research dispatcher fetches per hour.
+    /// Research dispatcher fetches per hour. The quota is kept in memory
+    /// and resets on every run.
     #[arg(long, default_value_t = 10)]
     pub research_rate: u32,
 
@@ -94,7 +101,7 @@ pub struct ColdWindowArgs {
 
     /// Additional skill directories the producer walks each tick to
     /// build the snapshot's per-skill token attribution. Combined with
-    /// any directories supplied via `SKRILLS_EXTRA_SKILL_DIRS`; the
+    /// any directories supplied via `SKRILLS_SKILL_DIR`; the
     /// default skill roots are not walked. Token totals are estimated from file size
     /// (`bytes / 4`); a real BPE tokenizer is a follow-up.
     #[arg(long = "skill-dir", value_name = "DIR")]
@@ -164,9 +171,15 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
     // in this run. The engine engages it on token-budget breach;
     // adapters consult it before mutating I/O.
     let kill_switch = KillSwitch::new();
+    // Syncs run in other processes; while the switch is engaged the
+    // producer keeps a pid marker here so they refuse too (FR12).
+    let kill_switch_marker = skrills_sync::kill_switch_marker::marker_path();
 
+    // The floor applies to a fixed rate too: `--no-adaptive
+    // --tick-rate-ms 0` otherwise spun with no delay at all.
+    let base_tick_ms = args.tick_rate_ms.unwrap_or(2_000).max(MIN_TICK_MS);
     let engine = Arc::new(
-        ColdWindowEngine::with_defaults(args.alert_budget).with_kill_switch(kill_switch.clone()),
+        build_engine(args.alert_budget, base_tick_ms).with_kill_switch(kill_switch.clone()),
     );
     let bus = engine.bus_sender();
 
@@ -211,14 +224,13 @@ pub async fn run(args: ColdWindowArgs) -> Result<()> {
         .unwrap_or_else(|| PathBuf::from("plugins"));
     let producer_handle = tokio::spawn(producer_loop(
         Arc::clone(&engine),
-        // The floor applies to a fixed rate too: `--no-adaptive
-        // --tick-rate-ms 0` otherwise spun with no delay at all.
-        args.tick_rate_ms.unwrap_or(2_000).max(MIN_TICK_MS),
+        base_tick_ms,
         args.no_adaptive,
         args.demo,
         plugins_dir,
         merged_skill_dirs,
         shutdown_rx.clone(),
+        kill_switch_marker,
     ));
 
     // Spawn the browser server if requested.
@@ -330,6 +342,28 @@ async fn shut_down(
 /// participation is real: each tick re-walks
 /// `<plugins_dir>/*/health.toml` cold and feeds the result to the
 /// engine. Token attribution from real discovery is a follow-up.
+/// Keeps the kill-switch marker at `path` in step with the switch: created
+/// once it engages, removed when it releases.
+fn hold_marker(engaged: bool, path: &std::path::Path, held: &mut Option<EngagedMarker>) {
+    if !engaged {
+        *held = None;
+        return;
+    }
+    if held.is_some() {
+        return;
+    }
+    match EngagedMarker::create(path) {
+        Ok(marker) => *held = Some(marker),
+        Err(e) => tracing::error!(
+            path = %path.display(),
+            error = %e,
+            "kill switch engaged but its marker could not be written; syncs in other processes are not stopped"
+        ),
+    }
+}
+
+// Each argument is a separate CLI setting; the tests drive them one by one.
+#[allow(clippy::too_many_arguments)]
 async fn producer_loop(
     engine: Arc<ColdWindowEngine>,
     base_tick_ms: u64,
@@ -338,6 +372,7 @@ async fn producer_loop(
     plugins_dir: PathBuf,
     skill_dirs: Vec<PathBuf>,
     mut shutdown: watch::Receiver<bool>,
+    kill_switch_marker: Option<PathBuf>,
 ) -> Result<()> {
     let mut tick_count: u64 = 0;
     let mut next_delay_ms = base_tick_ms;
@@ -347,11 +382,16 @@ async fn producer_loop(
     // to empty; the producer keeps the synthetic demo ledger so the
     // dashboard stays interactive in that mode.
     let skill_collector = Arc::new(SkillCollector::new(skill_dirs));
+    // Dropped with this future, so shutdown, an error and an abort all
+    // remove the marker.
+    let mut held_marker: Option<EngagedMarker> = None;
     loop {
         tokio::select! {
             biased;
-            _ = shutdown.changed() => {
-                if *shutdown.borrow() {
+            changed = shutdown.changed() => {
+                // A dropped sender is a shutdown too: `changed()` would
+                // return `Err` at once on every turn and spin the loop.
+                if changed.is_err() || *shutdown.borrow() {
                     tracing::info!("producer received shutdown");
                     break;
                 }
@@ -454,6 +494,9 @@ async fn producer_loop(
                 }
 
                 let snap = engine.tick(input);
+                if let Some(path) = kill_switch_marker.as_deref() {
+                    hold_marker(engine.kill_switch().is_engaged(), path, &mut held_marker);
+                }
                 next_delay_ms = if no_adaptive {
                     base_tick_ms
                 } else {
@@ -463,6 +506,18 @@ async fn producer_loop(
         }
     }
     Ok(())
+}
+
+/// The default engine, with the adaptive cadence based on `base_tick_ms`
+/// instead of the cadence's own 2 s default.
+fn build_engine(alert_budget: u64, base_tick_ms: u64) -> ColdWindowEngine {
+    ColdWindowEngine::with_strategies(
+        Box::new(LoadAwareCadence::new().with_base(Duration::from_millis(base_tick_ms))),
+        Box::new(LayeredAlertPolicy::for_budget(alert_budget)),
+        Box::new(DefaultHintScorer(MultiSignalScorer::new())),
+        Box::new(FieldwiseDiff::new()),
+    )
+    .with_budget_ceiling(alert_budget)
 }
 
 /// The load sample for a tick: zeroed under `--no-adaptive`.
@@ -865,6 +920,18 @@ mod tests {
         assert!(i.load_sample.last_edit_age_ms.is_none());
     }
 
+    /// `--tick-rate-ms` sets the adaptive cadence base, so every tick after
+    /// the first keeps it rather than falling back to the 2 s default.
+    #[test]
+    fn tick_rate_sets_the_adaptive_cadence_base_for_later_ticks() {
+        let engine = build_engine(u64::MAX, 1_000);
+        let input = build_demo_input(1, true).expect("clock available in test env");
+
+        let snap = engine.tick(input);
+
+        assert_eq!(snap.next_tick_ms, 1_000);
+    }
+
     #[test]
     fn build_demo_input_partitions_total_between_skill_and_mcp() {
         let i = build_demo_input(40, true).expect("clock available in test env");
@@ -900,6 +967,7 @@ mod tests {
             PathBuf::from("/nonexistent-plugins-test"),
             Vec::new(),
             rx,
+            None,
         ));
         // Let the producer fire a few ticks.
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -923,6 +991,7 @@ mod tests {
             PathBuf::from("/nonexistent-plugins-test"),
             Vec::new(),
             shutdown_rx,
+            None,
         ));
 
         let mut last_version = 0;
@@ -941,6 +1010,35 @@ mod tests {
             }
         }
         let _ = tx.send(true);
+    }
+
+    /// A dropped shutdown sender made `changed()` return `Err` at once, and
+    /// the biased `select!` spun on it forever instead of stopping.
+    #[tokio::test]
+    async fn producer_loop_stops_when_the_shutdown_sender_is_dropped() {
+        let engine = Arc::new(ColdWindowEngine::with_defaults(100_000));
+        let (tx, shutdown_rx) = watch::channel(false);
+        drop(tx);
+
+        let finished = tokio::time::timeout(
+            Duration::from_secs(2),
+            producer_loop(
+                engine,
+                60_000,
+                true,
+                true,
+                PathBuf::from("/nonexistent-plugins-test"),
+                vec![],
+                shutdown_rx,
+                None,
+            ),
+        )
+        .await;
+
+        assert!(
+            finished.is_ok(),
+            "producer kept running after the sender dropped"
+        );
     }
 
     #[tokio::test]
@@ -971,6 +1069,7 @@ mod tests {
             PathBuf::from("/nonexistent-plugins-test"),
             vec![tmp.path().to_path_buf()],
             shutdown_rx,
+            None,
         ));
 
         // Walk a few snapshots until we see one that picked up the
@@ -1175,6 +1274,7 @@ mod tests {
             PathBuf::from("/nonexistent-plugins-test"),
             Vec::new(),
             shutdown_rx,
+            None,
         ));
         let snap = tokio::time::timeout(Duration::from_millis(500), rx.recv())
             .await
@@ -1185,6 +1285,41 @@ mod tests {
         assert!(snap.version >= 1);
         assert!(snap.plugin_health.is_empty());
         let _ = tx.send(true);
+    }
+
+    /// Sync runs in other processes, so an engaged switch has to leave a
+    /// marker they can see, and the marker must go when cold-window stops.
+    #[tokio::test]
+    async fn producer_loop_holds_the_kill_switch_marker_while_engaged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join(".skrills/kill-switch.pid");
+        // The demo ledger is far above a ten-token ceiling.
+        let engine = Arc::new(ColdWindowEngine::with_defaults(10));
+        let (tx, rx) = watch::channel(false);
+        let handle = tokio::spawn(producer_loop(
+            Arc::clone(&engine),
+            20,
+            true,
+            true,
+            PathBuf::from("/nonexistent-plugins-test"),
+            Vec::new(),
+            rx,
+            Some(marker.clone()),
+        ));
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !marker.exists() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(engine.kill_switch().is_engaged());
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            std::process::id().to_string()
+        );
+
+        let _ = tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert!(!marker.exists(), "marker must be removed on shutdown");
     }
 
     #[test]
@@ -1279,18 +1414,19 @@ mod tests {
         args: ColdWindowArgs,
     }
 
-    /// IN-18: a budget below 2 cannot hold ordered alert tiers.
+    /// IN-18: a budget below 3 cannot hold ordered alert tiers (advisory >= 1,
+    /// caution above it, warning at the ceiling).
     #[test]
-    fn alert_budget_below_two_is_rejected() {
+    fn alert_budget_below_three_is_rejected() {
         use clap::Parser;
-        for bad in ["0", "1"] {
+        for bad in ["0", "1", "2"] {
             assert!(
                 ArgsCli::try_parse_from(["t", "--alert-budget", bad]).is_err(),
                 "--alert-budget {bad} must be rejected"
             );
         }
-        let ok = ArgsCli::try_parse_from(["t", "--alert-budget", "2"]).unwrap();
-        assert_eq!(ok.args.alert_budget, 2);
+        let ok = ArgsCli::try_parse_from(["t", "--alert-budget", "3"]).unwrap();
+        assert_eq!(ok.args.alert_budget, 3);
     }
 
     #[test]
@@ -1325,6 +1461,7 @@ mod tests {
             PathBuf::from("/nonexistent-plugins-test"),
             Vec::new(),
             shutdown_rx,
+            None,
         ));
         for _ in 0..3 {
             let snap = tokio::time::timeout(Duration::from_millis(500), rx.recv())

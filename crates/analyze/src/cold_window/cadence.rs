@@ -36,11 +36,11 @@ pub trait CadenceStrategy: Send + Sync {
 /// to keep the user's feedback loop tight.
 pub const RECENT_EDIT_THRESHOLD_MS: u64 = 10_000;
 
-/// Heavy-load ratio (loadavg / cores). At or above this, cadence
+/// Heavy-load ratio (loadavg / cores). Above this, cadence
 /// quadruples (capped at `max`).
 pub const HEAVY_LOAD_THRESHOLD: f64 = 0.9;
 
-/// Moderate-load ratio (loadavg / cores). At or above this, cadence
+/// Moderate-load ratio (loadavg / cores). Above this, cadence
 /// doubles (capped at `max`).
 pub const MODERATE_LOAD_THRESHOLD: f64 = 0.7;
 

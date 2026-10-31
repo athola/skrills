@@ -144,6 +144,67 @@ mod tests {
     }
 
     #[test]
+    fn research_channel_serializes_every_variant_to_its_wire_name() {
+        let cases = [
+            (ResearchChannel::GitHub, "github"),
+            (ResearchChannel::HackerNews, "hacker-news"),
+            (ResearchChannel::Lobsters, "lobsters"),
+            (ResearchChannel::Paper, "paper"),
+            (ResearchChannel::Triz, "triz"),
+        ];
+        for (channel, name) in cases {
+            let json = serde_json::to_string(&channel).expect("serialize");
+            assert_eq!(json, format!("\"{name}\""));
+            let back: ResearchChannel = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, channel);
+        }
+    }
+
+    /// `git-hub` is what earlier versions wrote; a reader still accepts it.
+    #[test]
+    fn research_channel_reads_the_old_git_hub_spelling() {
+        let channel: ResearchChannel = serde_json::from_str("\"git-hub\"").expect("deserialize");
+        assert_eq!(channel, ResearchChannel::GitHub);
+    }
+
+    /// An infinite threshold serialized as `null` and the band could not be
+    /// read back, breaking every SSE consumer.
+    #[test]
+    fn alert_band_refuses_infinite_thresholds() {
+        assert_eq!(
+            AlertBand::new(0.0, 0.0, f64::INFINITY, 10.0),
+            Err(BandError::NonFinite)
+        );
+        assert_eq!(
+            AlertBand::new(f64::NEG_INFINITY, 0.0, 10.0, 5.0),
+            Err(BandError::NonFinite)
+        );
+        let band = AlertBand::new(0.0, 1.0, 10.0, 9.0).unwrap();
+        let json = serde_json::to_string(&band).unwrap();
+        let back: AlertBand = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, band);
+    }
+
+    /// The edit window is `age < 10_000`: 9_999 is active, 10_000 is not.
+    #[test]
+    fn cadence_label_boundaries() {
+        let cases = [
+            (Some(9_999), 0.0, "tick: 2.0s [active edit]"),
+            (Some(10_000), 0.0, "tick: 2.0s [base]"),
+            (Some(10_000), 0.5, "tick: 2.0s [load 0.50]"),
+            (None, 0.0, "tick: 2.0s [base]"),
+            (Some(0), 3.0, "tick: 2.0s [active edit]"),
+        ];
+        for (age, load, expected) in cases {
+            let mut snap = fixture();
+            snap.next_tick_ms = 2_000;
+            snap.load_sample.last_edit_age_ms = age;
+            snap.load_sample.loadavg_1min = load;
+            assert_eq!(snap.cadence_label(), expected, "age {age:?} load {load}");
+        }
+    }
+
+    #[test]
     fn cadence_label_uses_active_edit_when_recent() {
         let mut snap = fixture();
         snap.next_tick_ms = 2_000;
@@ -321,6 +382,14 @@ mod tests {
         assert_eq!(band.low_clear(), 5.0);
         assert_eq!(band.high(), 100.0);
         assert_eq!(band.high_clear(), 95.0);
+    }
+
+    #[test]
+    fn non_finite_band_error_displays_the_finite_requirement() {
+        assert_eq!(
+            BandError::NonFinite.to_string(),
+            "AlertBand: thresholds must be finite"
+        );
     }
 
     #[test]

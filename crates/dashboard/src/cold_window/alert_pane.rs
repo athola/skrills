@@ -3,9 +3,9 @@
 //! Renders the visible alerts (filtered and sorted by `ColdWindowState`)
 //! as a colored ratatui list. Handles two keystrokes:
 //!
-//! - `A` (uppercase): master-acknowledge, clears all CAUTION,
-//!   ADVISORY, and STATUS alerts in one stroke.
-//! - `d`: dismiss the focused WARNING-tier alert (per-row ack).
+//! - `A` (uppercase): master-acknowledge, hides all showing CAUTION,
+//!   ADVISORY, and STATUS alerts in one stroke until each one resolves.
+//! - `d`: dismiss the selected alert when it is WARNING-tier (per-row ack).
 //!
 //! Resize behavior: the pane re-derives its
 //! layout from the supplied `area: Rect` on every render, so a
@@ -19,7 +19,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{List, ListItem};
 use skrills_snapshot::{Alert, Severity};
 
-use super::focus::{clamped_selection, pane_block, select_row, truncate_with_ellipsis};
+use super::focus::{
+    clamped_selection, pane_block, render_list, select_row, truncate_with_ellipsis,
+};
 use super::state::ColdWindowState;
 
 /// Action returned by the pane after handling a keystroke.
@@ -74,7 +76,7 @@ impl AlertPane {
         let list = List::new(items)
             .block(pane_block(title, focused))
             .style(Style::default());
-        frame.render_widget(list, area);
+        render_list(frame, list, area, cursor);
     }
 
     /// Build one ratatui list row for an alert, truncating with `"..."`
@@ -126,21 +128,21 @@ impl AlertPane {
     }
 
     /// Handle a keystroke; mutate state if relevant and return the action.
-    pub fn handle_key(state: &mut ColdWindowState, key: KeyCode) -> AlertAction {
+    /// `selected` is the pane's cursor; it is clamped to the visible list.
+    pub fn handle_key(state: &mut ColdWindowState, key: KeyCode, selected: usize) -> AlertAction {
         match key {
             KeyCode::Char('A') => {
                 let cleared = state.master_ack();
                 AlertAction::MasterAcked { cleared }
             }
             KeyCode::Char('d') => {
-                // Dismiss the highest-priority visible warning.
-                if let Some(fingerprint) = state.visible_alerts().iter().find_map(|a| {
-                    if matches!(a.severity, Severity::Warning) {
-                        Some(a.fingerprint.clone())
-                    } else {
-                        None
-                    }
-                }) {
+                // Dismiss the selected row, if it is a warning.
+                let visible = state.visible_alerts();
+                let fingerprint = clamped_selection(selected, visible.len())
+                    .map(|idx| visible[idx])
+                    .filter(|a| matches!(a.severity, Severity::Warning))
+                    .map(|a| a.fingerprint.clone());
+                if let Some(fingerprint) = fingerprint {
                     state.ack_warning(&fingerprint);
                     AlertAction::WarningAcked { fingerprint }
                 } else {
@@ -205,7 +207,7 @@ mod tests {
             alert("a1", Severity::Advisory),
             alert("w1", Severity::Warning),
         ]));
-        let action = AlertPane::handle_key(&mut state, KeyCode::Char('A'));
+        let action = AlertPane::handle_key(&mut state, KeyCode::Char('A'), 0);
         assert_eq!(action, AlertAction::MasterAcked { cleared: 2 });
     }
 
@@ -216,7 +218,7 @@ mod tests {
             alert("w1", Severity::Warning),
             alert("w2", Severity::Warning),
         ]));
-        let action = AlertPane::handle_key(&mut state, KeyCode::Char('d'));
+        let action = AlertPane::handle_key(&mut state, KeyCode::Char('d'), 0);
         match action {
             AlertAction::WarningAcked { fingerprint } => {
                 assert!(state.acked_warnings.contains(&fingerprint));
@@ -229,7 +231,7 @@ mod tests {
     fn dismiss_with_no_warnings_is_noop() {
         let mut state = ColdWindowState::new();
         state.ingest(snap(vec![alert("c1", Severity::Caution)]));
-        let action = AlertPane::handle_key(&mut state, KeyCode::Char('d'));
+        let action = AlertPane::handle_key(&mut state, KeyCode::Char('d'), 0);
         assert_eq!(action, AlertAction::NoOp);
     }
 
@@ -237,7 +239,7 @@ mod tests {
     fn unrelated_keystroke_is_noop() {
         let mut state = ColdWindowState::new();
         state.ingest(snap(vec![alert("w1", Severity::Warning)]));
-        let action = AlertPane::handle_key(&mut state, KeyCode::Char('q'));
+        let action = AlertPane::handle_key(&mut state, KeyCode::Char('q'), 0);
         assert_eq!(action, AlertAction::NoOp);
     }
 
@@ -406,5 +408,30 @@ mod tests {
                 .draw(|f| AlertPane::render(&state, f, f.area(), false, None))
                 .unwrap();
         }
+    }
+
+    /// A stateless list always drew from row 0, so moving the cursor past
+    /// the pane's height selected rows the user could not see.
+    #[test]
+    fn selected_alert_below_the_fold_is_scrolled_into_view() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 5)).unwrap();
+        let mut state = ColdWindowState::new();
+        state.ingest(snap(
+            (0..10)
+                .map(|i| alert(&format!("w{i}"), Severity::Warning))
+                .collect(),
+        ));
+        let last = state.visible_alerts()[9].title.clone();
+        terminal
+            .draw(|f| AlertPane::render(&state, f, f.area(), true, Some(9)))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains(&last), "{text}");
     }
 }

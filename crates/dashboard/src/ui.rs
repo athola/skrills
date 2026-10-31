@@ -5,7 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
-use crate::app::{App, FocusPanel, SortOrder};
+use crate::app::{ActivityStatus, App, FocusPanel, SortOrder};
 
 /// RFC3339 timestamp display length (YYYY-MM-DDTHH:MM:SS).
 const TIMESTAMP_DISPLAY_LEN: usize = 19;
@@ -158,21 +158,11 @@ fn draw_activity_panel(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .take(area.height.saturating_sub(2) as usize)
         .map(|entry| {
-            let style = if entry.message.starts_with("[SYNC]") {
-                // Sync events: green for success, red for failure, blue for in-progress
-                if entry.message.contains("- OK") {
-                    Style::default().fg(Color::Green)
-                } else if entry.message.contains("- FAIL") {
-                    Style::default().fg(Color::Red)
-                } else {
-                    Style::default().fg(Color::Blue)
-                }
-            } else if entry.message.contains("[ERR]") || entry.message.contains("FAIL") {
-                Style::default().fg(Color::Red)
-            } else if entry.message.contains("[OK]") || entry.message.contains("PASS") {
-                Style::default().fg(Color::Green)
-            } else {
-                Style::default().fg(Color::Gray)
+            let style = match entry.status {
+                ActivityStatus::Ok => Style::default().fg(Color::Green),
+                ActivityStatus::Fail => Style::default().fg(Color::Red),
+                ActivityStatus::Pending => Style::default().fg(Color::Blue),
+                ActivityStatus::Info => Style::default().fg(Color::Gray),
             };
             ListItem::new(entry.format(inner_width)).style(style)
         })
@@ -259,9 +249,19 @@ fn draw_metrics_panel(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_mcp_panel(f: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = app
+    // The panel has a fixed height; say how many servers did not fit
+    // instead of cutting the list silently.
+    let rows = area.height.saturating_sub(2) as usize;
+    let total = app.mcp_servers.len();
+    let shown = if total > rows {
+        rows.saturating_sub(1)
+    } else {
+        total
+    };
+    let mut items: Vec<ListItem> = app
         .mcp_servers
         .iter()
+        .take(shown)
         .map(|s| {
             let status = if s.enabled { "+" } else { "-" };
             let style = if s.enabled {
@@ -285,6 +285,12 @@ fn draw_mcp_panel(f: &mut Frame, app: &App, area: Rect) {
             ListItem::new(text).style(style)
         })
         .collect();
+    if shown < total {
+        items.push(
+            ListItem::new(format!("  +{} more", total - shown))
+                .style(Style::default().fg(Color::DarkGray)),
+        );
+    }
 
     let list = List::new(items).block(
         Block::default()
@@ -312,7 +318,8 @@ fn draw_help_overlay(f: &mut Frame) {
     let help_text = r#"
 Keyboard Shortcuts:
 
-  q, Esc     Quit dashboard
+  q          Quit dashboard
+  Esc        Close this help; quit when it is closed
   Tab        Switch to next panel
   Shift+Tab  Switch to previous panel
   j, Down    Select next item
