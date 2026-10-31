@@ -1547,6 +1547,119 @@ mod tests {
         );
     }
 
+    /// The synthesized `plugin.json` of the only plugin under `root`.
+    fn synthesized_manifest(root: &std::path::Path) -> serde_json::Value {
+        let assets = ClaudeAdapter::with_root(root.to_path_buf())
+            .read_plugin_assets(true)
+            .unwrap();
+        let manifest = assets
+            .iter()
+            .find(|a| a.relative_path == std::path::Path::new(".claude-plugin/plugin.json"))
+            .expect("a manifest-less plugin gets a synthesized manifest");
+        serde_json::from_slice(&manifest.content).expect("synthesized manifest is JSON")
+    }
+
+    /// A version directory of manifest-less plugin `name` with `readme` as README.md.
+    fn manifest_less_plugin(root: &std::path::Path, name: &str, version: &str, readme: &[u8]) {
+        let dir = root.join("plugins/cache/market").join(name).join(version);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("README.md"), readme).unwrap();
+    }
+
+    #[test]
+    fn synthesized_description_falls_back_when_readme_has_only_headings() {
+        let tmp = tempdir().unwrap();
+        manifest_less_plugin(tmp.path(), "titled", "1.0.0", b"# Title\n## Subtitle\n");
+
+        let json = synthesized_manifest(tmp.path());
+        assert_eq!(
+            json["description"],
+            "Plugin 'titled' (manifest synthesized by skrills sync)"
+        );
+    }
+
+    #[test]
+    fn synthesized_description_skips_leading_blank_lines() {
+        let tmp = tempdir().unwrap();
+        manifest_less_plugin(tmp.path(), "spaced", "1.0.0", b"\n\n  \nFirst real line.\n");
+
+        assert_eq!(
+            synthesized_manifest(tmp.path())["description"],
+            "First real line."
+        );
+    }
+
+    #[test]
+    fn synthesized_description_truncates_multibyte_text_at_280_chars() {
+        let tmp = tempdir().unwrap();
+        let line = "🦀".repeat(300);
+        manifest_less_plugin(
+            tmp.path(),
+            "crabby",
+            "1.0.0",
+            format!("{line}\n").as_bytes(),
+        );
+
+        let json = synthesized_manifest(tmp.path());
+        let description = json["description"].as_str().unwrap();
+        assert_eq!(description.chars().count(), 280);
+        assert!(description.chars().all(|c| c == '🦀'), "{description}");
+    }
+
+    /// Today a README that is not UTF-8 falls back without a warning (#228 T4).
+    #[test]
+    fn synthesized_description_falls_back_when_readme_is_not_utf8() {
+        let tmp = tempdir().unwrap();
+        manifest_less_plugin(tmp.path(), "latin", "1.0.0", b"Caf\xe9 au lait\n");
+
+        assert_eq!(
+            synthesized_manifest(tmp.path())["description"],
+            "Plugin 'latin' (manifest synthesized by skrills sync)"
+        );
+    }
+
+    #[test]
+    fn synthesized_manifest_comes_from_the_highest_version() {
+        let tmp = tempdir().unwrap();
+        for version in ["1.0.0", "2.0.0", "1.5.0", "1.10.0"] {
+            let readme = format!("Version {version}\n");
+            manifest_less_plugin(tmp.path(), "multi", version, readme.as_bytes());
+        }
+
+        let json = synthesized_manifest(tmp.path());
+        assert_eq!(json["version"], "2.0.0");
+        assert_eq!(json["description"], "Version 2.0.0");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn synthesized_manifest_escapes_a_plugin_name_with_a_quote() {
+        let tmp = tempdir().unwrap();
+        manifest_less_plugin(tmp.path(), "foo\"bar", "1.0.0", b"Quoted.\n");
+
+        let json = synthesized_manifest(tmp.path());
+        assert_eq!(json["name"], "foo\"bar");
+        assert_eq!(
+            json["description"], "Quoted.",
+            "the name must not break the JSON around it"
+        );
+    }
+
+    #[test]
+    fn synthesized_manifest_is_emitted_for_an_empty_version_directory() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("plugins/cache/market/hollow/0.1.0");
+        fs::create_dir_all(&dir).unwrap();
+
+        let json = synthesized_manifest(tmp.path());
+        assert_eq!(json["name"], "hollow");
+        assert_eq!(json["version"], "0.1.0");
+        assert_eq!(
+            json["description"],
+            "Plugin 'hollow' (manifest synthesized by skrills sync)"
+        );
+    }
+
     #[test]
     fn read_plugin_assets_does_not_synthesize_in_skill_mirror_mode() {
         // GIVEN a manifest-less plugin (same shape as typescript-lsp)
