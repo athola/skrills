@@ -106,7 +106,7 @@ jobs:
             openssl
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, resolved 2026-10-02
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, resolved 2026-10-02
         with:
           toolchain: stable
           components: clippy, rustfmt
@@ -144,7 +144,7 @@ jobs:
             ${{ runner.os }}-test-target-
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, resolved 2026-10-02
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, resolved 2026-10-02
         with:
           toolchain: stable
           components: clippy, rustfmt
@@ -185,7 +185,7 @@ jobs:
             ${{ runner.os }}-test-target-
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, resolved 2026-10-02
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, resolved 2026-10-02
         with:
           toolchain: stable
           components: clippy, rustfmt
@@ -226,7 +226,7 @@ jobs:
             ${{ runner.os }}-test-target-
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, resolved 2026-10-02
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, resolved 2026-10-02
         with:
           toolchain: stable
           components: clippy, rustfmt

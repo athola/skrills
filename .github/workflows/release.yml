@@ -53,15 +53,15 @@ jobs:
         run: echo "Release is already published; skipping uploads."
       - uses: actions/checkout@v7
         if: needs.create-release.outputs.is-draft == 'true'
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, resolved 2026-10-02
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, resolved 2026-10-02
         if: needs.create-release.outputs.is-draft == 'true'
         with:
           toolchain: stable
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: needs.create-release.outputs.is-draft == 'true'
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         if: needs.create-release.outputs.is-draft == 'true'
         with:
           tool: cross
@@ -93,12 +93,12 @@ jobs:
         run: echo "Release is already published; skipping uploads."
       - uses: actions/checkout@v7
         if: needs.create-release.outputs.is-draft == 'true'
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, resolved 2026-10-02
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, resolved 2026-10-02
         if: needs.create-release.outputs.is-draft == 'true'
         with:
           toolchain: stable
           targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: needs.create-release.outputs.is-draft == 'true'
       - name: Upload macOS binaries
         if: needs.create-release.outputs.is-draft == 'true'
@@ -127,12 +127,12 @@ jobs:
         run: echo "Release is already published; skipping uploads."
       - uses: actions/checkout@v7
         if: needs.create-release.outputs.is-draft == 'true'
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, resolved 2026-10-02
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, resolved 2026-10-02
         if: needs.create-release.outputs.is-draft == 'true'
         with:
           toolchain: stable
           targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: needs.create-release.outputs.is-draft == 'true'
       - name: Upload Windows binaries
         if: needs.create-release.outputs.is-draft == 'true'
@@ -179,10 +179,10 @@ jobs:
       CARGO_NET_RETRY: "5"
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, resolved 2026-10-02
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, resolved 2026-10-02
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Preflight token and package/build (no upload)
         run: |
           set -euo pipefail
