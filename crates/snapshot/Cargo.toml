@@ -6,7 +6,6 @@ rust-version.workspace = true
 description = "Wire-format types for skrills cold-window real-time analysis (TUI + browser)"
 license = "MIT"
 repository = "https://github.com/athola/skrills"
-homepage = "https://github.com/athola/skrills"
 documentation = "https://athola.github.io/skrills/"
 keywords = ["mcp", "skills", "snapshot", "wire-format"]
 categories = ["development-tools"]

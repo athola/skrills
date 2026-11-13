@@ -6,7 +6,6 @@ rust-version.workspace = true
 description = "Intelligent skill recommendations based on usage patterns and project context."
 license = "MIT"
 repository = "https://github.com/athola/skrills"
-homepage = "https://github.com/athola/skrills"
 documentation = "https://athola.github.io/skrills/"
 readme = "README.md"
 keywords = ["mcp", "skills", "recommendations", "analytics", "ai"]

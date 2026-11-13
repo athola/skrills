@@ -409,21 +409,16 @@ impl App {
 
     /// Find an existing activity entry that matches `key` (if given) or `msg`.
     fn find_matching_activity(&self, key: Option<&str>, msg: &str) -> Option<usize> {
-        for i in 0..self.activity.len() {
-            let entry = &self.activity[i];
-            let matches = match (&entry.key, key) {
+        self.activity
+            .iter()
+            .position(|entry| match (&entry.key, key) {
                 // Both have keys, compare keys
                 (Some(existing_key), Some(k)) => existing_key == k,
                 // Neither has a key, compare messages
                 (None, None) => entry.message == msg,
                 // One has a key, the other doesn't, no match
                 _ => false,
-            };
-            if matches {
-                return Some(i);
-            }
-        }
-        None
+            })
     }
 
     /// Bump an existing activity entry: update count, timestamp, message, and

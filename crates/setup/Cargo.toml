@@ -6,7 +6,6 @@ rust-version.workspace = true
 description = "Installs, registers and uninstalls skrills for Claude Code, Codex, Copilot and Cursor."
 license = "MIT"
 repository = "https://github.com/athola/skrills"
-homepage = "https://github.com/athola/skrills"
 documentation = "https://athola.github.io/skrills/"
 readme = "../../README.md"
 keywords = ["mcp", "skills", "setup", "installer"]
