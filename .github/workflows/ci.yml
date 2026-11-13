@@ -218,7 +218,7 @@ jobs:
             target_list: |
               x86_64-unknown-linux-gnu
               aarch64-unknown-linux-gnu
-          - os: macos-14
+          - os: macos-15
             toolchain_targets: x86_64-apple-darwin,aarch64-apple-darwin
             build_tool: cargo
             target_list: |

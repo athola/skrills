@@ -80,7 +80,7 @@ jobs:
 
   macos:
     name: macOS builds
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       matrix:
         target:
