@@ -3,7 +3,8 @@
 //! `sync-all --validate`, `sync-all --autofix` and `validate --watch` were
 //! once accepted, documented and ignored: the command ran without them and
 //! exited 0, so a script asking for a validated sync got an unvalidated one.
-//! `validate --watch` still refuses (#208). The two `sync-all` flags now act,
+//! `validate --watch` now runs its loop (#208) and refuses the flags it
+//! cannot honor. The two `sync-all` flags now act,
 //! fail-closed: the source skills are validated before any target is synced,
 //! and a remaining error aborts every target with nothing written. The same
 //! shape hid `skrills dashboard` in a build without the `dashboard` feature,
@@ -156,12 +157,93 @@ fn sync_all_autofix_dry_run_rewrites_nothing() {
     assert!(stderr.contains("would fix"), "{stderr}");
 }
 
+/// `--watch` prints results as files change, so a one-shot JSON document or
+/// an autofix pass has nowhere to go; refusing beats silently dropping them.
 #[cfg(feature = "watch")]
 #[test]
-fn validate_watch_is_refused_not_ignored() {
+fn validate_watch_refuses_flags_it_cannot_honor() {
     let home = tempfile::tempdir().unwrap();
-    let output = run_skrills(home.path(), &["validate", "--watch"]);
-    assert_refused(&output, "--watch");
+    for extra in ["--format=json", "--autofix"] {
+        let output = run_skrills(home.path(), &["validate", "--watch", extra]);
+        assert_refused(&output, "--watch");
+    }
+}
+
+/// Reads the child's stdout on a thread so the test can wait for a line
+/// with a deadline instead of sleeping.
+#[cfg(all(feature = "watch", unix))]
+fn wait_for_line(
+    lines: &std::sync::mpsc::Receiver<String>,
+    needle: &str,
+    seen: &mut Vec<String>,
+) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        match lines.recv_timeout(left) {
+            Ok(line) => {
+                let hit = line.contains(needle);
+                seen.push(line);
+                if hit {
+                    return true;
+                }
+            }
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+#[cfg(all(feature = "watch", unix))]
+#[test]
+fn validate_watch_revalidates_a_changed_skill_and_stops_on_sigint() {
+    use std::io::BufRead;
+
+    let home = tempfile::tempdir().unwrap();
+    let skills = home.path().join("watched");
+    std::fs::create_dir_all(skills.join("late")).unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_skrills"))
+        .args(["validate", "--watch", "--debounce-ms", "50", "--skill-dir"])
+        .arg(&skills)
+        .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("SKRILLS_SKILL_DIR")
+        .env_remove("SKRILLS_MIRROR_SOURCE")
+        .env_remove("RUST_LOG")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn skrills");
+    let stdout = child.stdout.take().unwrap();
+    let (tx, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut seen = Vec::new();
+    let ready = wait_for_line(&lines, "Press Ctrl+C", &mut seen);
+    if ready {
+        std::fs::write(skills.join("late/SKILL.md"), BARE_SKILL).unwrap();
+    }
+    let revalidated = ready && wait_for_line(&lines, "Revalidating", &mut seen);
+
+    let pid = child.id().to_string();
+    let killed = Command::new("kill").args(["-INT", &pid]).status().unwrap();
+    let status = child.wait().unwrap();
+    let stopped = wait_for_line(&lines, "Watch mode stopped", &mut seen);
+
+    assert!(ready, "watcher never reported ready: {seen:?}");
+    assert!(revalidated, "change was not revalidated: {seen:?}");
+    assert!(killed.success());
+    assert!(status.success(), "Ctrl+C should exit 0, got {status:?}");
+    assert!(stopped, "no clean stop message: {seen:?}");
 }
 
 #[cfg(not(feature = "dashboard"))]

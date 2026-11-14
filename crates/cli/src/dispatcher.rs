@@ -329,13 +329,23 @@ pub fn run() -> Result<()> {
             #[cfg(feature = "watch")]
             watch,
             #[cfg(feature = "watch")]
-                debounce_ms: _debounce_ms,
+            debounce_ms,
         } => {
-            // The watch loop is tracked in #208. Until it exists, a one-shot
-            // run that exits 0 would look like a watcher that saw no changes.
             #[cfg(feature = "watch")]
             if watch {
-                anyhow::bail!("validate --watch is not implemented (tracked in #208)");
+                if autofix || format.is_json() {
+                    anyhow::bail!(
+                        "--watch prints results as files change; drop --autofix and --format json"
+                    );
+                }
+                let paths = crate::commands::skill_roots_for(&skill_dirs)?
+                    .into_iter()
+                    .map(|root| root.root)
+                    .collect();
+                let config = skrills_validate::watch::WatchConfig::new(paths, target)
+                    .with_debounce_ms(debounce_ms)
+                    .with_errors_only(errors_only);
+                return skrills_validate::watch::run_watch_loop(&config);
             }
             handle_validate_command(skill_dirs, target, autofix, backup, format, errors_only)
         }

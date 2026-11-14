@@ -25,10 +25,13 @@ skrills validate --format json --errors-only  # Machine-readable output
 | `--backup` | Create backups before autofix |
 | `--format <FORMAT>` | `text` or `json` (default: `text`) |
 | `--errors-only` | Hide passing skills |
+| `--watch` | Revalidate each `SKILL.md` as it changes, until Ctrl+C |
+| `--debounce-ms <MS>` | Wait this long after a change before revalidating (default: `300`) |
 
 `validate` exits non-zero when any skill has an error, cannot be read, or
 could not be auto-fixed, so a script or CI step can gate on the exit code.
-`--watch` is not implemented yet and is refused.
+`--watch` keeps running and prints results as files change, so it refuses
+`--autofix` and `--format json`.
 
 ### analyze
 
