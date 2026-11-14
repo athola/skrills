@@ -87,6 +87,7 @@ Sync everything between Claude Code and Codex CLI:
 skrills sync-all --from claude                        # Copy everything from Claude
 skrills sync-all --from claude --skip-existing-commands  # Keep local commands
 skrills sync-all --dry-run                            # Preview without changing
+skrills sync-all --interactive                        # Diff each change, accept or reject it
 skrills sync-all --from claude --validate             # Refuse to sync skills that do not validate
 skrills sync-all --from claude --autofix --dry-run    # Check what autofix would leave, write nothing
 ```
@@ -104,6 +105,19 @@ skrills sync-all --from claude --autofix --dry-run    # Check what autofix would
 | `--exclude-plugins <NAMES>` | Comma-separated plugin names whose skills and assets are not synced (`SKRILLS_EXCLUDE_PLUGINS`) |
 | `--validate` | Validate the source skills before any target is written |
 | `--autofix` | Add missing frontmatter to the source skills, then validate as `--validate` does |
+| `--interactive` | Show a diff for each new or changed item and ask Accept or Reject; only accepted items are written. Needs a terminal |
+
+With `--interactive`, every question is asked before the first write, so
+Esc or Ctrl-C leaves the target untouched. Items already in sync are not
+asked about. Rejecting a changed item keeps the target's copy; rejecting a
+new item skips it. These categories are asked per item: commands, agents,
+MCP servers, the model preference, and Copilot instructions. Skills, hooks,
+Claude and Cursor instructions, Codex agents, the plugin mirror rewrite
+files when written (frontmatter, marker files, merged blocks), so each is
+one question for the whole category, and rejecting it skips its writer.
+Rejecting the plugin mirror also keeps the flat skill copies it would
+replace. Without a terminal `--interactive` fails before anything is
+written. With `--dry-run` it only previews and asks nothing.
 
 With `--validate` or `--autofix`, the `--from` skill tree is validated for
 the strictest of the targets being synced (Codex and Copilot are stricter

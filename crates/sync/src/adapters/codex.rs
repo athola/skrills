@@ -277,6 +277,14 @@ fn is_converted_agent(skill_dir: &Path) -> bool {
 }
 
 impl AgentAdapter for CodexAdapter {
+    fn decision_scope(&self, kind: crate::decision::ItemKind) -> crate::decision::DecisionScope {
+        use crate::decision::{DecisionScope, ItemKind};
+        match kind {
+            ItemKind::Command | ItemKind::McpServer => DecisionScope::PerItem,
+            _ => DecisionScope::WholeCategory,
+        }
+    }
+
     fn name(&self) -> &str {
         "codex"
     }

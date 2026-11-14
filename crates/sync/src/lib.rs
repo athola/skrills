@@ -136,7 +136,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub mod adapters;
 pub mod agents_md;
 pub mod common;
+pub mod decision;
 pub mod error;
+pub(crate) mod interactive;
 pub mod kill_switch_marker;
 pub mod models;
 pub mod orchestrator;
@@ -144,6 +146,7 @@ pub mod platform;
 pub mod platform_routing;
 pub mod report;
 pub mod snapshot;
+pub mod text_diff;
 pub mod validation;
 pub mod write_session;
 
@@ -152,6 +155,7 @@ pub use agents_md::{
     AGENTS_AGENT_SECTION_END, AGENTS_AGENT_SECTION_START, AGENTS_SECTION_END, AGENTS_SECTION_START,
     AGENTS_TEXT,
 };
+pub use decision::{ChangeKind, Decision, DecisionScope, ItemChange, ItemDecider, ItemKind};
 pub use error::SyncError;
 pub use skrills_snapshot::KillSwitch;
 
@@ -164,8 +168,8 @@ pub use common::{
 };
 pub use models::transform_model;
 pub use orchestrator::{
-    create_adapter, create_source_adapter, sync_between, sync_claude_skills_to_codex,
-    SyncOrchestrator, SyncParams,
+    create_adapter, create_source_adapter, sync_between, sync_between_with_decider,
+    sync_claude_skills_to_codex, SyncOrchestrator, SyncParams,
 };
 pub use platform::{Platform, UnknownPlatform};
 pub use platform_routing::{skill_delivery, SkillDelivery};

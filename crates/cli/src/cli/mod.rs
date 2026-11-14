@@ -273,6 +273,12 @@ pub enum Commands {
         /// version and removes what that version no longer ships.
         #[arg(long)]
         keep_versions: bool,
+        /// Show a diff for each new or changed item and ask whether to write
+        /// it; only accepted items are written, and a rejected change leaves
+        /// the target's copy alone. Needs a terminal. With --dry-run nothing
+        /// is written, so nothing is asked.
+        #[arg(long)]
+        interactive: bool,
     },
     /// Shows sync status and configuration differences.
     SyncStatus {
@@ -1420,7 +1426,9 @@ mod tests {
                 validate,
                 autofix,
                 keep_versions,
+                interactive,
             }) => {
+                assert!(!interactive);
                 assert!(matches!(from, Platform::Codex));
                 assert_eq!(to, Some(Platform::Copilot));
                 assert!(dry_run);

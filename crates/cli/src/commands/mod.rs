@@ -15,6 +15,7 @@ mod skill;
 mod skill_templates;
 mod skill_uri;
 mod sync;
+mod sync_prompt;
 mod validate;
 
 pub(crate) use agent::handle_agent_command;

@@ -90,6 +90,14 @@ impl CursorAdapter {
 }
 
 impl AgentAdapter for CursorAdapter {
+    fn decision_scope(&self, kind: crate::decision::ItemKind) -> crate::decision::DecisionScope {
+        use crate::decision::{DecisionScope, ItemKind};
+        match kind {
+            ItemKind::Command | ItemKind::Agent | ItemKind::McpServer => DecisionScope::PerItem,
+            _ => DecisionScope::WholeCategory,
+        }
+    }
+
     fn name(&self) -> &str {
         "cursor"
     }

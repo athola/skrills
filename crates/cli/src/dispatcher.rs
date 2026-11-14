@@ -277,6 +277,7 @@ pub fn run() -> Result<()> {
             validate,
             autofix,
             keep_versions,
+            interactive,
         } => handle_sync_all_command(SyncAllArgs {
             from,
             to,
@@ -287,6 +288,7 @@ pub fn run() -> Result<()> {
             validate,
             autofix,
             keep_versions,
+            interactive,
         }),
         Commands::SyncStatus { from, to } => handle_sync_status_command(from, to),
         Commands::SyncRollback { list, snapshot } => handle_sync_rollback_command(list, snapshot),

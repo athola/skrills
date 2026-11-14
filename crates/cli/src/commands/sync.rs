@@ -1,3 +1,4 @@
+use super::sync_prompt::{is_cancelled, require_terminal, PromptDecider};
 use super::validate::{run_validation, Autofix};
 use crate::cli::Platform;
 use anyhow::{anyhow, bail, Result};
@@ -147,6 +148,26 @@ pub(crate) fn run_sync_with_adapters(
     skrills_sync::orchestrator::sync_between(from, to, params)
 }
 
+/// [`run_sync_with_adapters`] that asks about each change at the terminal.
+fn run_interactive_sync(
+    from: Platform,
+    to: Platform,
+    params: &skrills_sync::SyncParams,
+) -> Result<skrills_sync::SyncReport> {
+    if from == to {
+        return Err(anyhow!(
+            "Source and target cannot be the same: {}",
+            from.as_str()
+        ));
+    }
+    skrills_sync::orchestrator::sync_between_with_decider(
+        from,
+        to,
+        params,
+        std::sync::Arc::new(PromptDecider),
+    )
+}
+
 /// The directory a CLI keeps its skills in, as `sync-status` counts them.
 pub(crate) fn source_skill_root(from: Platform, home: &Path) -> PathBuf {
     use skrills_sync::adapters::traits::AgentAdapter;
@@ -215,6 +236,7 @@ pub(crate) struct SyncAllArgs {
     pub validate: bool,
     pub autofix: bool,
     pub keep_versions: bool,
+    pub interactive: bool,
 }
 
 /// Validates (and with `--autofix`, repairs) the source skills before any
@@ -273,6 +295,16 @@ fn validate_sync_source(args: &SyncAllArgs, targets: &[Platform], home: &Path) -
 /// `--autofix` repairs the source first (or, under `--dry-run`, checks what
 /// the repair would leave) and then validates as `--validate` does.
 pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
+    // Before validation: `--autofix` writes to the source, and "nothing was
+    // written" has to hold when the prompts cannot be answered.
+    let will_prompt = args.interactive && !args.dry_run;
+    {
+        use std::io::IsTerminal;
+        require_terminal(
+            will_prompt,
+            std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+        )?;
+    }
     let targets: Vec<Platform> = match args.to {
         Some(t) => vec![t],
         None => args.from.other_targets(),
@@ -316,10 +348,15 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
             exclude_plugins: args.exclude_plugins.clone(),
             full_plugin_mirror: delivery.full_plugin_mirror,
             keep_versions: args.keep_versions,
+            interactive: args.interactive,
             ..Default::default()
         };
 
-        let report = run_sync_with_adapters(from, target, &params)?;
+        let report = if will_prompt {
+            run_interactive_sync(from, target, &params)?
+        } else {
+            run_sync_with_adapters(from, target, &params)?
+        };
 
         tracing::info!(
             "{}{}",
@@ -342,7 +379,16 @@ fn sync_each_target(
     targets: &[Platform],
     mut sync: impl FnMut(Platform) -> Result<()>,
 ) -> Result<()> {
-    let outcomes: Vec<(Platform, Result<()>)> = targets.iter().map(|&t| (t, sync(t))).collect();
+    let mut outcomes: Vec<(Platform, Result<()>)> = Vec::new();
+    for &target in targets {
+        let outcome = sync(target);
+        // A cancelled prompt ends the run, not just this target's questions.
+        let cancelled = outcome.as_ref().err().is_some_and(is_cancelled);
+        outcomes.push((target, outcome));
+        if cancelled {
+            break;
+        }
+    }
     if outcomes.iter().all(|(_, r)| r.is_ok()) {
         return Ok(());
     }
@@ -513,6 +559,20 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::env::set_current_dir(&self.original);
         }
+    }
+
+    #[test]
+    fn a_cancelled_prompt_stops_the_remaining_targets() {
+        let mut attempted = Vec::new();
+
+        let err = sync_each_target(&[Platform::Codex, Platform::Copilot], |target| {
+            attempted.push(target);
+            Err(skrills_sync::SyncError::InteractiveAborted.into())
+        })
+        .unwrap_err();
+
+        assert_eq!(attempted, vec![Platform::Codex]);
+        assert!(format!("{err}").contains("codex: failed"), "{err}");
     }
 
     #[test]
