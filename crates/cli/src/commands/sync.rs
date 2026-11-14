@@ -87,7 +87,7 @@ pub(crate) fn handle_mirror_command(
     // Mirror commands/mcp/prefs
     let source = skrills_sync::ClaudeAdapter::new()?;
     let target = skrills_sync::CodexAdapter::new()?;
-    let orch = skrills_sync::SyncOrchestrator::new(source, target);
+    let orch = skrills_sync::SyncOrchestrator::new(source, target).with_default_sync_state();
     let params = skrills_sync::SyncParams {
         dry_run,
         sync_skills: false,

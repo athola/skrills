@@ -74,8 +74,8 @@ pub enum DecisionScope {
 
 /// One question for the decider.
 ///
-/// Marked non-exhaustive so conflict detection can add fields without
-/// breaking deciders that only read it.
+/// Marked non-exhaustive so later fields do not break deciders that only
+/// read it.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ItemChange {
@@ -88,6 +88,21 @@ pub struct ItemChange {
     /// prompt (everything is an insertion for a new item); for a
     /// whole-category prompt, the names of the items that would change.
     pub diff: String,
+    /// Both sides' text when the target's copy and the source's copy each
+    /// changed since the last sync. Only set for a per-item prompt.
+    pub conflict: Option<ConflictSides>,
+    /// For a whole-category prompt, how many of its items are in conflict.
+    pub conflicting_items: usize,
+}
+
+/// The two texts of a conflicting item, for a side-by-side view.
+///
+/// Secret values (MCP server environment and headers) are already masked, as
+/// in [`ItemChange::diff`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictSides {
+    pub target: String,
+    pub source: String,
 }
 
 impl ItemChange {
@@ -104,6 +119,8 @@ impl ItemChange {
             change,
             scope: DecisionScope::PerItem,
             diff: diff.into(),
+            conflict: None,
+            conflicting_items: 0,
         }
     }
 }

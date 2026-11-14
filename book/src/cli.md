@@ -119,6 +119,32 @@ Rejecting the plugin mirror also keeps the flat skill copies it would
 replace. Without a terminal `--interactive` fails before anything is
 written. With `--dry-run` it only previews and asks nothing.
 
+### Conflicts
+
+After each successful, non-dry sync, skrills records per item (kind and
+name) the hash of the source copy and of the target copy it wrote, in
+`~/.skrills/sync-state/<platform>-<root hash>.json`. Only hashes are kept.
+A later sync reports a conflict when the source and the target copy both
+differ from those hashes and from each other. A target with no record
+(a first sync) never has conflicts. Commands, skills, agents, hooks,
+instructions and MCP servers are covered; the model preference and plugin
+assets are not.
+
+- **Plain sync:** the source still overwrites. The report gets a warning
+  naming the items whose target edits were lost, and that
+  `skrills sync-rollback` can undo it. With `--dry-run` the warning says
+  the sync would overwrite them, and nothing is written.
+- **`--interactive`:** a conflicting item is shown as two columns, target
+  left and source right, fitted to the terminal width (100 columns when
+  the size is unknown). Choose Keep source (overwrite), Keep target (leave
+  the target's copy) or Abort (nothing written). A whole-category prompt
+  says how many of its items conflict.
+- **Resolution log:** each choice you make is appended to
+  `~/.skrills/sync-state/resolutions.jsonl` as one JSON line (timestamp,
+  target key, kind, name, choice `keep_source` or `keep_target`, scope
+  `item` or `category`, source and target hashes). It holds no content.
+  Dry runs, aborted runs and plain syncs record no resolutions.
+
 With `--validate` or `--autofix`, the `--from` skill tree is validated for
 the strictest of the targets being synced (Codex and Copilot are stricter
 than Claude and Cursor) before the first target is touched. Any remaining

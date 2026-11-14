@@ -39,6 +39,8 @@ tracing-subscriber.workspace = true
 walkdir.workspace = true
 dirs.workspace = true
 inquire.workspace = true
+# Terminal width for the side-by-side conflict view; already in the tree via inquire.
+crossterm = "0.29"
 toml.workspace = true
 shellexpand = "3"
 time.workspace = true

@@ -110,9 +110,200 @@ pub fn unified_diff(a: &str, b: &str, context: usize) -> String {
     output
 }
 
+/// Unchanged rows kept on each side of a change in [`side_by_side`]; a longer
+/// unchanged run folds into one `...` row.
+const SIDE_CONTEXT: usize = 3;
+
+/// Characters between the two columns of [`side_by_side`]: space, mark, space.
+const GUTTER: usize = 3;
+
+/// One row of a side-by-side view. `mark` is ` ` for an unchanged line, `|`
+/// for a line changed in place, `<` for a line only the target has and `>`
+/// for one only the source has.
+struct Row<'a> {
+    left: &'a str,
+    right: &'a str,
+    mark: char,
+}
+
+/// Two columns, `target` on the left and `source` on the right, in `width`
+/// characters. Each column gets half of what the gutter leaves, and longer
+/// lines are cut with `…`. Below three characters of width the gutter alone
+/// overflows; callers pass a usable width.
+pub fn side_by_side(target: &str, source: &str, width: usize) -> String {
+    let column = width.saturating_sub(GUTTER) / 2;
+    let target_lines: Vec<&str> = target.lines().collect();
+    let source_lines: Vec<&str> = source.lines().collect();
+
+    let mut rows: Vec<Row> = Vec::new();
+    let (mut removed, mut added): (Vec<&str>, Vec<&str>) = (Vec::new(), Vec::new());
+    for op in diff_ops(&target_lines, &source_lines) {
+        match op {
+            Op::Delete(line) => removed.push(line),
+            Op::Insert(line) => added.push(line),
+            Op::Keep(line) => {
+                pair_changes(&mut rows, &mut removed, &mut added);
+                rows.push(Row {
+                    left: line,
+                    right: line,
+                    mark: ' ',
+                });
+            }
+        }
+    }
+    pair_changes(&mut rows, &mut removed, &mut added);
+
+    let near_change: Vec<bool> = (0..rows.len())
+        .map(|at| {
+            let from = at.saturating_sub(SIDE_CONTEXT);
+            let to = at.saturating_add(SIDE_CONTEXT).min(rows.len() - 1);
+            rows[from..=to].iter().any(|row| row.mark != ' ')
+        })
+        .collect();
+
+    let mut lines = vec![render_row("target", "source", ' ', column)];
+    let mut folding = false;
+    for (row, near) in rows.iter().zip(near_change) {
+        if near {
+            folding = false;
+            lines.push(render_row(row.left, row.right, row.mark, column));
+        } else if !folding {
+            folding = true;
+            lines.push(render_row("...", "...", ' ', column));
+        }
+    }
+    let mut shown = lines.join("\n");
+    shown.push('\n');
+    shown
+}
+
+/// Turns a run of removed and added lines into rows, pairing them in order so
+/// a line changed in place shows on one row.
+fn pair_changes<'a>(rows: &mut Vec<Row<'a>>, removed: &mut Vec<&'a str>, added: &mut Vec<&'a str>) {
+    for at in 0..removed.len().max(added.len()) {
+        let (left, right) = (removed.get(at).copied(), added.get(at).copied());
+        rows.push(Row {
+            left: left.unwrap_or(""),
+            right: right.unwrap_or(""),
+            mark: match (left, right) {
+                (Some(_), Some(_)) => '|',
+                (Some(_), None) => '<',
+                _ => '>',
+            },
+        });
+    }
+    removed.clear();
+    added.clear();
+}
+
+fn render_row(left: &str, right: &str, mark: char, column: usize) -> String {
+    let left = fit_column(left, column);
+    let right = fit_column(right, column);
+    format!("{left:<column$} {mark} {right}")
+        .trim_end()
+        .to_string()
+}
+
+/// `text` as at most `column` characters, tabs widened so columns stay
+/// aligned, with `…` where it was cut.
+fn fit_column(text: &str, column: usize) -> String {
+    let text = text.replace('\t', "    ");
+    if text.chars().count() <= column {
+        return text;
+    }
+    let kept: String = text.chars().take(column.saturating_sub(1)).collect();
+    if column == 0 {
+        kept
+    } else {
+        format!("{kept}…")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const OLD: &str = "keep\nmodel = old\nend\n";
+    const NEW: &str = "keep\nmodel = new\nend\n";
+
+    #[test]
+    fn side_by_side_labels_target_left_and_source_right() {
+        let shown = side_by_side(OLD, NEW, 60);
+        let header = shown.lines().next().unwrap();
+
+        assert!(header.starts_with("target"), "{header}");
+        assert!(header.ends_with("source"), "{header}");
+    }
+
+    #[test]
+    fn side_by_side_pairs_a_changed_line_on_one_row() {
+        let shown = side_by_side(OLD, NEW, 60);
+
+        let row = shown.lines().find(|l| l.contains("model = old")).unwrap();
+        assert!(row.contains("| model = new"), "{row}");
+    }
+
+    #[test]
+    fn side_by_side_puts_a_target_only_line_left_and_a_source_only_line_right() {
+        let shown = side_by_side("a\nonly-target\nb\n", "a\nb\nonly-source\n", 60);
+
+        let left = shown.lines().find(|l| l.contains("only-target")).unwrap();
+        let right = shown.lines().find(|l| l.contains("only-source")).unwrap();
+        assert!(
+            left.contains("<") && !left.contains("only-source"),
+            "{left}"
+        );
+        assert!(
+            right.contains(">") && !right.contains("only-target"),
+            "{right}"
+        );
+    }
+
+    #[test]
+    fn side_by_side_fits_every_line_to_a_narrow_width() {
+        let long = "x".repeat(200);
+        let shown = side_by_side(&format!("{long}\n"), &format!("y{long}\n"), 30);
+
+        assert!(shown.lines().all(|l| l.chars().count() <= 30), "{shown}");
+        assert!(shown.contains('…'), "{shown}");
+    }
+
+    #[test]
+    fn side_by_side_uses_the_extra_room_of_a_wide_width() {
+        let line = "z".repeat(70);
+        let shown = side_by_side(&format!("{line}\n"), &format!("{line}!\n"), 200);
+
+        assert!(shown.contains(&format!("{line}!")), "{shown}");
+        assert!(!shown.contains('…'), "{shown}");
+    }
+
+    #[test]
+    fn side_by_side_survives_a_width_too_small_for_two_columns() {
+        for width in 0..8 {
+            let shown = side_by_side(OLD, NEW, width);
+            assert!(
+                shown.lines().all(|l| l.chars().count() <= 8),
+                "{width}: {shown}"
+            );
+        }
+    }
+
+    #[test]
+    fn side_by_side_folds_a_long_unchanged_run() {
+        let body: String = (0..40).map(|n| format!("line {n}\n")).collect();
+        let shown = side_by_side(&format!("{body}old\n"), &format!("{body}new\n"), 60);
+
+        assert!(shown.contains("..."), "{shown}");
+        assert!(!shown.contains("line 0"), "{shown}");
+        assert!(shown.contains("line 39"), "{shown}");
+    }
+
+    #[test]
+    fn side_by_side_expands_tabs_so_columns_stay_aligned() {
+        let shown = side_by_side("a\tb\n", "a\tc\n", 40);
+
+        assert!(!shown.contains('\t'), "{shown:?}");
+    }
 
     /// One inserted line is one `+` line: the old diff compared line N to
     /// line N and marked every later line as changed.

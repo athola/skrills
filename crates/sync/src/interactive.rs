@@ -12,7 +12,10 @@
 //! item, which has no target copy to lose, is dropped.
 
 use crate::common::{Command, McpServer};
-use crate::decision::{ChangeKind, Decision, DecisionScope, ItemChange, ItemDecider, ItemKind};
+use crate::conflict::Ledger;
+use crate::decision::{
+    ChangeKind, ConflictSides, Decision, DecisionScope, ItemChange, ItemDecider, ItemKind,
+};
 use crate::orchestrator::{existing_key, is_unchanged};
 use crate::report::{SkipReason, WriteReport};
 use crate::text_diff::unified_diff;
@@ -91,6 +94,23 @@ impl<'a> Gate<'a> {
         })
     }
 
+    /// What the person answered for `name` in the collecting pass, whether
+    /// they were asked about the item or about its whole category.
+    pub fn answered(
+        &self,
+        kind: ItemKind,
+        name: &str,
+    ) -> Option<(Decision, crate::conflict::Scope)> {
+        use crate::conflict::Scope;
+        let book = self.book?.borrow();
+        book.get(&(kind, name.to_string()))
+            .map(|decision| (*decision, Scope::Item))
+            .or_else(|| {
+                book.get(&(kind, kind.plural().to_string()))
+                    .map(|decision| (*decision, Scope::Category))
+            })
+    }
+
     /// Asks in the collecting pass; looks the answer up in the applying one.
     /// An item the first pass never asked about is rejected: it appeared
     /// between the passes, and nobody agreed to write it.
@@ -122,6 +142,7 @@ impl<'a> Gate<'a> {
         items: Vec<Command>,
         target: &[Command],
         key: impl Fn(&Command) -> String,
+        ledger: &Ledger,
     ) -> Result<Resolved> {
         // A plugin-cache copy is not where the writer puts a flat file:
         // matching it would substitute a copy the writer would then create.
@@ -145,12 +166,20 @@ impl<'a> Gate<'a> {
                 }
                 Some(_) => ChangeKind::Changed,
             };
+            let conflict = ledger
+                .file_conflict(kind, &item, existing)
+                .then(|| ConflictSides {
+                    target: existing.map(|t| lossy(&t.content)).unwrap_or_default(),
+                    source: lossy(&item.content),
+                });
             let request = ItemChange {
                 kind,
                 name: item.name.clone(),
                 change,
                 scope: DecisionScope::PerItem,
                 diff: file_diff(existing, &item),
+                conflict,
+                conflicting_items: 0,
             };
             match (self.answer(request)?, existing) {
                 (Decision::Accept, _) => resolved.items.push(item),
@@ -165,7 +194,15 @@ impl<'a> Gate<'a> {
     }
 
     /// One question for a whole category. `true` means write it.
-    pub fn accept_category(&self, kind: ItemKind, names: &[String]) -> Result<bool> {
+    ///
+    /// `conflicting` is how many of the category's items both sides changed
+    /// since the last sync, so the prompt can say so.
+    pub fn accept_category(
+        &self,
+        kind: ItemKind,
+        names: &[String],
+        conflicting: usize,
+    ) -> Result<bool> {
         let diff = if names.is_empty() {
             "(the target rewrites these files when it writes them)".to_string()
         } else {
@@ -177,6 +214,8 @@ impl<'a> Gate<'a> {
             change: ChangeKind::Changed,
             scope: DecisionScope::WholeCategory,
             diff,
+            conflict: None,
+            conflicting_items: conflicting,
         };
         Ok(self.answer(request)? == Decision::Accept)
     }
@@ -187,6 +226,7 @@ impl<'a> Gate<'a> {
         scope: DecisionScope,
         servers: HashMap<String, McpServer>,
         target: &HashMap<String, McpServer>,
+        ledger: &Ledger,
     ) -> Result<(HashMap<String, McpServer>, Vec<String>)> {
         let mut changed: Vec<&String> = servers
             .iter()
@@ -199,7 +239,11 @@ impl<'a> Gate<'a> {
         }
         if scope == DecisionScope::WholeCategory {
             let names: Vec<String> = changed.into_iter().cloned().collect();
-            if self.accept_category(ItemKind::McpServer, &names)? {
+            let conflicting = names
+                .iter()
+                .filter(|name| ledger.server_conflict(name, &servers[*name], target.get(*name)))
+                .count();
+            if self.accept_category(ItemKind::McpServer, &names, conflicting)? {
                 return Ok((servers, Vec::new()));
             }
             return Ok((HashMap::new(), names));
@@ -208,6 +252,12 @@ impl<'a> Gate<'a> {
         let mut declined = Vec::new();
         for name in changed {
             let existing = target.get(name);
+            let conflict = ledger
+                .server_conflict(name, &servers[name], existing)
+                .then(|| ConflictSides {
+                    target: existing.map(server_text).unwrap_or_default(),
+                    source: server_text(&servers[name]),
+                });
             let request = ItemChange {
                 kind: ItemKind::McpServer,
                 name: name.clone(),
@@ -222,6 +272,8 @@ impl<'a> Gate<'a> {
                     &server_text(&servers[name]),
                     DIFF_CONTEXT,
                 ),
+                conflict,
+                conflicting_items: 0,
             };
             if self.answer(request)? == Decision::Reject {
                 declined.push(name.clone());
@@ -253,6 +305,8 @@ impl<'a> Gate<'a> {
             },
             scope: DecisionScope::PerItem,
             diff: unified_diff(current.unwrap_or(""), incoming, DIFF_CONTEXT),
+            conflict: None,
+            conflicting_items: 0,
         };
         Ok(self.answer(request)? == Decision::Accept)
     }
@@ -290,13 +344,16 @@ pub(crate) fn changed_names(
         .collect()
 }
 
+fn lossy(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
 /// The target-to-source diff of one single-file item. Items with modules
 /// (skills) are never asked about one at a time, so only the main file shows.
 fn file_diff(existing: Option<&Command>, item: &Command) -> String {
-    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
     let diff = unified_diff(
-        &existing.map(|t| text(&t.content)).unwrap_or_default(),
-        &text(&item.content),
+        &existing.map(|t| lossy(&t.content)).unwrap_or_default(),
+        &lossy(&item.content),
         DIFF_CONTEXT,
     );
     if diff.is_empty() {

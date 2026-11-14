@@ -900,6 +900,7 @@ impl SkillService {
         let to = check_sync_peer("to", to, &[Platform::Claude, Platform::Codex])?;
         let report = SyncOrchestrator::new(CopilotAdapter::new()?, create_adapter(to)?)
             .with_default_snapshots()
+            .with_default_sync_state()
             .sync(&params)?;
 
         let succeeded = report.success;
@@ -967,6 +968,7 @@ impl SkillService {
             CopilotAdapter::new()?,
         )
         .with_default_snapshots()
+        .with_default_sync_state()
         .sync(&params)?;
 
         let succeeded = report.success;
@@ -1016,6 +1018,7 @@ impl SkillService {
         )?;
         let report = SyncOrchestrator::new(CursorAdapter::new()?, create_adapter(to)?)
             .with_default_snapshots()
+            .with_default_sync_state()
             .sync(&params)?;
 
         let succeeded = report.success;
@@ -1073,6 +1076,7 @@ impl SkillService {
         let report =
             SyncOrchestrator::new(create_source_adapter(from, &params)?, CursorAdapter::new()?)
                 .with_default_snapshots()
+                .with_default_sync_state()
                 .sync(&params)?;
 
         let succeeded = report.success;

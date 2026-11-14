@@ -4389,6 +4389,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "crossterm",
  "dirs 7.0.0",
  "hex",
  "indexmap",

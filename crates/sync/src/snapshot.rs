@@ -84,15 +84,20 @@ pub struct RollbackReport {
 /// Home is resolved as [`crate::kill_switch_marker::marker_path`] does it: an
 /// absolute `HOME` first, then the platform lookup.
 pub fn default_root() -> Option<PathBuf> {
+    skrills_home().map(|home| home.join("snapshots"))
+}
+
+/// `~/.skrills`, where snapshots and sync state both live.
+pub(crate) fn skrills_home() -> Option<PathBuf> {
     #[cfg(unix)]
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         if home.is_absolute() {
-            return Some(home.join(".skrills").join("snapshots"));
+            return Some(home.join(".skrills"));
         }
     }
     dirs::home_dir()
         .filter(|home| home.is_absolute())
-        .map(|home| home.join(".skrills").join("snapshots"))
+        .map(|home| home.join(".skrills"))
 }
 
 /// How long a snapshot is kept: [`RETENTION_ENV`] days, 30 when unset.
@@ -413,7 +418,7 @@ pub fn display_time(time: SystemTime) -> String {
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} UTC")
 }
 
-fn civil(time: SystemTime) -> (i64, i64, i64, i64, i64, i64) {
+pub(crate) fn civil(time: SystemTime) -> (i64, i64, i64, i64, i64, i64) {
     let seconds = time.duration_since(UNIX_EPOCH).map_or(0, |since| {
         i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
     });
