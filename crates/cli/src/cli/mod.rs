@@ -722,6 +722,34 @@ pub enum Commands {
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
     },
+    /// Find skills that session history shows unused, and remove them with a snapshot.
+    #[command(group(clap::ArgGroup::new("mode").required(true).args(["suggest", "apply"])))]
+    Prune {
+        /// List stale skills and when each was last used; changes nothing.
+        #[arg(long)]
+        suggest: bool,
+        /// Delete the stale skills after confirmation, after taking a snapshot
+        /// that `sync-rollback` restores.
+        #[arg(long)]
+        apply: bool,
+        /// A skill is stale when last used more than this many days ago, or never.
+        #[arg(
+            long,
+            value_name = "DAYS",
+            default_value_t = 90,
+            value_parser = clap::value_parser!(u32).range(1..)
+        )]
+        older_than_days: u32,
+        /// With --apply, skip the confirmation prompt (required without a terminal).
+        #[arg(long, requires = "apply")]
+        yes: bool,
+        /// Skills directory to search (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Output format for --suggest: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text, conflicts_with = "apply")]
+        format: OutputFormat,
+    },
     /// Calculate quality scores for skills based on validation, completeness, and metrics.
     SkillScore {
         /// Skill name to score (if omitted, scores all discovered skills).

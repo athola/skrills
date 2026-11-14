@@ -40,7 +40,7 @@ pub(crate) use resolve::handle_resolve_dependencies_command;
 pub(crate) use serve::{handle_serve_command, ServeOptions};
 pub(crate) use setup::{handle_setup_command, SetupOptions};
 pub(crate) use skill::{
-    handle_pre_commit_validate_command, handle_skill_catalog_command,
+    handle_pre_commit_validate_command, handle_prune_command, handle_skill_catalog_command,
     handle_skill_deprecate_command, handle_skill_import_command, handle_skill_profile_command,
     handle_skill_rollback_command, handle_skill_score_command, handle_skill_usage_report_command,
     handle_sync_pull_command,

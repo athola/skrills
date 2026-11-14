@@ -18,7 +18,7 @@ use crate::commands::{
     handle_create_skill_command, handle_create_skill_template_command,
     handle_export_analytics_command, handle_import_analytics_command, handle_metrics_command,
     handle_mirror_command, handle_multi_cli_agent_command, handle_pre_commit_validate_command,
-    handle_recommend_command, handle_recommend_skills_smart_command,
+    handle_prune_command, handle_recommend_command, handle_recommend_skills_smart_command,
     handle_resolve_dependencies_command, handle_search_skills_command,
     handle_search_skills_github_command, handle_serve_command, handle_setup_command,
     handle_skill_catalog_command, handle_skill_deprecate_command, handle_skill_diff_command,
@@ -532,6 +532,14 @@ pub fn run() -> Result<()> {
             output,
             skill_dirs,
         } => handle_skill_usage_report_command(period, format, output, skill_dirs),
+        Commands::Prune {
+            apply,
+            older_than_days,
+            yes,
+            skill_dirs,
+            format,
+            ..
+        } => handle_prune_command(apply, older_than_days, yes, skill_dirs, format),
         Commands::SkillScore {
             name,
             skill_dirs,

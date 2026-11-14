@@ -164,6 +164,17 @@ pub fn begin_default() -> Option<WriteSession> {
     begin_or_warn(&root)
 }
 
+/// Removes the directory tree at `path`, recording every file in it into the
+/// installed session first so [`rollback`] can bring the tree back.
+///
+/// For commands outside this crate that delete user files (`skrills prune`):
+/// the sync crate's own write helpers are crate-private, and a raw
+/// `std::fs::remove_dir_all` would leave nothing to roll back. Outside a
+/// session it only removes the tree.
+pub fn remove_recorded_tree(path: &Path) -> std::io::Result<()> {
+    crate::adapters::utils::remove_tree(path)
+}
+
 pub(crate) fn begin_or_warn(root: &Path) -> Option<WriteSession> {
     match begin(root) {
         Ok(session) => Some(session),
@@ -492,6 +503,28 @@ mod tests {
         write_file(&target, b"after").unwrap();
         drop(session);
         target
+    }
+
+    #[test]
+    fn remove_recorded_tree_is_undone_by_rollback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tree = tmp.path().join("skills").join("old-skill");
+        std::fs::create_dir_all(tree.join("references")).unwrap();
+        std::fs::write(tree.join("SKILL.md"), b"body").unwrap();
+        std::fs::write(tree.join("references/notes.md"), b"notes").unwrap();
+        let root = tmp.path().join("snaps");
+        let session = begin_at(&root, at(SAMPLE)).unwrap();
+
+        remove_recorded_tree(&tree).unwrap();
+        drop(session);
+        assert!(!tree.exists());
+        rollback(&root, None).unwrap();
+
+        assert_eq!(std::fs::read(tree.join("SKILL.md")).unwrap(), b"body");
+        assert_eq!(
+            std::fs::read(tree.join("references/notes.md")).unwrap(),
+            b"notes"
+        );
     }
 
     #[test]

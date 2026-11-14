@@ -610,6 +610,42 @@ skrills skill-usage-report --period 7 --format json --output usage.json
 `--format` is `text` or `json`; `--output` writes to a file instead of
 stdout; `--period <DAYS>` defaults to `30`.
 
+### prune
+
+Find skills that your session history shows you have not used, and
+optionally remove them. One of `--suggest` or `--apply` is required.
+
+```bash
+skrills prune --suggest
+skrills prune --suggest --older-than-days 180 --format json
+skrills prune --apply
+```
+
+`--suggest` lists each stale skill with the date it was last used and changes
+nothing. A skill that no mined session used is listed as "never used in
+mined sessions", with no date. Usage comes from the Claude and Codex session
+logs (`~/.claude/projects`, `~/.codex/sessions`). When they hold no skill use
+at all, `prune` stops with an error instead of calling every skill stale.
+
+`--apply` lists the same skills, asks once for confirmation, takes a snapshot
+and deletes them. `skrills sync-rollback` restores them. `--yes` skips the
+prompt; without `--yes` and without a terminal, `--apply` fails before
+deleting anything.
+
+`--older-than-days <DAYS>` sets the threshold (default: `90`). A skill is
+stale when its last use is more than that many days ago, so one used exactly
+`DAYS` days ago is kept. `--skill-dir` narrows the search, and `--format` is
+`text` or `json` (with `--suggest` only).
+
+Usage is matched to a skill by its directory name or frontmatter `name`,
+ignoring case, because the session logs record skills by name and not by
+path. Skills that share a name in different roots share one usage record.
+
+Never deleted, whatever their usage: skills from the Claude plugin cache or
+marketplaces (a plugin update would restore them), sync mirrors, symlinked
+skill directories, and a skill directory that contains another skill. They
+are listed under "Stale but protected".
+
 ### pre-commit-validate
 
 Validate skill files from a git pre-commit hook:
