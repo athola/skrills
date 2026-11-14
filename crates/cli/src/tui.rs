@@ -55,7 +55,7 @@ pub(crate) fn tui_flow(_extra_dirs: &[PathBuf]) -> Result<()> {
     // Mirror commands/prefs/MCP
     let source = ClaudeAdapter::new()?;
     let target = CodexAdapter::new()?;
-    let orch = SyncOrchestrator::new(source, target);
+    let orch = SyncOrchestrator::new(source, target).with_default_snapshots();
     let params = SyncParams {
         sync_skills: false,
         sync_commands: true,

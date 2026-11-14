@@ -781,7 +781,7 @@ fn clear_conflicting_path(
                 Ok(_) if !owned => return refuse(&walked),
                 // A file or a symlink: a symlinked parent would also steer the
                 // write out of the plugin directory.
-                Ok(_) => fs::remove_file(&walked)?,
+                Ok(_) => crate::adapters::utils::remove_file(&walked)?,
                 // Nothing here yet, so nothing deeper can exist either.
                 Err(_) => break,
             }
@@ -791,8 +791,8 @@ fn clear_conflicting_path(
     match fs::symlink_metadata(dest) {
         Ok(meta) if meta.is_file() => Ok(()),
         Ok(_) if !owned => refuse(dest),
-        Ok(meta) if meta.is_dir() => fs::remove_dir_all(dest),
-        Ok(_) => fs::remove_file(dest),
+        Ok(meta) if meta.is_dir() => crate::adapters::utils::remove_tree(dest),
+        Ok(_) => crate::adapters::utils::remove_file(dest),
         Err(_) => Ok(()),
     }
 }
@@ -848,7 +848,6 @@ fn sweep_unreferenced(
     kept: &std::collections::HashSet<std::path::PathBuf>,
     report: &mut WriteReport,
 ) {
-    use std::fs;
     use walkdir::WalkDir;
 
     let marker = plugin_dir.join(MIRROR_MARKER);
@@ -877,13 +876,13 @@ fn sweep_unreferenced(
         if entry.file_type().is_dir() {
             // `contents_first` means the directory is already empty if every file
             // under it went away with the upstream plugin.
-            let _ = fs::remove_dir(path);
+            let _ = crate::adapters::utils::remove_dir(path);
             continue;
         }
         if kept.contains(path) {
             continue;
         }
-        match fs::remove_file(path) {
+        match crate::adapters::utils::remove_file(path) {
             // A dropped skill's marker is not a file the plugin shipped.
             Ok(()) if entry.file_name() == crate::adapters::utils::SYNCED_MARKER => {}
             Ok(()) => removed += 1,
@@ -945,7 +944,7 @@ fn sweep_ledger(
             carried.push(relative.clone());
             continue;
         }
-        match fs::remove_file(&path) {
+        match crate::adapters::utils::remove_file(&path) {
             Ok(()) => {
                 if path.file_name()
                     != Some(std::ffi::OsStr::new(crate::adapters::utils::SYNCED_MARKER))
@@ -957,7 +956,7 @@ fn sweep_ledger(
                     .skip(1)
                     .take_while(|dir| *dir != plugin_dir)
                 {
-                    if fs::remove_dir(dir).is_err() {
+                    if crate::adapters::utils::remove_dir(dir).is_err() {
                         break;
                     }
                 }
@@ -1088,8 +1087,6 @@ fn prune_stale_mirrors(
     touched: &std::collections::HashSet<String>,
     report: &mut WriteReport,
 ) {
-    use std::fs;
-
     let (marked, warnings) = marked_mirror_dirs(local_dir);
     report.warnings.extend(warnings);
 
@@ -1101,8 +1098,8 @@ fn prune_stale_mirrors(
         if let Some(listed) = read_ledger(&path) {
             let none_kept = std::collections::HashSet::new();
             sweep_ledger(&path, &name, &listed, &none_kept, false, report);
-            let _ = fs::remove_file(path.join(MIRROR_MARKER));
-            if fs::remove_dir(&path).is_ok() {
+            let _ = crate::adapters::utils::remove_file(&path.join(MIRROR_MARKER));
+            if crate::adapters::utils::remove_dir(&path).is_ok() {
                 report.warnings.push(format!("Pruned stale plugin: {name}"));
             } else {
                 report.warnings.push(format!(
@@ -1112,7 +1109,7 @@ fn prune_stale_mirrors(
             }
             continue;
         }
-        match fs::remove_dir_all(&path) {
+        match crate::adapters::utils::remove_tree(&path) {
             Ok(()) => {
                 tracing::info!(plugin = %name, "Pruned stale local plugin");
                 report.warnings.push(format!("Pruned stale plugin: {name}"));

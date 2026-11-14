@@ -143,7 +143,9 @@ pub mod orchestrator;
 pub mod platform;
 pub mod platform_routing;
 pub mod report;
+pub mod snapshot;
 pub mod validation;
+pub mod write_session;
 
 pub use agents_md::{
     mirror_source_root, sync_agents, sync_agents_only_from_claude, MirrorReport,

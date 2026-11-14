@@ -120,6 +120,32 @@ Preview what would change before syncing:
 skrills sync-status --from claude
 ```
 
+### sync-rollback
+
+Every `sync-all`, `mirror` and MCP sync snapshots what it is about to
+overwrite or delete, so a bad sync can be undone:
+
+```bash
+skrills sync-rollback            # Restore the most recent snapshot
+skrills sync-rollback --list     # Show snapshots, newest first, with timestamps
+skrills sync-rollback <NAME>     # Restore a snapshot named in --list
+```
+
+Snapshots live in `~/.skrills/snapshots/<UTC timestamp>/` as a JSON-lines
+`manifest.jsonl` plus the prior bytes of each touched file, so only changed
+files are stored. The directory is mode `0700` and its files `0600`, because
+configs can hold secrets. A dry run takes no snapshot, and a sync that
+changes nothing leaves none. `sync-all` takes one snapshot for the whole
+invocation, covering every target.
+
+Rollback restores prior bytes and permissions, deletes files the sync
+created, and touches only paths listed in the manifest. A manifest path that
+is not absolute or contains `..` refuses the whole rollback. Directories a
+sync created are left in place, and the snapshot is kept after a rollback.
+
+Snapshots older than 30 days are pruned at the start of the next sync. Set
+`SKRILLS_SNAPSHOT_RETENTION_DAYS` to change the period.
+
 ### Individual Sync Commands
 
 Sync specific items when you don't want everything:

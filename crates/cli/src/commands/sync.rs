@@ -52,6 +52,13 @@ pub(crate) fn handle_mirror_command(
 ) -> Result<()> {
     let home = home_dir()?;
     let claude_root = mirror_source_root(&home);
+    // The agent copy, the skills and the orchestrator below are one mirror;
+    // a shared session makes one rollback undo all of it.
+    let _snapshot = if dry_run {
+        None
+    } else {
+        skrills_sync::snapshot::begin_default()
+    };
     if !skip_existing_commands {
         eprintln!(
             "Warning: mirroring commands into ~/.codex/prompts will overwrite prompts with the same name unless --skip-existing-commands is used."
@@ -278,6 +285,15 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
     let multi_target = targets.len() > 1;
     let from = args.from;
 
+    // One snapshot for the invocation, not one per target: a rollback then
+    // undoes the whole `sync-all` instead of only its last target. Each
+    // target's orchestrator joins this session.
+    let _snapshot = if args.dry_run {
+        None
+    } else {
+        skrills_sync::snapshot::begin_default()
+    };
+
     sync_each_target(&targets, |target| {
         if multi_target {
             tracing::info!(
@@ -362,6 +378,43 @@ pub(crate) fn skipped_commands_note(
     } else {
         String::new()
     }
+}
+
+/// Handle the `sync-rollback` command.
+pub(crate) fn handle_sync_rollback_command(list: bool, snapshot: Option<String>) -> Result<()> {
+    let root = skrills_sync::snapshot::default_root()
+        .ok_or_else(|| anyhow!("no home directory, so ~/.skrills/snapshots cannot be located"))?;
+    if list {
+        print!(
+            "{}",
+            render_snapshot_list(&root, &skrills_sync::snapshot::list(&root)?)
+        );
+        return Ok(());
+    }
+    let report = skrills_sync::snapshot::rollback(&root, snapshot.as_deref())?;
+    println!(
+        "Rolled back {}: restored {} file(s), deleted {} the sync had created",
+        report.snapshot, report.restored, report.removed
+    );
+    Ok(())
+}
+
+/// The `sync-rollback --list` table, newest first.
+fn render_snapshot_list(root: &Path, snapshots: &[skrills_sync::snapshot::SnapshotInfo]) -> String {
+    if snapshots.is_empty() {
+        return format!("No snapshots in {}\n", root.display());
+    }
+    snapshots
+        .iter()
+        .map(|info| {
+            format!(
+                "{}  {}  {} files\n",
+                info.name,
+                skrills_sync::snapshot::display_time(info.taken_at),
+                info.entries
+            )
+        })
+        .collect()
 }
 
 /// Handle the `sync-status` command.

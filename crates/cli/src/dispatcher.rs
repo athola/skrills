@@ -25,9 +25,9 @@ use crate::commands::{
     handle_skill_import_command, handle_skill_profile_command, handle_skill_rollback_command,
     handle_skill_score_command, handle_skill_usage_report_command,
     handle_suggest_new_skills_command, handle_sync_agents_command, handle_sync_all_command,
-    handle_sync_command, handle_sync_pull_command, handle_sync_status_command,
-    handle_validate_command, run_sync_with_adapters, skipped_commands_note, ServeOptions,
-    SetupOptions, SmartRecommendOptions, SyncAllArgs,
+    handle_sync_command, handle_sync_pull_command, handle_sync_rollback_command,
+    handle_sync_status_command, handle_validate_command, run_sync_with_adapters,
+    skipped_commands_note, ServeOptions, SetupOptions, SmartRecommendOptions, SyncAllArgs,
 };
 use crate::doctor::doctor_report;
 use crate::tui::tui_flow;
@@ -284,6 +284,7 @@ pub fn run() -> Result<()> {
             keep_versions,
         }),
         Commands::SyncStatus { from, to } => handle_sync_status_command(from, to),
+        Commands::SyncRollback { list, snapshot } => handle_sync_rollback_command(list, snapshot),
         Commands::Doctor => doctor_report(),
         Commands::Tui { skill_dirs } => tui_flow(&merge_extra_dirs(&skill_dirs)),
         #[cfg(feature = "dashboard")]

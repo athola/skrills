@@ -283,7 +283,7 @@ pub(super) fn remove_flat_copies(root: &Path, folders: &[String], dry_run: bool)
             removed.push(folder.as_str());
             continue;
         }
-        match fs::remove_dir_all(&dir) {
+        match crate::adapters::utils::remove_tree(&dir) {
             Ok(()) => removed.push(folder.as_str()),
             Err(e) => report.warnings.push(format!(
                 "Could not remove the flat copy {} of a plugin skill: {e}",

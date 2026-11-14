@@ -47,8 +47,8 @@ pub(crate) use skill::{
 pub(crate) use skill_templates::handle_create_skill_template_command;
 pub(crate) use sync::{
     handle_mirror_command, handle_sync_agents_command, handle_sync_all_command,
-    handle_sync_command, handle_sync_status_command, print_skill_warnings, run_sync_with_adapters,
-    skipped_commands_note, SyncAllArgs,
+    handle_sync_command, handle_sync_rollback_command, handle_sync_status_command,
+    print_skill_warnings, run_sync_with_adapters, skipped_commands_note, SyncAllArgs,
 };
 pub(crate) use validate::handle_validate_command;
 

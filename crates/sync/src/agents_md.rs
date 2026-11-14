@@ -42,7 +42,7 @@ fn mirror_path_if_changed(src: &Path, dest_root: &Path, rel: &Path) -> Result<bo
     }
     let should_copy = should_copy_by_content(src, &dest)?;
     if should_copy {
-        fs::copy(src, &dest)?;
+        crate::adapters::utils::copy(src, &dest)?;
     }
     Ok(should_copy)
 }
@@ -207,7 +207,7 @@ pub(crate) fn sync_agents_with_assets(
         None => format!("{content}\n{agents_section}"),
     };
 
-    fs::write(path, final_content)?;
+    crate::adapters::utils::write_file(path, final_content)?;
     Ok(())
 }
 

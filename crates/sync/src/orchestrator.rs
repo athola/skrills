@@ -411,6 +411,10 @@ pub struct SyncOrchestrator<S: AgentAdapter, T: AgentAdapter> {
     /// Where a `skrills cold-window` process in another process records an
     /// engaged kill switch; see [`crate::kill_switch_marker`].
     kill_switch_marker: Option<std::path::PathBuf>,
+    /// Where each sync's pre-write snapshot goes; `None` takes none. Library
+    /// callers start without one so embedding the orchestrator never writes
+    /// outside the target; the CLI and MCP entry points opt in.
+    snapshot_root: Option<std::path::PathBuf>,
 }
 
 impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
@@ -422,6 +426,7 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             source,
             target,
             kill_switch_marker: crate::kill_switch_marker::marker_path(),
+            snapshot_root: None,
         }
     }
 
@@ -431,6 +436,20 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
     pub fn with_kill_switch_marker(mut self, path: Option<std::path::PathBuf>) -> Self {
         self.kill_switch_marker = path;
         self
+    }
+
+    /// Snapshots what each non-dry-run sync overwrites or deletes under
+    /// `root`, for `skrills sync-rollback`; `None` takes no snapshots.
+    #[must_use]
+    pub fn with_snapshot_root(mut self, root: Option<std::path::PathBuf>) -> Self {
+        self.snapshot_root = root;
+        self
+    }
+
+    /// [`Self::with_snapshot_root`] at [`crate::snapshot::default_root`].
+    #[must_use]
+    pub fn with_default_snapshots(self) -> Self {
+        self.with_snapshot_root(crate::snapshot::default_root())
     }
 
     /// Performs the sync operation.
@@ -459,6 +478,15 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             None
         } else {
             Some(lock_target(&self.target.config_root())?)
+        };
+
+        // After the checks above so a refused sync leaves no snapshot, and
+        // after the lock so the prior state is read once no other sync can
+        // change it. A caller that already holds a session, such as
+        // `sync-all` covering every target, gets one snapshot for the lot.
+        let _snapshot = match (&self.snapshot_root, params.dry_run) {
+            (Some(root), false) => crate::snapshot::begin_unless_active(root),
+            _ => None,
         };
 
         let mut report = SyncReport::new();
@@ -842,7 +870,9 @@ pub fn sync_between(
 ) -> Result<SyncReport> {
     let source = create_source_adapter(from, params)?;
     let target = create_adapter(to)?;
-    SyncOrchestrator::new(source, target).sync(params)
+    SyncOrchestrator::new(source, target)
+        .with_default_snapshots()
+        .sync(params)
 }
 
 /// [`create_adapter`] for the side being read: a Claude source also reads
@@ -890,7 +920,9 @@ pub fn sync_claude_skills_to_codex(
         include_marketplace,
         ..Default::default()
     };
-    SyncOrchestrator::new(source, target).sync(&params)
+    SyncOrchestrator::new(source, target)
+        .with_snapshot_root(Some(home.join(".skrills").join("snapshots")))
+        .sync(&params)
 }
 
 /// Creates an adapter for the given platform name.
@@ -2226,5 +2258,203 @@ mod tests {
         for platform in crate::Platform::ALL {
             assert_eq!(create_adapter(platform).unwrap().name(), platform.as_str());
         }
+    }
+
+    /// A sync with a snapshot root: the source command and the target prompt
+    /// it overwrites, plus a second command the target has never had.
+    fn snapshotted_sync(
+        root: &std::path::Path,
+        dry_run: bool,
+    ) -> (tempfile::TempDir, std::path::PathBuf) {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("commands")).unwrap();
+        fs::write(src_dir.path().join("commands/hello.md"), "# New Hello").unwrap();
+        fs::write(src_dir.path().join("commands/fresh.md"), "# Fresh").unwrap();
+        fs::create_dir_all(tgt_dir.path().join("prompts")).unwrap();
+        fs::write(tgt_dir.path().join("prompts/hello.md"), "# Old Hello").unwrap();
+
+        SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .with_snapshot_root(Some(root.to_path_buf()))
+        .sync(&SyncParams {
+            dry_run,
+            sync_commands: true,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            ..Default::default()
+        })
+        .unwrap()
+        .success
+        .then_some(())
+        .expect("sync succeeds");
+        let target = tgt_dir.path().to_path_buf();
+        (tgt_dir, target)
+    }
+
+    #[test]
+    fn a_sync_over_an_existing_file_snapshots_its_old_bytes() {
+        let snaps = tempdir().unwrap();
+        let (_tgt, target) = snapshotted_sync(snaps.path(), false);
+
+        assert_eq!(
+            fs::read_to_string(target.join("prompts/hello.md")).unwrap(),
+            "# New Hello"
+        );
+        let taken = crate::snapshot::list(snaps.path()).unwrap();
+        assert_eq!(taken.len(), 1);
+        let blob = snaps
+            .path()
+            .join(&taken[0].name)
+            .join("blobs")
+            .join(crate::adapters::utils::hash_content(b"# Old Hello"));
+        assert_eq!(fs::read(blob).unwrap(), b"# Old Hello");
+    }
+
+    #[test]
+    fn rollback_undoes_a_sync_by_restoring_old_bytes_and_deleting_new_files() {
+        let snaps = tempdir().unwrap();
+        let (_tgt, target) = snapshotted_sync(snaps.path(), false);
+        assert!(target.join("prompts/fresh.md").exists());
+
+        crate::snapshot::rollback(snaps.path(), None).unwrap();
+        assert_eq!(
+            fs::read_to_string(target.join("prompts/hello.md")).unwrap(),
+            "# Old Hello"
+        );
+        assert!(!target.join("prompts/fresh.md").exists());
+    }
+
+    #[test]
+    fn a_dry_run_takes_no_snapshot() {
+        let snaps = tempdir().unwrap();
+        let root = snaps.path().join("snapshots");
+        let (_tgt, target) = snapshotted_sync(&root, true);
+
+        assert!(!root.exists());
+        assert_eq!(
+            fs::read_to_string(target.join("prompts/hello.md")).unwrap(),
+            "# Old Hello"
+        );
+    }
+
+    #[test]
+    fn a_sync_refused_before_it_starts_takes_no_snapshot() {
+        let snaps = tempdir().unwrap();
+        let root = snaps.path().join("snapshots");
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        let outcome = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .with_snapshot_root(Some(root.clone()))
+        .sync(&SyncParams {
+            interactive: true,
+            ..Default::default()
+        });
+
+        assert!(outcome.is_err());
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn a_sync_that_changes_nothing_leaves_no_snapshot() {
+        let snaps = tempdir().unwrap();
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .with_snapshot_root(Some(snaps.path().to_path_buf()))
+        .sync(&SyncParams {
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            ..Default::default()
+        })
+        .unwrap()
+        .success
+        .then_some(())
+        .expect("sync succeeds");
+
+        assert!(crate::snapshot::list(snaps.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_sync_without_a_snapshot_root_records_nothing_and_still_writes() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("commands")).unwrap();
+        fs::write(src_dir.path().join("commands/hello.md"), "# Hello").unwrap();
+        let orchestrator = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        );
+        assert_eq!(orchestrator.snapshot_root, None);
+        orchestrator
+            .sync(&SyncParams {
+                sync_mcp_servers: false,
+                sync_preferences: false,
+                sync_skills: false,
+                ..Default::default()
+            })
+            .unwrap()
+            .success
+            .then_some(())
+            .expect("sync succeeds");
+        assert!(tgt_dir.path().join("prompts/hello.md").exists());
+    }
+
+    #[test]
+    fn a_sync_inside_a_running_session_joins_it_instead_of_starting_another() {
+        let snaps = tempdir().unwrap();
+        let outer_root = snaps.path().join("outer");
+        let inner_root = snaps.path().join("inner");
+        let outer = crate::snapshot::begin(&outer_root).unwrap();
+        let (_tgt, _target) = snapshotted_sync(&inner_root, false);
+        drop(outer);
+
+        assert!(!inner_root.exists());
+        let joined = crate::snapshot::list(&outer_root).unwrap();
+        assert_eq!(joined.len(), 1);
+        assert_eq!(
+            joined[0].entries, 2,
+            "both of the sync's writes land in the outer snapshot"
+        );
+    }
+
+    #[test]
+    fn a_sync_still_writes_when_the_snapshot_root_cannot_be_created() {
+        let tmp = tempdir().unwrap();
+        let blocker = tmp.path().join("blocker");
+        fs::write(&blocker, "a file where the snapshot root should go").unwrap();
+        let (_tgt, target) = snapshotted_sync(&blocker.join("snapshots"), false);
+
+        assert_eq!(
+            fs::read_to_string(target.join("prompts/hello.md")).unwrap(),
+            "# New Hello"
+        );
+    }
+
+    #[test]
+    fn default_snapshots_point_at_the_per_user_snapshot_directory() {
+        let _lock = skrills_test_utils::env_guard();
+        let home = tempdir().unwrap();
+        let _env = skrills_test_utils::set_env_var("HOME", Some(home.path().to_str().unwrap()));
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        let orchestrator = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .with_default_snapshots();
+        assert_eq!(
+            orchestrator.snapshot_root,
+            Some(home.path().join(".skrills").join("snapshots"))
+        );
     }
 }

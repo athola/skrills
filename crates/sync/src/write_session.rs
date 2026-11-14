@@ -1,0 +1,461 @@
+//! Records what a sync is about to overwrite or delete, so
+//! `skrills sync-rollback` can put it back.
+//!
+//! A [`WriteSession`] is a thread-local guard. While one is installed, the
+//! write, copy and removal helpers in `adapters/utils.rs` report each path
+//! they are about to change. The first report for a path stores its prior
+//! state (bytes and mode, or "absent") in the session's directory and appends
+//! one line to its manifest, fsynced, so an interrupt mid-sync still leaves a
+//! manifest that matches what was changed. The recorder only observes: it
+//! never skips or alters a write. A record it cannot store fails that write,
+//! because a change that cannot be undone is worse than a refused one.
+//!
+//! The directory is `0700` and its files `0600`; configs can hold secrets.
+
+use crate::adapters::utils::{atomic_write_unrecorded, hash_content, remove_tree_unrecorded};
+use crate::snapshot::{Entry, Prior, BLOB_DIR, MANIFEST_FILE};
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::io::Write;
+use std::marker::PhantomData;
+use std::path::{Component, Path, PathBuf};
+use walkdir::WalkDir;
+
+thread_local! {
+    static ACTIVE: RefCell<Option<Recorder>> = const { RefCell::new(None) };
+}
+
+struct Recorder {
+    dir: PathBuf,
+    manifest: std::fs::File,
+    seen: HashSet<PathBuf>,
+}
+
+/// Keeps a recorder installed on this thread until dropped.
+///
+/// A session whose sync changed nothing removes its directory on drop, so an
+/// idle sync does not bury the last useful snapshot under an empty one.
+/// Not `Send`: the recorder lives in the installing thread's storage.
+#[must_use = "dropping the session immediately stops recording"]
+pub struct WriteSession {
+    _same_thread: PhantomData<*const ()>,
+}
+
+/// Whether a session is installed on this thread.
+pub fn is_active() -> bool {
+    ACTIVE.with(|active| active.borrow().is_some())
+}
+
+impl WriteSession {
+    /// Creates `dir` (which must not exist yet) and starts recording into it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a session is already installed on this thread. Sessions do
+    /// not nest silently: a caller that may run inside another session checks
+    /// [`is_active`] and joins it.
+    pub fn install(dir: &Path) -> std::io::Result<Self> {
+        assert!(
+            !is_active(),
+            "a write session is already installed on this thread; nesting must be explicit"
+        );
+        create_private_dir(dir)?;
+        let manifest = open_manifest(&dir.join(MANIFEST_FILE))?;
+        ACTIVE.with(|active| {
+            *active.borrow_mut() = Some(Recorder {
+                dir: dir.to_path_buf(),
+                manifest,
+                seen: HashSet::new(),
+            });
+        });
+        Ok(Self {
+            _same_thread: PhantomData,
+        })
+    }
+}
+
+impl Drop for WriteSession {
+    fn drop(&mut self) {
+        let Some(recorder) = ACTIVE.with(|active| active.borrow_mut().take()) else {
+            return;
+        };
+        if !recorder.seen.is_empty() {
+            return;
+        }
+        if let Err(e) = remove_tree_unrecorded(&recorder.dir) {
+            tracing::warn!(
+                path = %recorder.dir.display(),
+                error = %e,
+                "Could not remove an empty snapshot directory"
+            );
+        }
+    }
+}
+
+pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
+}
+
+fn open_manifest(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create_new(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+/// Stores `path`'s prior state before a write or removal changes it. Does
+/// nothing outside a session.
+pub(crate) fn record_before_write(path: &Path) -> std::io::Result<()> {
+    ACTIVE.with(|active| match active.borrow_mut().as_mut() {
+        Some(recorder) => recorder.record(path),
+        None => Ok(()),
+    })
+}
+
+/// Stores the prior state of every file under `path` before the tree is
+/// removed. A `path` that is already gone records nothing; the removal
+/// reports that itself.
+pub(crate) fn record_tree_before_remove(path: &Path) -> std::io::Result<()> {
+    if !is_active() {
+        return Ok(());
+    }
+    for entry in WalkDir::new(path).follow_links(false).sort_by_file_name() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e)
+                if e.io_error()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if !entry.file_type().is_dir() {
+            record_before_write(entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+impl Recorder {
+    fn record(&mut self, path: &Path) -> std::io::Result<()> {
+        let path = std::path::absolute(path)?;
+        if path.components().any(|part| part == Component::ParentDir) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("cannot snapshot {}: it contains `..`", path.display()),
+            ));
+        }
+        if path.starts_with(&self.dir) || self.seen.contains(&path) {
+            return Ok(());
+        }
+        let Some((entry, bytes)) = capture(&path)? else {
+            return Ok(());
+        };
+        if let (Some(bytes), Some(hash)) = (bytes, entry.prior_hash.as_deref()) {
+            let blob = self.dir.join(BLOB_DIR).join(hash);
+            if !blob.exists() {
+                if let Some(blobs) = blob.parent() {
+                    if !blobs.exists() {
+                        create_private_dir(blobs)?;
+                    }
+                }
+                atomic_write_unrecorded(&blob, &bytes, true)?;
+            }
+        }
+        let mut line = serde_json::to_vec(&entry)?;
+        line.push(b'\n');
+        self.manifest.write_all(&line)?;
+        self.manifest.sync_all()?;
+        self.seen.insert(path);
+        Ok(())
+    }
+}
+
+/// The manifest entry for `path` and the bytes to keep, or `None` for a path
+/// a snapshot cannot hold: a directory, or a symlink or special file whose
+/// content is not its own.
+fn capture(path: &Path) -> std::io::Result<Option<(Entry, Option<Vec<u8>>)>> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let absent = Entry {
+                path: path.to_path_buf(),
+                prior: Prior::Absent,
+                prior_hash: None,
+                mode: None,
+            };
+            return Ok(Some((absent, None)));
+        }
+        Err(e) => return Err(e),
+    };
+    if meta.is_dir() {
+        return Ok(None);
+    }
+    if !meta.is_file() {
+        tracing::warn!(path = %path.display(), "Not snapshotting a symlink or special file; rollback cannot restore it");
+        return Ok(None);
+    }
+    let bytes = std::fs::read(path)?;
+    let entry = Entry {
+        path: path.to_path_buf(),
+        prior: Prior::File,
+        prior_hash: Some(hash_content(&bytes)),
+        mode: file_mode(&meta),
+    };
+    Ok(Some((entry, Some(bytes))))
+}
+
+#[cfg(unix)]
+fn file_mode(meta: &std::fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(meta.permissions().mode() & 0o7777)
+}
+
+#[cfg(not(unix))]
+fn file_mode(_meta: &std::fs::Metadata) -> Option<u32> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::snapshot::read_manifest;
+
+    fn session_in(root: &Path) -> (WriteSession, PathBuf) {
+        let dir = root.join("snap");
+        (WriteSession::install(&dir).unwrap(), dir)
+    }
+
+    #[test]
+    fn recording_outside_a_session_does_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.txt");
+        std::fs::write(&file, b"old").unwrap();
+        record_before_write(&file).unwrap();
+        record_tree_before_remove(tmp.path()).unwrap();
+        assert!(!is_active());
+    }
+
+    #[test]
+    fn existing_file_is_recorded_with_its_bytes_hash_and_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.txt");
+        std::fs::write(&file, b"old").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+        }
+        let (session, dir) = session_in(tmp.path());
+        record_before_write(&file).unwrap();
+        drop(session);
+
+        let entries = read_manifest(&dir).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].prior, Prior::File);
+        assert_eq!(
+            entries[0].prior_hash.as_deref(),
+            Some(hash_content(b"old").as_str())
+        );
+        #[cfg(unix)]
+        assert_eq!(entries[0].mode, Some(0o640));
+        let blob = dir.join(BLOB_DIR).join(hash_content(b"old"));
+        assert_eq!(std::fs::read(blob).unwrap(), b"old");
+    }
+
+    #[test]
+    fn missing_file_is_recorded_as_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("new.txt");
+        let (session, dir) = session_in(tmp.path());
+        record_before_write(&file).unwrap();
+        drop(session);
+
+        let entries = read_manifest(&dir).unwrap();
+        assert_eq!(entries[0].prior, Prior::Absent);
+        assert_eq!(entries[0].prior_hash, None);
+    }
+
+    #[test]
+    fn only_the_first_touch_of_a_path_is_recorded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.txt");
+        std::fs::write(&file, b"original").unwrap();
+        let (session, dir) = session_in(tmp.path());
+        record_before_write(&file).unwrap();
+        std::fs::write(&file, b"changed by sync").unwrap();
+        record_before_write(&file).unwrap();
+        drop(session);
+
+        let entries = read_manifest(&dir).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].prior_hash.as_deref(),
+            Some(hash_content(b"original").as_str())
+        );
+    }
+
+    #[test]
+    fn identical_content_in_two_files_is_stored_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+        std::fs::write(&a, b"same").unwrap();
+        std::fs::write(&b, b"same").unwrap();
+        let (session, dir) = session_in(tmp.path());
+        record_before_write(&a).unwrap();
+        record_before_write(&b).unwrap();
+        drop(session);
+
+        assert_eq!(read_manifest(&dir).unwrap().len(), 2);
+        assert_eq!(std::fs::read_dir(dir.join(BLOB_DIR)).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn manifest_line_is_on_disk_before_the_session_ends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.txt");
+        std::fs::write(&file, b"old").unwrap();
+        let (_session, dir) = session_in(tmp.path());
+        record_before_write(&file).unwrap();
+
+        let text = std::fs::read_to_string(dir.join(MANIFEST_FILE)).unwrap();
+        assert_eq!(text.lines().count(), 1);
+        assert!(text.ends_with('\n'));
+    }
+
+    #[test]
+    fn a_directory_path_records_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (session, dir) = session_in(tmp.path());
+        record_before_write(tmp.path()).unwrap();
+        drop(session);
+        assert!(
+            !dir.exists(),
+            "a session that recorded nothing leaves no directory"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_not_recorded_because_its_bytes_are_not_its_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let link = tmp.path().join("link");
+        std::fs::write(&target, b"t").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let (session, dir) = session_in(tmp.path());
+        record_before_write(&link).unwrap();
+        drop(session);
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn a_relative_path_is_recorded_as_an_absolute_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (session, dir) = session_in(tmp.path());
+        record_before_write(Path::new("surely-absent-relative-file.txt")).unwrap();
+        drop(session);
+        let entries = read_manifest(&dir).unwrap();
+        assert!(entries[0].path.is_absolute());
+    }
+
+    #[test]
+    fn a_path_with_parent_components_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_session, _dir) = session_in(tmp.path());
+        let escaping = tmp.path().join("a").join("..").join("b");
+        let err = record_before_write(&escaping).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn the_sessions_own_files_are_never_recorded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (session, dir) = session_in(tmp.path());
+        record_before_write(&dir.join(MANIFEST_FILE)).unwrap();
+        drop(session);
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn tree_removal_records_every_file_but_not_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tree = tmp.path().join("tree");
+        std::fs::create_dir_all(tree.join("sub")).unwrap();
+        std::fs::write(tree.join("one"), b"1").unwrap();
+        std::fs::write(tree.join("sub/two"), b"2").unwrap();
+        let (session, dir) = session_in(tmp.path());
+        record_tree_before_remove(&tree).unwrap();
+        drop(session);
+        assert_eq!(read_manifest(&dir).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn tree_removal_of_a_missing_path_records_nothing_and_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (session, dir) = session_in(tmp.path());
+        record_tree_before_remove(&tmp.path().join("gone")).unwrap();
+        drop(session);
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    #[should_panic(expected = "nesting must be explicit")]
+    fn installing_a_second_session_panics() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_outer, _dir) = session_in(tmp.path());
+        let _ = WriteSession::install(&tmp.path().join("second"));
+    }
+
+    #[test]
+    fn dropping_the_session_deactivates_recording_and_allows_a_new_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (first, _dir) = session_in(tmp.path());
+        assert!(is_active());
+        drop(first);
+        assert!(!is_active());
+        let second = WriteSession::install(&tmp.path().join("again")).unwrap();
+        assert!(is_active());
+        drop(second);
+    }
+
+    #[test]
+    fn install_fails_when_the_directory_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = WriteSession::install(tmp.path()).err().unwrap();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(!is_active());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_directory_blobs_and_manifest_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("secret.json");
+        std::fs::write(&file, b"{\"token\":1}").unwrap();
+        let (session, dir) = session_in(tmp.path());
+        record_before_write(&file).unwrap();
+        drop(session);
+
+        let mode = |p: PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(dir.clone()), 0o700);
+        assert_eq!(mode(dir.join(BLOB_DIR)), 0o700);
+        assert_eq!(mode(dir.join(MANIFEST_FILE)), 0o600);
+        assert_eq!(
+            mode(dir.join(BLOB_DIR).join(hash_content(b"{\"token\":1}"))),
+            0o600
+        );
+    }
+}

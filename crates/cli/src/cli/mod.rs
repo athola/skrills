@@ -279,6 +279,15 @@ pub enum Commands {
         #[arg(long, value_enum)]
         to: Option<Platform>,
     },
+    /// Restores the files the last sync changed from its snapshot in
+    /// `~/.skrills/snapshots`.
+    SyncRollback {
+        /// List snapshots, newest first, instead of restoring one.
+        #[arg(long, conflicts_with = "snapshot")]
+        list: bool,
+        /// Snapshot name from `--list` (default: the most recent).
+        snapshot: Option<String>,
+    },
     /// Diagnoses Codex MCP configuration for this server.
     Doctor,
     /// Validates skills for Claude Code and/or Codex CLI compatibility.
