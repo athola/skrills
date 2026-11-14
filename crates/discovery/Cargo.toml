@@ -6,7 +6,6 @@ rust-version.workspace = true
 description = "Filesystem discovery and hashing utilities used by the skrills MCP server."
 license = "MIT"
 repository = "https://github.com/athola/skrills"
-homepage = "https://github.com/athola/skrills"
 documentation = "https://athola.github.io/skrills/"
 readme = "README.md"
 keywords = ["mcp", "skills", "discovery", "filesystem", "hashing"]
@@ -28,9 +27,9 @@ blake2.workspace = true
 hex = "0.4.3"
 walkdir.workspace = true
 pathdiff.workspace = true
-tempfile.workspace = true
 rayon.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 skrills-test-utils = { path = "../test-utils" }
+tempfile.workspace = true

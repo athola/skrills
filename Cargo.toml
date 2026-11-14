@@ -29,7 +29,8 @@ rust-version = "1.89"
 # are built through constructors rather than struct literals. 3.x follows the
 # 2026-07-28 MCP spec: `Content` is `ContentBlock`, and `call_tool` /
 # `read_resource` return `CallToolResponse` / `ReadResourceResponse`.
-rmcp = { version = "3.4", features = ["server", "transport-io", "transport-streamable-http-server", "tower"] }
+# >=3.9 closes RUSTSEC-2026-0457, -0461 and -0462.
+rmcp = { version = "3.9", features = ["server", "transport-io", "transport-streamable-http-server", "tower"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_norway = "0.9"
@@ -52,13 +53,11 @@ tempfile = "3.11"
 toml = "1"
 toml_edit = { version = "0.25", default-features = false, features = ["parse", "display"] }
 semver = "1"
-flate2 = "1"
 async-trait = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 time = { version = "0.3", features = ["formatting", "local-offset", "parsing", "serde"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "gzip", "rustls", "query"] }
 rayon = "1.10"
 parking_lot = "0.12"
-subtle = "2.6"
 num_cpus = "1"
 ratatui = "0.30"

@@ -274,10 +274,7 @@ pub fn sync_agents_only_from_claude(
                 return false;
             }
             let rel = e.path().strip_prefix(claude_root).unwrap_or(e.path());
-            if is_hidden_rel_path(rel) {
-                return false;
-            }
-            true
+            !is_hidden_rel_path(rel)
         })
         .filter_map(|e| e.ok())
     {
@@ -436,6 +433,27 @@ mod tests {
         let agent_dest = agents_root.join("plugins/cache/tool/agents/helper.md");
         assert!(agent_dest.exists());
         assert_eq!(fs::read_to_string(agent_dest)?, "agent content");
+        Ok(())
+    }
+
+    #[test]
+    fn sync_agents_skips_agents_under_hidden_directories() -> Result<()> {
+        let tmp = tempdir()?;
+        let claude_root = tmp.path().join("claude");
+
+        let visible_dir = claude_root.join("plugins/cache/tool/agents");
+        fs::create_dir_all(&visible_dir)?;
+        fs::write(visible_dir.join("helper.md"), "agent content")?;
+        let hidden_dir = claude_root.join("plugins/cache/.git/agents");
+        fs::create_dir_all(&hidden_dir)?;
+        fs::write(hidden_dir.join("ghost.md"), "hidden content")?;
+
+        let agents_root = tmp.path().join("agents");
+        let report = sync_agents_only_from_claude(&claude_root, &agents_root, false)?;
+        assert_eq!(report.copied, 1);
+        assert!(!agents_root
+            .join("plugins/cache/.git/agents/ghost.md")
+            .exists());
         Ok(())
     }
 

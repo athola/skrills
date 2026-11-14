@@ -218,7 +218,7 @@ jobs:
             target_list: |
               x86_64-unknown-linux-gnu
               aarch64-unknown-linux-gnu
-          - os: macos-14
+          - os: macos-15
             toolchain_targets: x86_64-apple-darwin,aarch64-apple-darwin
             build_tool: cargo
             target_list: |
@@ -240,7 +240,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install cross (Linux only)
         if: matrix.build_tool == 'cross'
-        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: cross
       - name: Build release binaries (no upload)

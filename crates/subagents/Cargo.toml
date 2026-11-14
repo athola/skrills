@@ -7,7 +7,6 @@ description = "Subagent MCP tools for the skrills server with pluggable backends
 license = "MIT"
 authors = ["Skrills Maintainers"]
 repository = "https://github.com/athola/skrills"
-homepage = "https://github.com/athola/skrills"
 documentation = "https://athola.github.io/skrills/"
 readme = "README.md"
 keywords = ["mcp", "skills", "subagents", "agents", "ai"]
