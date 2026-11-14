@@ -4,6 +4,7 @@
 //! degrade when network is unavailable.
 
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 /// Network connectivity status.
@@ -92,6 +93,54 @@ pub fn is_online() -> bool {
     check_connectivity().is_online()
 }
 
+/// Environment switch that overrides the connectivity probe.
+///
+/// A truthy value (`1`, `true`, `yes`, `on`) forces offline mode. A falsy
+/// value (`0`, `false`, `no`, `off`) asserts the network is reachable and
+/// skips the probe, for hosts where the probe targets are filtered.
+pub const OFFLINE_ENV: &str = "SKRILLS_OFFLINE";
+
+/// Returns true when network-backed features must not make requests.
+///
+/// The switch is read on every call. The connectivity probe runs only when
+/// the switch decides nothing, and at most once per process, so commands that
+/// never reach for the network never pay for it.
+pub fn is_offline() -> bool {
+    static PROBED: OnceLock<NetworkStatus> = OnceLock::new();
+    let switch = std::env::var(OFFLINE_ENV).ok();
+    is_offline_with(switch.as_deref(), || {
+        cached_probe(&PROBED, check_connectivity)
+    })
+}
+
+fn is_offline_with(switch: Option<&str>, probe: impl FnOnce() -> NetworkStatus) -> bool {
+    match switch.map(str::trim) {
+        Some(raw)
+            if ["1", "true", "yes", "on"]
+                .iter()
+                .any(|v| raw.eq_ignore_ascii_case(v)) =>
+        {
+            true
+        }
+        Some(raw)
+            if ["0", "false", "no", "off"]
+                .iter()
+                .any(|v| raw.eq_ignore_ascii_case(v)) =>
+        {
+            false
+        }
+        // `Unknown` means no target resolved: nothing proves an outage.
+        _ => probe().is_offline(),
+    }
+}
+
+fn cached_probe(
+    cell: &OnceLock<NetworkStatus>,
+    probe: impl FnOnce() -> NetworkStatus,
+) -> NetworkStatus {
+    *cell.get_or_init(probe)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +194,75 @@ mod tests {
         let status = probe(&["not a socket address"], Duration::from_secs(2));
 
         assert_eq!(status, NetworkStatus::Unknown);
+    }
+
+    #[test]
+    fn offline_switch_truthy_values_force_offline_without_probing() {
+        for raw in ["1", "true", "TRUE", "yes", "On"] {
+            let mut probed = false;
+            let offline = is_offline_with(Some(raw), || {
+                probed = true;
+                NetworkStatus::Online
+            });
+            assert!(offline, "{raw:?} should force offline");
+            assert!(!probed, "{raw:?} must not trigger a probe");
+        }
+    }
+
+    #[test]
+    fn offline_switch_falsy_values_force_online_without_probing() {
+        for raw in ["0", "false", "FALSE", "no", "Off"] {
+            let mut probed = false;
+            let offline = is_offline_with(Some(raw), || {
+                probed = true;
+                NetworkStatus::Offline
+            });
+            assert!(!offline, "{raw:?} should force online");
+            assert!(!probed, "{raw:?} must not trigger a probe");
+        }
+    }
+
+    #[test]
+    fn unset_empty_or_unrecognized_switch_defers_to_the_probe() {
+        for raw in [None, Some(""), Some("maybe")] {
+            assert!(is_offline_with(raw, || NetworkStatus::Offline), "{raw:?}");
+            assert!(!is_offline_with(raw, || NetworkStatus::Online), "{raw:?}");
+        }
+    }
+
+    /// An undetermined status is not proof of an outage, so a request is
+    /// still attempted and fails with its own error.
+    #[test]
+    fn an_unknown_probe_status_is_not_offline() {
+        assert!(!is_offline_with(None, || NetworkStatus::Unknown));
+    }
+
+    #[test]
+    fn the_probe_runs_once_per_cell() {
+        let cell = OnceLock::new();
+        let mut calls = 0;
+        let first = cached_probe(&cell, || {
+            calls += 1;
+            NetworkStatus::Offline
+        });
+        let second = cached_probe(&cell, || {
+            calls += 1;
+            NetworkStatus::Online
+        });
+        assert_eq!(
+            (first, second, calls),
+            (NetworkStatus::Offline, NetworkStatus::Offline, 1)
+        );
+    }
+
+    #[test]
+    fn is_offline_reads_the_environment_on_every_call() {
+        let _guard = skrills_test_utils::env_guard();
+        {
+            let _on = skrills_test_utils::set_env_var(OFFLINE_ENV, Some("1"));
+            assert!(is_offline());
+        }
+        let _off = skrills_test_utils::set_env_var(OFFLINE_ENV, Some("0"));
+        assert!(!is_offline());
     }
 }

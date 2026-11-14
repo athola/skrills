@@ -10,6 +10,7 @@ Customize skrills behavior through environment variables and configuration files
 | `SKRILLS_CACHE_TTL_MS` | How long to cache skill discovery | `60000` (1 min) |
 | `SKRILLS_MIRROR_SOURCE` | Where to copy skills from | `~/.claude` |
 | `SKRILLS_INCLUDE_CLAUDE` | Discover skills in `~/.claude/skills` and the Claude plugin cache (MCP server, dashboard, `/api/skills` and CLI alike) | Off |
+| `SKRILLS_OFFLINE` | `1`/`true`/`yes`/`on` never uses the network; `0`/`false`/`no`/`off` skips the connectivity probe | Probed on first network use |
 
 ## Environment Variables
 
@@ -59,6 +60,22 @@ skrills sync-all
 ```
 
 The installer syncs no skills unless `SKRILLS_UNIVERSAL=1` is set; see [Installation](installation.md#customizing-installation) for its variables.
+
+### Offline Mode
+
+**`SKRILLS_OFFLINE`**
+
+`validate`, `analyze` and `sync` never touch the network, so they work offline with no setting. Features that do need it (GitHub skill search in `search-skills-github` and `create-skill`, and the `search-papers`, `search-discussions`, `resolve-doi` and `fetch-pdf` MCP tools) check connectivity once per process, the first time they run. Offline, they make no request and serve the newest stored answer:
+
+```text
+offline — using cached data (cached 2 hours ago): Found 3 papers
+```
+
+With nothing stored for that query they fail with `offline mode: no cached data for ...`. `fetch-pdf` serves a PDF already on disk and otherwise refuses to download.
+
+- Truthy values (`1`, `true`, `yes`, `on`) force offline mode without probing. `skrills --offline <command>` does the same.
+- Falsy values (`0`, `false`, `no`, `off`) assert the network is reachable and skip the probe, for hosts that block the probe targets (`1.1.1.1:443`, `8.8.8.8:443`).
+- Answers are stored in the research cache (`research.db` under the user cache directory, in `skrills-tome`) each time an online call succeeds. Entries keep their store time, and offline mode serves them past their expiry, so the age in the notice is the one to judge by.
 
 ### Client Settings
 

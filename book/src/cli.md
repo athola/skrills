@@ -440,6 +440,8 @@ skrills search-skills-github "testing workflow"
 skrills search-skills-github "deployment" --limit 20
 ```
 
+Offline (`--offline` or `SKRILLS_OFFLINE=1`) it returns the last stored result for the same query and limit, marked `offline — using cached data` with its age. See [Offline Mode](runtime-tuning.md#offline-mode).
+
 ### resolve-dependencies
 
 Trace skill relationships:

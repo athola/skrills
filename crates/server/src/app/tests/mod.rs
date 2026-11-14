@@ -17,6 +17,7 @@ mod config;
 mod dependency;
 mod intelligence;
 mod mcp;
+mod offline;
 mod research;
 mod resource;
 mod search;

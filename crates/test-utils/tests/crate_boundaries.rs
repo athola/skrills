@@ -131,6 +131,84 @@ fn server_exports_only_server_modules() {
     );
 }
 
+/// HTTP client crates. Any of them in a crate's dependency tree can open a
+/// socket, which offline mode (issue #205) relies on those crates never doing.
+const NETWORK_CLIENT_CRATES: &[&str] = &[
+    "reqwest",
+    "hyper",
+    "ureq",
+    "isahc",
+    "surf",
+    "attohttpc",
+    "curl",
+];
+
+fn manifest_of(crate_dir: &str) -> toml::Table {
+    let path = crates_dir().join(crate_dir).join("Cargo.toml");
+    fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+        .parse()
+        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+}
+
+/// Crates a manifest lists under `[dependencies]` and `[build-dependencies]`,
+/// optional ones included, with their dependency spec.
+fn declared_dependencies(manifest: &toml::Table) -> Vec<(String, toml::Value)> {
+    ["dependencies", "build-dependencies"]
+        .iter()
+        .filter_map(|section| manifest.get(*section).and_then(toml::Value::as_table))
+        .flat_map(|deps| deps.iter().map(|(name, spec)| (name.clone(), spec.clone())))
+        .collect()
+}
+
+/// Offline mode (issue #205): `validate`, `analyze` and `sync` must work with
+/// no network, so they must not depend on an HTTP client. Following required
+/// workspace path dependencies catches a client added one crate down; optional
+/// ones are checked by name only, because analyze's optional
+/// skrills-intelligence (ADR 0010) holds a client for GitHub search that the
+/// analyze command never calls.
+#[test]
+fn validate_analyze_and_sync_depend_on_no_network_client() {
+    for root in ["validate", "analyze", "sync"] {
+        let mut pending = vec![root.to_string()];
+        let mut seen = Vec::new();
+        while let Some(crate_dir) = pending.pop() {
+            if seen.contains(&crate_dir) {
+                continue;
+            }
+            seen.push(crate_dir.clone());
+            for (name, spec) in declared_dependencies(&manifest_of(&crate_dir)) {
+                assert!(
+                    !NETWORK_CLIENT_CRATES.contains(&name.as_str()),
+                    "skrills-{root} reaches the network client `{name}` through {crate_dir}; \
+                     validate, analyze and sync must work offline"
+                );
+                let optional = spec.get("optional").and_then(toml::Value::as_bool) == Some(true);
+                let path = spec.get("path").and_then(toml::Value::as_str);
+                if let (Some(path), false) = (path, optional) {
+                    pending.push(path.trim_start_matches("../").to_string());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn declared_dependencies_lists_build_and_optional_entries_but_not_dev_ones() {
+    let manifest: toml::Table = concat!(
+        "[dependencies]\nserde = \"1\"\nureq = { version = \"2\", optional = true }\n",
+        "[build-dependencies]\ncc = \"1\"\n",
+        "[dev-dependencies]\nreqwest = \"0.12\"\n"
+    )
+    .parse()
+    .unwrap();
+    let names: Vec<String> = declared_dependencies(&manifest)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(names, vec!["serde", "ureq", "cc"]);
+}
+
 #[test]
 fn declares_platform_enum_matches_definitions_but_not_lookalikes() {
     assert!(declares_platform_enum("pub enum Platform {"));

@@ -16,6 +16,10 @@ pub use enums::{
     version
 )]
 pub struct Cli {
+    /// Never use the network: serve cached results from network-backed
+    /// features. Same as setting `SKRILLS_OFFLINE=1`.
+    #[arg(long, global = true)]
+    pub offline: bool,
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -974,6 +978,19 @@ mod tests {
             }) => assert!(include_marketplace),
             _ => unreachable!("expected Sync command"),
         }
+    }
+
+    #[test]
+    fn offline_flag_parses_before_and_after_the_subcommand() {
+        for argv in [
+            ["skrills", "--offline", "validate"],
+            ["skrills", "validate", "--offline"],
+        ] {
+            let cli = Cli::try_parse_from(argv).expect("--offline is global");
+            assert!(cli.offline, "{argv:?}");
+        }
+        let cli = Cli::try_parse_from(["skrills", "validate"]).unwrap();
+        assert!(!cli.offline);
     }
 
     #[test]

@@ -59,6 +59,11 @@ pub fn run() -> Result<()> {
     let config_error = crate::config::try_apply_config_to_env().err();
 
     let cli = Cli::parse();
+    if cli.offline {
+        // One switch for every network-backed feature, read by
+        // `skrills_state::is_offline`. Set before any thread is spawned.
+        std::env::set_var(skrills_state::network::OFFLINE_ENV, "1");
+    }
 
     // Check for first-run (only for user-facing commands, not for `serve` which is called by MCP)
     // Also skip for batch/non-interactive commands like sync-all

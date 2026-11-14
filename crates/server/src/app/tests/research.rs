@@ -1293,6 +1293,14 @@ fn link_knowledge_refuses_oversized_metadata() {
 }
 
 fn run_search_papers(args: serde_json::Value) -> rmcp::model::CallToolResult {
+    // Online is stated, not probed: these tests must not touch the network.
+    let _guard = crate::test_support::env_guard();
+    let _online = crate::test_support::set_env_var("SKRILLS_OFFLINE", Some("0"));
+    let temp = tempfile::tempdir().unwrap();
+    let cache_base = temp.path().join("cache");
+    let _home = crate::test_support::set_env_var("HOME", temp.path().to_str());
+    let _xdg = crate::test_support::set_env_var("XDG_CACHE_HOME", cache_base.to_str());
+    let _local = crate::test_support::set_env_var("LOCALAPPDATA", cache_base.to_str());
     let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
