@@ -438,19 +438,25 @@ pub enum Commands {
     /// Create a new skill via GitHub search, LLM generation, empirical patterns, or both.
     CreateSkill {
         /// Name or topic for the skill.
-        #[arg(required = true)]
-        name: String,
-        /// Detailed description of what the skill should do.
-        #[arg(long)]
-        description: String,
+        #[arg(required_unless_present = "template")]
+        name: Option<String>,
+        /// Detailed description of what the skill should do (optional with --template).
+        #[arg(long, required_unless_present = "template")]
+        description: Option<String>,
         /// Creation method: github, llm, both, or empirical.
-        #[arg(long, default_value = "both", value_enum)]
+        #[arg(long, default_value = "both", value_enum, conflicts_with = "template")]
         method: CreateSkillMethod,
+        /// Scaffold from a built-in template without network or LLM access; `list` prints them.
+        #[arg(long, value_name = "NAME")]
+        template: Option<String>,
+        /// CLI the skill is written and validated for (with --template).
+        #[arg(long, value_enum, default_value_t = Platform::Claude, requires = "template")]
+        target: Platform,
         /// Directory to create skill in (defaults to installed client, Claude preferred).
         #[arg(long)]
         target_dir: Option<PathBuf>,
         /// Project directory for context analysis.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "template")]
         project_dir: Option<PathBuf>,
         /// Preview without creating files.
         #[arg(long)]
@@ -1182,13 +1188,15 @@ mod tests {
                 name,
                 description,
                 method,
+                template: _,
+                target: _,
                 target_dir,
                 project_dir,
                 dry_run,
                 format,
             }) => {
-                assert_eq!(name, "audit-skill");
-                assert_eq!(description, "Audit build outputs");
+                assert_eq!(name.as_deref(), Some("audit-skill"));
+                assert_eq!(description.as_deref(), Some("Audit build outputs"));
                 assert!(matches!(method, CreateSkillMethod::Github));
                 assert_eq!(target_dir, Some(PathBuf::from("/tmp/skills")));
                 assert_eq!(project_dir, Some(PathBuf::from("/tmp/project")));
@@ -1196,6 +1204,43 @@ mod tests {
                 assert_eq!(format, OutputFormat::Json);
             }
             _ => unreachable!("expected CreateSkill command"),
+        }
+    }
+
+    #[test]
+    fn create_skill_template_needs_no_description_and_takes_a_target() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "create-skill",
+            "audit-skill",
+            "--template",
+            "testing",
+            "--target",
+            "cursor",
+        ])
+        .expect("template parses without --description");
+
+        match cli.command {
+            Some(Commands::CreateSkill {
+                template,
+                target,
+                description,
+                ..
+            }) => {
+                assert_eq!(template.as_deref(), Some("testing"));
+                assert_eq!(target, Platform::Cursor);
+                assert_eq!(description, None);
+            }
+            _ => unreachable!("expected CreateSkill command"),
+        }
+    }
+
+    #[test]
+    fn create_skill_template_conflicts_with_method_and_project_dir() {
+        for conflicting in [["--method", "llm"], ["--project-dir", "/tmp/project"]] {
+            let mut args = vec!["skrills", "create-skill", "x", "--template", "testing"];
+            args.extend(conflicting);
+            assert!(Cli::try_parse_from(args).is_err(), "{conflicting:?}");
         }
     }
 

@@ -384,18 +384,24 @@ skrills create-skill my-new-skill --description "Helps with testing"
 skrills create-skill my-new-skill --description "..." --method github
 skrills create-skill my-new-skill --description "..." --method empirical  # From session patterns
 skrills create-skill my-new-skill --description "..." --dry-run  # Preview
+skrills create-skill --template list                         # List built-in templates
+skrills create-skill my-new-skill --template debugging --target codex
 ```
 
 **Options:**
 
 | Option | Purpose |
 |--------|---------|
-| `--description <TEXT>` | Required description of the skill |
-| `--method <METHOD>` | `github`, `llm`, `empirical`, or `both` (default: `both`) |
+| `--description <TEXT>` | Description of the skill. Required, except with `--template`, where it replaces the template's own |
+| `--method <METHOD>` | `github`, `llm`, `empirical`, or `both` (default: `both`). Cannot be combined with `--template` |
+| `--template <NAME>` | Scaffold from a built-in template, or pass `list` to print them (no skill name needed) |
+| `--target <CLI>` | With `--template`: `claude`, `codex`, `copilot`, or `cursor` (default: `claude`). Picks the default directory and the validator the output must pass |
 | `--target-dir <DIR>` | Where to save (default: installed client, Claude preferred) |
-| `--project-dir <DIR>` | Project directory for context |
+| `--project-dir <DIR>` | Project directory for context. Cannot be combined with `--template` |
 | `--dry-run` | Preview without writing files |
 | `--format <FORMAT>` | `text` or `json` (default: `text`) |
+
+The built-in templates are `debugging`, `code-review`, `testing`, `documentation`, and `refactoring`. They are compiled into the binary, so `--template` makes no network or LLM call. Each run renders `name` and `description` frontmatter plus the template body, then checks the result against the target's validator before writing (Cursor has no validator of its own and is checked against all three). Without `--target-dir` the skill goes to `~/.claude/skills`, `~/.agents/skills` (Codex), `~/.copilot/skills`, or `~/.cursor/skills`. Like the other methods, it refuses to replace an existing `SKILL.md`. An unknown template name fails and lists the valid names.
 
 The `empirical` method analyzes Claude Code and Codex CLI session history to extract successful tool sequences and failure anti-patterns. It clusters similar sessions and generates skills based on observed behavior.
 

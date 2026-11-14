@@ -12,6 +12,7 @@ mod resolve;
 mod serve;
 mod setup;
 mod skill;
+mod skill_templates;
 mod skill_uri;
 mod sync;
 mod validate;
@@ -43,6 +44,7 @@ pub(crate) use skill::{
     handle_skill_rollback_command, handle_skill_score_command, handle_skill_usage_report_command,
     handle_sync_pull_command,
 };
+pub(crate) use skill_templates::handle_create_skill_template_command;
 pub(crate) use sync::{
     handle_mirror_command, handle_sync_agents_command, handle_sync_all_command,
     handle_sync_command, handle_sync_status_command, print_skill_warnings, run_sync_with_adapters,
