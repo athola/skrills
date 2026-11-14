@@ -19,7 +19,7 @@ use std::time::SystemTime;
 mod agents;
 mod commands;
 mod hooks;
-mod instructions;
+pub(crate) mod instructions;
 mod plugin_assets;
 mod plugin_cache;
 mod settings;

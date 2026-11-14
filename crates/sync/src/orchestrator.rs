@@ -1319,12 +1319,7 @@ pub fn sync_between(
     to: crate::Platform,
     params: &SyncParams,
 ) -> Result<SyncReport> {
-    let source = create_source_adapter(from, params)?;
-    let target = create_adapter(to)?;
-    SyncOrchestrator::new(source, target)
-        .with_default_snapshots()
-        .with_default_sync_state()
-        .sync(params)
+    sync_between_endpoints(&from.into(), &to.into(), params)
 }
 
 /// [`sync_between`] that answers `params.interactive` with `decider`.
@@ -1334,13 +1329,62 @@ pub fn sync_between_with_decider(
     params: &SyncParams,
     decider: Arc<dyn ItemDecider>,
 ) -> Result<SyncReport> {
-    let source = create_source_adapter(from, params)?;
-    let target = create_adapter(to)?;
+    sync_between_endpoints_with_decider(&from.into(), &to.into(), params, decider)
+}
+
+/// [`sync_between`] for endpoints, which may be configured adapters.
+pub fn sync_between_endpoints(
+    from: &crate::SyncEndpoint,
+    to: &crate::SyncEndpoint,
+    params: &SyncParams,
+) -> Result<SyncReport> {
+    let source = create_endpoint_source_adapter(from, params)?;
+    let target = create_endpoint_adapter(to)?;
+    SyncOrchestrator::new(source, target)
+        .with_default_snapshots()
+        .with_default_sync_state()
+        .sync(params)
+}
+
+/// [`sync_between_endpoints`] that answers `params.interactive` with `decider`.
+pub fn sync_between_endpoints_with_decider(
+    from: &crate::SyncEndpoint,
+    to: &crate::SyncEndpoint,
+    params: &SyncParams,
+    decider: Arc<dyn ItemDecider>,
+) -> Result<SyncReport> {
+    let source = create_endpoint_source_adapter(from, params)?;
+    let target = create_endpoint_adapter(to)?;
     SyncOrchestrator::new(source, target)
         .with_default_snapshots()
         .with_default_sync_state()
         .with_decider(decider)
         .sync(params)
+}
+
+/// [`create_adapter`] for an endpoint. A custom name that is not configured,
+/// or whose file is invalid, is an error that says what exists or what is
+/// wrong, before anything is read or written.
+pub fn create_endpoint_adapter(endpoint: &crate::SyncEndpoint) -> Result<Box<dyn AgentAdapter>> {
+    match endpoint {
+        crate::SyncEndpoint::Builtin(platform) => create_adapter(*platform),
+        crate::SyncEndpoint::Custom(name) => {
+            let home = crate::adapter_config::user_home()?;
+            let config = crate::adapter_config::load_adapter(name, &home)?;
+            Ok(Box::new(crate::adapters::ConfigAdapter::new(config)))
+        }
+    }
+}
+
+/// [`create_source_adapter`] for an endpoint.
+pub fn create_endpoint_source_adapter(
+    endpoint: &crate::SyncEndpoint,
+    params: &SyncParams,
+) -> Result<Box<dyn AgentAdapter>> {
+    match endpoint {
+        crate::SyncEndpoint::Builtin(platform) => create_source_adapter(*platform, params),
+        crate::SyncEndpoint::Custom(_) => create_endpoint_adapter(endpoint),
+    }
 }
 
 /// [`create_adapter`] for the side being read: a Claude source also reads

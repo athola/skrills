@@ -96,8 +96,8 @@ skrills sync-all --from claude --autofix --dry-run    # Check what autofix would
 
 | Option | Purpose |
 |--------|---------|
-| `--from` | Source CLI: `claude`, `codex`, `copilot`, or `cursor` (default: `claude`) |
-| `--to` | Target CLI, same values; omitted, syncs to every other CLI |
+| `--from` | Source CLI: `claude`, `codex`, `copilot`, `cursor`, or the name of a [custom adapter](custom-adapters.md) (default: `claude`) |
+| `--to` | Target CLI, same values; omitted, syncs to every other built-in CLI (a custom adapter is written only when named) |
 | `--dry-run` | Preview changes without writing |
 | `--skip-existing-commands` | Keep existing commands on target side |
 | `--include-marketplace` | Include marketplace content from uninstalled plugins (`SKRILLS_INCLUDE_MARKETPLACE`) |
@@ -196,6 +196,8 @@ skrills sync-commands --from claude
 skrills sync-mcp-servers --from claude
 skrills sync-preferences --from claude
 ```
+
+`--from` and `--to` of these commands, `sync-all` and `sync-status` also take the name of a [custom adapter](custom-adapters.md). An unknown name fails and lists the built-in and configured names.
 
 **Technical notes:**
 - `skrills sync` honors `SKRILLS_MIRROR_SOURCE` to change the source root
@@ -718,6 +720,8 @@ skrills doctor
 ```
 
 Verifies the Codex MCP registration in `~/.codex/config.toml`, where `skrills setup` writes it, and identifies problems. A legacy `~/.codex/mcp_servers.json` is inspected only when present.
+
+With files in `~/.skrills/adapters/`, it also validates each [custom adapter](custom-adapters.md): parse errors, missing keys, name clashes, paths that leave `root`, and a `root` that does not exist (a warning). It exits non-zero when any line is marked `!`.
 
 ### setup
 

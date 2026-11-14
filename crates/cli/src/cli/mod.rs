@@ -5,7 +5,7 @@ mod enums;
 
 pub use enums::{
     AgentBackend, CertAction, CreateSkillMethod, DependencyDirection, OutputFormat, Platform,
-    ValidationTarget,
+    SyncEndpoint, ValidationTarget,
 };
 
 /// Command-line interface for the `skrills` application.
@@ -199,12 +199,14 @@ pub enum Commands {
     },
     /// Syncs slash commands between AI CLI tools (Claude, Codex, Copilot, Cursor).
     SyncCommands {
-        /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = Platform::Claude)]
-        from: Platform,
-        /// Target CLI: claude, codex, copilot, or cursor. If not specified, defaults to codex (for claude source) or claude (for others).
-        #[arg(long, value_enum)]
-        to: Option<Platform>,
+        /// Source CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`.
+        #[arg(long, default_value_t = SyncEndpoint::Builtin(Platform::Claude))]
+        from: SyncEndpoint,
+        /// Target CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`. If not specified, defaults to codex (for claude source) or claude (for others).
+        #[arg(long)]
+        to: Option<SyncEndpoint>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
@@ -217,36 +219,42 @@ pub enum Commands {
     },
     /// Syncs MCP server configurations between AI CLI tools.
     SyncMcpServers {
-        /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = Platform::Claude)]
-        from: Platform,
-        /// Target CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum)]
-        to: Option<Platform>,
+        /// Source CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`.
+        #[arg(long, default_value_t = SyncEndpoint::Builtin(Platform::Claude))]
+        from: SyncEndpoint,
+        /// Target CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`.
+        #[arg(long)]
+        to: Option<SyncEndpoint>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
     },
     /// Syncs preferences between AI CLI tools.
     SyncPreferences {
-        /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = Platform::Claude)]
-        from: Platform,
-        /// Target CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum)]
-        to: Option<Platform>,
+        /// Source CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`.
+        #[arg(long, default_value_t = SyncEndpoint::Builtin(Platform::Claude))]
+        from: SyncEndpoint,
+        /// Target CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`.
+        #[arg(long)]
+        to: Option<SyncEndpoint>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
     },
     /// Syncs all configurations (commands, MCP servers, preferences, skills).
     SyncAll {
-        /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = Platform::Claude)]
-        from: Platform,
-        /// Target CLI: claude, codex, copilot, or cursor. If omitted, syncs to ALL other CLIs.
-        #[arg(long, value_enum)]
-        to: Option<Platform>,
+        /// Source CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`.
+        #[arg(long, default_value_t = SyncEndpoint::Builtin(Platform::Claude))]
+        from: SyncEndpoint,
+        /// Target CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`. If omitted, syncs to ALL other CLIs.
+        #[arg(long)]
+        to: Option<SyncEndpoint>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
@@ -282,12 +290,14 @@ pub enum Commands {
     },
     /// Shows sync status and configuration differences.
     SyncStatus {
-        /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = Platform::Claude)]
-        from: Platform,
-        /// Target CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum)]
-        to: Option<Platform>,
+        /// Source CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`.
+        #[arg(long, default_value_t = SyncEndpoint::Builtin(Platform::Claude))]
+        from: SyncEndpoint,
+        /// Target CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`.
+        #[arg(long)]
+        to: Option<SyncEndpoint>,
     },
     /// Restores the files the last sync changed from its snapshot in
     /// `~/.skrills/snapshots`.
@@ -1457,8 +1467,8 @@ mod tests {
                 interactive,
             }) => {
                 assert!(!interactive);
-                assert!(matches!(from, Platform::Codex));
-                assert_eq!(to, Some(Platform::Copilot));
+                assert_eq!(from, SyncEndpoint::Builtin(Platform::Codex));
+                assert_eq!(to, Some(SyncEndpoint::Builtin(Platform::Copilot)));
                 assert!(dry_run);
                 assert!(skip_existing_commands);
                 assert!(!include_marketplace);
@@ -1490,7 +1500,7 @@ mod tests {
             Some(Commands::SyncCommands {
                 from, to, dry_run, ..
             }) => {
-                assert!(matches!(from, Platform::Claude));
+                assert_eq!(from, SyncEndpoint::Builtin(Platform::Claude));
                 assert!(to.is_none());
                 assert!(!dry_run);
             }
@@ -2117,8 +2127,8 @@ mod tests {
             Some(Commands::SyncAll {
                 from, to, dry_run, ..
             }) => {
-                assert!(matches!(from, Platform::Claude));
-                assert_eq!(to, Some(Platform::Cursor));
+                assert_eq!(from, SyncEndpoint::Builtin(Platform::Claude));
+                assert_eq!(to, Some(SyncEndpoint::Builtin(Platform::Cursor)));
                 assert!(dry_run);
             }
             _ => unreachable!("expected SyncAll command"),
@@ -2140,11 +2150,23 @@ mod tests {
             let cli = Cli::try_parse_from(["skrills", "sync-all", "--from", name, "--to", other])
                 .unwrap_or_else(|e| panic!("--from {name}: {e}"));
             match cli.command {
-                Some(Commands::SyncAll { from, .. }) => assert_eq!(from, platform),
+                Some(Commands::SyncAll { from, .. }) => {
+                    assert_eq!(from, SyncEndpoint::Builtin(platform))
+                }
                 _ => unreachable!("expected SyncAll command"),
             }
         }
-        assert!(Cli::try_parse_from(["skrills", "sync-all", "--from", "vscode"]).is_err());
+        // An unknown name is a custom adapter's: it is rejected when sync
+        // looks it up, with the built-ins and configured names listed.
+        match Cli::try_parse_from(["skrills", "sync-all", "--from", "vscode"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::SyncAll { from, .. }) => {
+                assert_eq!(from, SyncEndpoint::Custom("vscode".to_string()))
+            }
+            _ => unreachable!("expected SyncAll command"),
+        }
 
         for (name, expected) in [
             ("claude", ValidationTarget::Claude),
@@ -2172,7 +2194,9 @@ mod tests {
             .unwrap()
             .command
         {
-            Some(Commands::SyncAll { from, .. }) => assert_eq!(from, Platform::Claude),
+            Some(Commands::SyncAll { from, .. }) => {
+                assert_eq!(from, SyncEndpoint::Builtin(Platform::Claude))
+            }
             _ => unreachable!("expected SyncAll command"),
         }
     }
@@ -2246,5 +2270,32 @@ mod tests {
     #[test]
     fn agent_backend_default_is_auto() {
         assert_eq!(AgentBackend::default(), AgentBackend::Auto);
+    }
+
+    /// `--from`/`--to` of the sync commands take a configured adapter's name.
+    #[test]
+    fn sync_commands_accept_a_custom_adapter_name_for_from_and_to() {
+        let custom = SyncEndpoint::Custom("windsurf".to_string());
+        for command in [
+            "sync-commands",
+            "sync-mcp-servers",
+            "sync-preferences",
+            "sync-all",
+            "sync-status",
+        ] {
+            let cli =
+                Cli::try_parse_from(["skrills", command, "--from", "windsurf", "--to", "Windsurf"])
+                    .unwrap_or_else(|e| panic!("{command}: {e}"));
+            let (from, to) = match cli.command {
+                Some(Commands::SyncCommands { from, to, .. })
+                | Some(Commands::SyncMcpServers { from, to, .. })
+                | Some(Commands::SyncPreferences { from, to, .. })
+                | Some(Commands::SyncAll { from, to, .. })
+                | Some(Commands::SyncStatus { from, to, .. }) => (from, to),
+                _ => unreachable!("{command} parsed to another command"),
+            };
+            assert_eq!(from, custom, "{command}");
+            assert_eq!(to, Some(custom.clone()), "{command}");
+        }
     }
 }

@@ -1,6 +1,6 @@
 use super::sync_prompt::{is_cancelled, require_terminal, PromptDecider};
 use super::validate::{run_validation, Autofix};
-use crate::cli::Platform;
+use crate::cli::{Platform, SyncEndpoint};
 use anyhow::{anyhow, bail, Result};
 use skrills_discovery::merge_extra_dirs;
 use skrills_discovery::{SkillRoot, SkillSource};
@@ -134,24 +134,25 @@ pub(crate) fn handle_mirror_command(
 
 /// Runs one adapter sync from `from` to `to`.
 pub(crate) fn run_sync_with_adapters(
-    from: Platform,
-    to: Platform,
+    from: impl Into<SyncEndpoint>,
+    to: impl Into<SyncEndpoint>,
     params: &skrills_sync::SyncParams,
 ) -> Result<skrills_sync::SyncReport> {
+    let (from, to) = (from.into(), to.into());
     if from == to {
         return Err(anyhow!(
             "Source and target cannot be the same: {}",
             from.as_str()
         ));
     }
-    // sync_between handles adapter creation for every platform.
-    skrills_sync::orchestrator::sync_between(from, to, params)
+    // Adapter creation, built-in or configured, is the library's job.
+    skrills_sync::orchestrator::sync_between_endpoints(&from, &to, params)
 }
 
 /// [`run_sync_with_adapters`] that asks about each change at the terminal.
 fn run_interactive_sync(
-    from: Platform,
-    to: Platform,
+    from: &SyncEndpoint,
+    to: &SyncEndpoint,
     params: &skrills_sync::SyncParams,
 ) -> Result<skrills_sync::SyncReport> {
     if from == to {
@@ -160,7 +161,7 @@ fn run_interactive_sync(
             from.as_str()
         ));
     }
-    skrills_sync::orchestrator::sync_between_with_decider(
+    skrills_sync::orchestrator::sync_between_endpoints_with_decider(
         from,
         to,
         params,
@@ -183,43 +184,55 @@ pub(crate) fn source_skill_root(from: Platform, home: &Path) -> PathBuf {
     }
 }
 
+/// The directory a configured adapter keeps its skills in, or `None` when its
+/// file configures no `skills_dir`. Built-ins resolve as [`source_skill_root`].
+pub(crate) fn endpoint_skill_root(from: &SyncEndpoint, home: &Path) -> Result<Option<PathBuf>> {
+    match from {
+        SyncEndpoint::Builtin(platform) => Ok(Some(source_skill_root(*platform, home))),
+        SyncEndpoint::Custom(name) => Ok(skrills_sync::load_adapter(name, home)?.skills_dir),
+    }
+}
+
 /// The skill roots `sync-all` reads from `from`, for validation.
 ///
 /// For Claude this is the user skills and the plugin cache under the mirror
 /// source, plus the marketplaces when `include_marketplace` is set: the same
 /// trees the skill sync walks. The rest of `~/.claude` (sessions, settings)
-/// holds no skills.
+/// holds no skills. A configured adapter contributes its `skills_dir`.
 fn source_validation_roots(
-    from: Platform,
+    from: &SyncEndpoint,
     home: &Path,
     include_marketplace: bool,
-) -> Vec<SkillRoot> {
-    let root = source_skill_root(from, home);
-    let mut dirs = match from {
-        Platform::Claude => vec![root.join("skills"), root.join("plugins/cache")],
-        _ => vec![root.clone()],
+) -> Result<Vec<SkillRoot>> {
+    let mut dirs: Vec<PathBuf> = match (from, endpoint_skill_root(from, home)?) {
+        (SyncEndpoint::Builtin(Platform::Claude), Some(root)) => {
+            let mut dirs = vec![root.join("skills"), root.join("plugins/cache")];
+            if include_marketplace {
+                dirs.push(root.join("plugins/marketplaces"));
+            }
+            dirs
+        }
+        (_, root) => root.into_iter().collect(),
     };
-    if from.is_claude() && include_marketplace {
-        dirs.push(root.join("plugins/marketplaces"));
-    }
-    dirs.into_iter()
+    Ok(dirs
+        .drain(..)
         .enumerate()
         .map(|(i, root)| SkillRoot {
             root,
             source: SkillSource::Extra(i as u32),
         })
-        .collect()
+        .collect())
 }
 
 /// The strictest validation target any of `targets` needs.
-fn validation_target_for(targets: &[Platform]) -> VT {
-    let codex = targets.contains(&Platform::Codex);
-    let copilot = targets.contains(&Platform::Copilot);
+fn validation_target_for(targets: &[SyncEndpoint]) -> VT {
+    let codex = targets.contains(&SyncEndpoint::Builtin(Platform::Codex));
+    let copilot = targets.contains(&SyncEndpoint::Builtin(Platform::Copilot));
     match (codex, copilot) {
         (true, true) => VT::All,
         (true, false) => VT::Codex,
         (false, true) => VT::Copilot,
-        // Claude and Cursor accept what Claude accepts.
+        // Claude, Cursor and configured adapters accept what Claude accepts.
         (false, false) => VT::Claude,
     }
 }
@@ -227,8 +240,8 @@ fn validation_target_for(targets: &[Platform]) -> VT {
 /// Options for `sync-all`, one field per flag.
 #[derive(Debug, Clone)]
 pub(crate) struct SyncAllArgs {
-    pub from: Platform,
-    pub to: Option<Platform>,
+    pub from: SyncEndpoint,
+    pub to: Option<SyncEndpoint>,
     pub dry_run: bool,
     pub skip_existing_commands: bool,
     pub include_marketplace: bool,
@@ -242,8 +255,8 @@ pub(crate) struct SyncAllArgs {
 /// Validates (and with `--autofix`, repairs) the source skills before any
 /// target is touched. Returns an error, and so writes nothing, when an error
 /// remains.
-fn validate_sync_source(args: &SyncAllArgs, targets: &[Platform], home: &Path) -> Result<()> {
-    let roots = source_validation_roots(args.from, home, args.include_marketplace);
+fn validate_sync_source(args: &SyncAllArgs, targets: &[SyncEndpoint], home: &Path) -> Result<()> {
+    let roots = source_validation_roots(&args.from, home, args.include_marketplace)?;
     let target = validation_target_for(targets);
     let mode = match (args.autofix, args.dry_run) {
         (false, _) => Autofix::Off,
@@ -305,7 +318,7 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
             std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
         )?;
     }
-    let targets: Vec<Platform> = match args.to {
+    let targets: Vec<SyncEndpoint> = match args.to.clone() {
         Some(t) => vec![t],
         None => args.from.other_targets(),
     };
@@ -315,7 +328,7 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
     }
 
     let multi_target = targets.len() > 1;
-    let from = args.from;
+    let from = args.from.clone();
 
     // One snapshot for the invocation, not one per target: a rollback then
     // undoes the whole `sync-all` instead of only its last target. Each
@@ -335,7 +348,7 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
             );
         }
 
-        let delivery = skrills_sync::skill_delivery(from, target);
+        let delivery = skrills_sync::skill_delivery_for(&from, target);
         let params = skrills_sync::SyncParams {
             from: Some(from.as_str().to_string()),
             dry_run: args.dry_run,
@@ -353,9 +366,9 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
         };
 
         let report = if will_prompt {
-            run_interactive_sync(from, target, &params)?
+            run_interactive_sync(&from, target, &params)?
         } else {
-            run_sync_with_adapters(from, target, &params)?
+            run_sync_with_adapters(from.clone(), target.clone(), &params)?
         };
 
         tracing::info!(
@@ -376,11 +389,11 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
 /// error naming which targets succeeded and which failed. Stopping at the
 /// first failure left later targets unsynced with no word on the earlier ones.
 fn sync_each_target(
-    targets: &[Platform],
-    mut sync: impl FnMut(Platform) -> Result<()>,
+    targets: &[SyncEndpoint],
+    mut sync: impl FnMut(&SyncEndpoint) -> Result<()>,
 ) -> Result<()> {
-    let mut outcomes: Vec<(Platform, Result<()>)> = Vec::new();
-    for &target in targets {
+    let mut outcomes: Vec<(&SyncEndpoint, Result<()>)> = Vec::new();
+    for target in targets {
         let outcome = sync(target);
         // A cancelled prompt ends the run, not just this target's questions.
         let cancelled = outcome.as_ref().err().is_some_and(is_cancelled);
@@ -464,10 +477,13 @@ fn render_snapshot_list(root: &Path, snapshots: &[skrills_sync::snapshot::Snapsh
 }
 
 /// Handle the `sync-status` command.
-pub(crate) fn handle_sync_status_command(from: Platform, to: Option<Platform>) -> Result<()> {
+pub(crate) fn handle_sync_status_command(
+    from: SyncEndpoint,
+    to: Option<SyncEndpoint>,
+) -> Result<()> {
     let target = to.unwrap_or_else(|| from.default_target());
     // Same rule as sync-all, so the preview matches the run.
-    let delivery = skrills_sync::skill_delivery(from, target);
+    let delivery = skrills_sync::skill_delivery_for(&from, &target);
 
     let params = skrills_sync::SyncParams {
         from: Some(from.as_str().to_string()),
@@ -486,7 +502,7 @@ pub(crate) fn handle_sync_status_command(from: Platform, to: Option<Platform>) -
         "sync direction"
     );
 
-    let report = run_sync_with_adapters(from, target, &params)?;
+    let report = run_sync_with_adapters(from.clone(), target, &params)?;
 
     tracing::info!(
         commands = report.commands.written,
@@ -495,8 +511,8 @@ pub(crate) fn handle_sync_status_command(from: Platform, to: Option<Platform>) -
         "pending changes"
     );
 
-    let source_root = source_skill_root(from, &home_dir()?);
-    if source_root.exists() {
+    let source_root = endpoint_skill_root(&from, &home_dir()?)?;
+    if let Some(source_root) = source_root.filter(|root| root.exists()) {
         // A walk error is counted and reported rather than dropped, so an
         // unreadable subdirectory does not make its skills look absent.
         let mut walk_errors: u64 = 0;
@@ -561,17 +577,29 @@ mod tests {
         }
     }
 
+    fn codex() -> SyncEndpoint {
+        SyncEndpoint::Builtin(Platform::Codex)
+    }
+
+    fn copilot() -> SyncEndpoint {
+        SyncEndpoint::Builtin(Platform::Copilot)
+    }
+
+    fn cursor() -> SyncEndpoint {
+        SyncEndpoint::Builtin(Platform::Cursor)
+    }
+
     #[test]
     fn a_cancelled_prompt_stops_the_remaining_targets() {
         let mut attempted = Vec::new();
 
-        let err = sync_each_target(&[Platform::Codex, Platform::Copilot], |target| {
-            attempted.push(target);
+        let err = sync_each_target(&[codex(), copilot()], |target| {
+            attempted.push(target.clone());
             Err(skrills_sync::SyncError::InteractiveAborted.into())
         })
         .unwrap_err();
 
-        assert_eq!(attempted, vec![Platform::Codex]);
+        assert_eq!(attempted, vec![codex()]);
         assert!(format!("{err}").contains("codex: failed"), "{err}");
     }
 
@@ -579,23 +607,17 @@ mod tests {
     fn sync_all_continues_past_a_failed_target_and_names_each_outcome() {
         let mut attempted = Vec::new();
 
-        let err = sync_each_target(
-            &[Platform::Codex, Platform::Copilot, Platform::Cursor],
-            |target| {
-                attempted.push(target);
-                if target == Platform::Copilot {
-                    bail!("copilot dir is not writable")
-                }
-                Ok(())
-            },
-        )
+        let err = sync_each_target(&[codex(), copilot(), cursor()], |target| {
+            attempted.push(target.clone());
+            if *target == copilot() {
+                bail!("copilot dir is not writable")
+            }
+            Ok(())
+        })
         .unwrap_err()
         .to_string();
 
-        assert_eq!(
-            attempted,
-            vec![Platform::Codex, Platform::Copilot, Platform::Cursor]
-        );
+        assert_eq!(attempted, vec![codex(), copilot(), cursor()]);
         assert!(err.contains("codex: ok"), "{err}");
         assert!(
             err.contains("copilot: failed: copilot dir is not writable"),
@@ -709,5 +731,161 @@ mod tests {
         );
         assert!(home.join(".codex/AGENTS.md").exists());
         Ok(())
+    }
+
+    const SKILLS_AND_COMMANDS: &str = "name = \"windsurf\"\nroot = \"~/.windsurf\"\nskills_dir = \"skills\"\ncommands_dir = \"workflows\"\n";
+
+    fn windsurf() -> SyncEndpoint {
+        SyncEndpoint::Custom("windsurf".to_string())
+    }
+
+    fn sync_all_args(from: SyncEndpoint, to: Option<SyncEndpoint>) -> SyncAllArgs {
+        SyncAllArgs {
+            from,
+            to,
+            dry_run: false,
+            skip_existing_commands: false,
+            include_marketplace: false,
+            exclude_plugins: Vec::new(),
+            validate: false,
+            autofix: false,
+            keep_versions: false,
+            interactive: false,
+        }
+    }
+
+    fn put(path: &std::path::Path, body: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    /// Seeds a Claude skill and command, and the windsurf adapter file, under `home`.
+    fn seed_home_with_windsurf(home: &std::path::Path) {
+        put(
+            &home.join(".claude/skills/alpha/SKILL.md"),
+            "---\nname: alpha\ndescription: An example skill.\n---\nBody\n",
+        );
+        put(&home.join(".claude/commands/hello.md"), "# Hello\n");
+        put(
+            &skrills_sync::adapters_dir(home).join("windsurf.toml"),
+            SKILLS_AND_COMMANDS,
+        );
+    }
+
+    #[test]
+    fn sync_all_into_a_custom_adapter_writes_skills_and_commands_and_rolls_back() -> Result<()> {
+        let _guard = skrills_test_utils::env_guard();
+        let tmp = tempdir()?;
+        let home = tmp.path();
+        let _home_guard = skrills_test_utils::set_env_var("HOME", Some(home.to_str().unwrap()));
+        seed_home_with_windsurf(home);
+
+        handle_sync_all_command(sync_all_args(
+            SyncEndpoint::Builtin(Platform::Claude),
+            Some(windsurf()),
+        ))?;
+
+        let root = home.join(".windsurf");
+        assert!(root.join("skills/alpha/SKILL.md").is_file());
+        assert_eq!(
+            std::fs::read_to_string(root.join("workflows/hello.md"))?,
+            "# Hello\n"
+        );
+
+        handle_sync_rollback_command(false, None)?;
+
+        assert!(!root.join("skills/alpha/SKILL.md").exists());
+        assert!(!root.join("workflows/hello.md").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn sync_all_to_an_unknown_name_lists_the_built_ins_and_the_configured_adapters() -> Result<()> {
+        let _guard = skrills_test_utils::env_guard();
+        let tmp = tempdir()?;
+        let home = tmp.path();
+        let _home_guard = skrills_test_utils::set_env_var("HOME", Some(home.to_str().unwrap()));
+        seed_home_with_windsurf(home);
+
+        let err = handle_sync_all_command(sync_all_args(
+            SyncEndpoint::Builtin(Platform::Claude),
+            Some(SyncEndpoint::Custom("nope".to_string())),
+        ))
+        .unwrap_err();
+
+        let shown = format!("{err:#}");
+        for expected in ["nope", "claude", "codex", "copilot", "cursor", "windsurf"] {
+            assert!(shown.contains(expected), "{expected} missing: {shown}");
+        }
+        assert!(!home.join(".windsurf").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn sync_all_from_a_custom_adapter_validates_its_skills_and_syncs_them() -> Result<()> {
+        let _guard = skrills_test_utils::env_guard();
+        let tmp = tempdir()?;
+        let home = tmp.path();
+        let _home_guard = skrills_test_utils::set_env_var("HOME", Some(home.to_str().unwrap()));
+        seed_home_with_windsurf(home);
+        put(
+            &home.join(".windsurf/skills/beta/SKILL.md"),
+            "---\nname: beta\ndescription: From windsurf.\n---\nBody\n",
+        );
+        let mut args = sync_all_args(windsurf(), Some(SyncEndpoint::Builtin(Platform::Claude)));
+        args.validate = true;
+
+        handle_sync_all_command(args)?;
+
+        assert!(home.join(".claude/skills/beta/SKILL.md").is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn sync_all_from_a_custom_adapter_aborts_when_its_skills_fail_validation() -> Result<()> {
+        let _guard = skrills_test_utils::env_guard();
+        let tmp = tempdir()?;
+        let home = tmp.path();
+        let _home_guard = skrills_test_utils::set_env_var("HOME", Some(home.to_str().unwrap()));
+        seed_home_with_windsurf(home);
+        put(
+            &home.join(".windsurf/skills/broken/SKILL.md"),
+            "no frontmatter at all\n",
+        );
+        let mut args = sync_all_args(windsurf(), Some(SyncEndpoint::Builtin(Platform::Codex)));
+        args.validate = true;
+
+        let err = handle_sync_all_command(args).unwrap_err();
+
+        assert!(err.to_string().contains("do not validate"), "{err:#}");
+        assert!(!home.join(".agents/skills/broken").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn sync_status_reports_for_a_custom_endpoint_with_and_without_a_skills_dir() -> Result<()> {
+        let _guard = skrills_test_utils::env_guard();
+        let tmp = tempdir()?;
+        let home = tmp.path();
+        let _home_guard = skrills_test_utils::set_env_var("HOME", Some(home.to_str().unwrap()));
+        seed_home_with_windsurf(home);
+        put(
+            &skrills_sync::adapters_dir(home).join("bare.toml"),
+            "name = \"bare\"\nroot = \"~/.bare\"\n",
+        );
+
+        handle_sync_status_command(windsurf(), None)?;
+        handle_sync_status_command(
+            SyncEndpoint::Custom("bare".to_string()),
+            Some(SyncEndpoint::Builtin(Platform::Claude)),
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn the_strictest_validation_target_ignores_custom_endpoints() {
+        assert_eq!(validation_target_for(&[windsurf(), codex()]), VT::Codex);
+        assert_eq!(validation_target_for(&[windsurf()]), VT::Claude);
     }
 }

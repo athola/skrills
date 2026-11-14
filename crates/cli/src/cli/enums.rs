@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 /// Platforms for sync commands; the CLI parses it through the `clap`
 /// feature of skrills_sync.
-pub use skrills_sync::Platform;
+pub use skrills_sync::{Platform, SyncEndpoint};
 /// Validation target for skills; parsed through the `clap` feature of
 /// skrills-validate.
 pub use skrills_validate::ValidationTarget;

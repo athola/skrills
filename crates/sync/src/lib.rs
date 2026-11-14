@@ -133,11 +133,13 @@
 pub type Error = anyhow::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 
+pub mod adapter_config;
 pub mod adapters;
 pub mod agents_md;
 pub mod common;
 pub(crate) mod conflict;
 pub mod decision;
+pub mod endpoint;
 pub mod error;
 pub(crate) mod interactive;
 pub mod kill_switch_marker;
@@ -162,20 +164,26 @@ pub use decision::{
 pub use error::SyncError;
 pub use skrills_snapshot::KillSwitch;
 
+pub use adapter_config::{
+    adapters_dir, load_adapter, load_adapter_files, AdapterConfig, AdapterFile, ConfigProblem,
+    McpLocation,
+};
 pub use adapters::{
-    AgentAdapter, ClaudeAdapter, CodexAdapter, CopilotAdapter, CursorAdapter, FieldSupport,
-    MirrorOptions,
+    AgentAdapter, ClaudeAdapter, CodexAdapter, ConfigAdapter, CopilotAdapter, CursorAdapter,
+    FieldSupport, MirrorOptions,
 };
 pub use common::{
     Artifact, Command, CommonConfig, ContentFormat, McpServer, PluginAsset, Preferences,
 };
+pub use endpoint::SyncEndpoint;
 pub use models::transform_model;
 pub use orchestrator::{
-    create_adapter, create_source_adapter, sync_between, sync_between_with_decider,
-    sync_claude_skills_to_codex, SyncOrchestrator, SyncParams,
+    create_adapter, create_endpoint_adapter, create_endpoint_source_adapter, create_source_adapter,
+    sync_between, sync_between_endpoints, sync_between_endpoints_with_decider,
+    sync_between_with_decider, sync_claude_skills_to_codex, SyncOrchestrator, SyncParams,
 };
 pub use platform::{Platform, UnknownPlatform};
-pub use platform_routing::{skill_delivery, SkillDelivery};
+pub use platform_routing::{skill_delivery, skill_delivery_for, SkillDelivery};
 pub use report::{SkipReason, SyncReport, WriteReport};
 pub use validation::{
     apply_autofix_to_skill, skill_is_codex_compatible, skill_is_copilot_compatible,
