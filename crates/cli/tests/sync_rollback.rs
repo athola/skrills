@@ -159,6 +159,32 @@ fn sync_rollback_keeps_a_file_edited_after_the_sync_unless_forced() {
 }
 
 #[test]
+fn sync_rollback_of_an_older_snapshot_undoes_a_later_syncs_rewrite_without_force() {
+    let home = tempfile::tempdir().unwrap();
+    seed_codex_skill(home.path());
+    let sync_to_claude = ["sync-all", "--from", "codex", "--to", "claude"];
+    skrills(home.path(), &sync_to_claude);
+    fs::write(
+        home.path().join(".codex/skills/cli-test/SKILL.md"),
+        "---\nname: cli-test\ndescription: CLI test skill\n---\n# Changed at the source\n",
+    )
+    .unwrap();
+    skrills(home.path(), &sync_to_claude);
+    let synced = home.path().join(".claude/skills/cli-test/SKILL.md");
+    assert!(fs::read_to_string(&synced)
+        .unwrap()
+        .contains("Changed at the source"));
+    let older = snapshot_names(home.path()).remove(0);
+
+    let output = skrills(home.path(), &["sync-rollback", &older]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let printed = stdout(&output);
+    assert!(!printed.contains("Changed since the sync"), "{printed}");
+    assert!(!synced.exists());
+}
+
+#[test]
 fn sync_rollback_force_and_list_conflict() {
     let home = tempfile::tempdir().unwrap();
     let output = skrills(home.path(), &["sync-rollback", "--list", "--force"]);

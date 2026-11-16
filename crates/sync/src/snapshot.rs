@@ -151,8 +151,8 @@ pub struct RollbackReport {
     /// Paths skipped because rollback cannot recreate what was there: a
     /// special file, or a symlink on a platform without Unix links.
     pub not_restorable: Vec<PathBuf>,
-    /// Paths that no longer hold what the sync left, so someone changed
-    /// them since; they are kept as they are. [`force_rollback`] restores
+    /// Paths that no longer hold what the sync left, nor what a later sync
+    /// left, so someone changed them since; they are kept as they are. [`force_rollback`] restores
     /// them too.
     pub changed_since_sync: Vec<PathBuf>,
 }
@@ -340,7 +340,10 @@ pub fn prune(root: &Path, now: SystemTime, keep: Duration) -> Result<usize> {
 /// them are gone; one that still holds anything is left and reported.
 ///
 /// A path that no longer holds what the sync left there was changed since,
-/// and is kept and listed in [`RollbackReport::changed_since_sync`].
+/// and is kept and listed in [`RollbackReport::changed_since_sync`]. When
+/// an older snapshot is named, a path a newer sync rewrote is checked
+/// against what the newest such sync left as well, so skrills' own later
+/// changes are restored and only someone else's are kept.
 pub fn rollback(root: &Path, name: Option<&str>) -> Result<RollbackReport> {
     rollback_checked(root, name, false)
 }
@@ -352,15 +355,17 @@ pub fn force_rollback(root: &Path, name: Option<&str>) -> Result<RollbackReport>
 }
 
 fn rollback_checked(root: &Path, name: Option<&str>, force: bool) -> Result<RollbackReport> {
-    let mut snapshots = list(root)?.into_iter();
-    let chosen = match name {
+    let mut snapshots = list(root)?;
+    let position = match name {
         Some(wanted) => snapshots
-            .find(|snapshot| snapshot.name == wanted)
+            .iter()
+            .position(|snapshot| snapshot.name == wanted)
             .ok_or_else(|| anyhow!("no snapshot named {wanted} in {}", root.display()))?,
-        None => snapshots
-            .next()
-            .ok_or_else(|| anyhow!("no snapshots in {}", root.display()))?,
+        None if snapshots.is_empty() => bail!("no snapshots in {}", root.display()),
+        None => 0,
     };
+    let left_by_later_syncs = later_after_states(root, &snapshots[..position]);
+    let chosen = snapshots.swap_remove(position);
     let dir = root.join(&chosen.name);
     let entries = read_manifest(&dir)?;
     let blobs = entries
@@ -377,8 +382,17 @@ fn rollback_checked(root: &Path, name: Option<&str>, force: bool) -> Result<Roll
             created_dirs.push(entry.path.as_path());
             continue;
         }
-        if let Some(left_by_sync) = &entry.after {
-            if !force && current_state(&entry.path)?.as_ref() != Some(left_by_sync) {
+        let left_by_skrills: Vec<&After> =
+            [entry.after.as_ref(), left_by_later_syncs.get(&entry.path)]
+                .into_iter()
+                .flatten()
+                .collect();
+        if !force && !left_by_skrills.is_empty() {
+            let now = current_state(&entry.path)?;
+            if !left_by_skrills
+                .iter()
+                .any(|left| now.as_ref() == Some(*left))
+            {
                 changed_since_sync.push(entry.path.clone());
                 continue;
             }
@@ -433,6 +447,35 @@ fn rollback_checked(root: &Path, name: Option<&str>, force: bool) -> Result<Roll
         not_restorable,
         changed_since_sync,
     })
+}
+
+/// The newest after-state per path across `newer`, the snapshots taken
+/// after the one being rolled back (newest first, as [`list`] gives them).
+///
+/// A later sync that rewrote a path left it in that state, so finding it
+/// there means skrills made the change, not the user. A manifest that
+/// cannot be read is skipped with a warning: its paths then fall back to
+/// the rolled-back snapshot's own after-state, which keeps more, not less.
+fn later_after_states(
+    root: &Path,
+    newer: &[SnapshotInfo],
+) -> std::collections::HashMap<PathBuf, After> {
+    let mut states = std::collections::HashMap::new();
+    for snapshot in newer.iter().rev() {
+        match read_manifest(&root.join(&snapshot.name)) {
+            Ok(entries) => states.extend(
+                entries
+                    .into_iter()
+                    .filter_map(|entry| Some((entry.path, entry.after?))),
+            ),
+            Err(e) => tracing::warn!(
+                snapshot = %snapshot.name,
+                error = %e,
+                "Ignoring an unreadable newer snapshot while checking for later changes"
+            ),
+        }
+    }
+    states
 }
 
 /// What `path` holds now, in the terms of an after-line; `None` for
@@ -1509,6 +1552,76 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"v2");
         rollback(&root, Some("20261113T142530Z")).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"v1");
+    }
+
+    /// Two syncs a minute apart: the first writes `older-only.txt` and
+    /// `shared.txt`, the second writes `shared.txt` again. Returns the
+    /// snapshot root, the older snapshot's name and both paths.
+    fn two_syncs(base: &Path) -> (PathBuf, &'static str, PathBuf, PathBuf) {
+        let root = base.join("snaps");
+        let (older_only, shared) = (base.join("older-only.txt"), base.join("shared.txt"));
+        std::fs::write(&older_only, b"o1").unwrap();
+        std::fs::write(&shared, b"v1").unwrap();
+        let first = begin_at(&root, at(SAMPLE)).unwrap();
+        write_file(&older_only, b"o2").unwrap();
+        write_file(&shared, b"v2").unwrap();
+        drop(first);
+        let second = begin_at(&root, at(SAMPLE + 60)).unwrap();
+        write_file(&shared, b"v3").unwrap();
+        drop(second);
+        (root, "20261113T142530Z", older_only, shared)
+    }
+
+    #[test]
+    fn rollback_of_an_older_snapshot_restores_what_a_newer_sync_rewrote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, older, older_only, shared) = two_syncs(tmp.path());
+
+        let report = rollback(&root, Some(older)).unwrap();
+        assert!(report.changed_since_sync.is_empty(), "{report:?}");
+        assert_eq!(std::fs::read(&shared).unwrap(), b"v1");
+        assert_eq!(std::fs::read(&older_only).unwrap(), b"o1");
+        assert_eq!(report.restored, 2);
+    }
+
+    #[test]
+    fn rollback_of_an_older_snapshot_keeps_an_edit_made_after_the_newer_sync() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, older, _, shared) = two_syncs(tmp.path());
+        std::fs::write(&shared, b"user edit").unwrap();
+
+        let report = rollback(&root, Some(older)).unwrap();
+        assert_eq!(std::fs::read(&shared).unwrap(), b"user edit");
+        assert_eq!(report.changed_since_sync, std::slice::from_ref(&shared));
+
+        force_rollback(&root, Some(older)).unwrap();
+        assert_eq!(std::fs::read(&shared).unwrap(), b"v1");
+    }
+
+    #[test]
+    fn rollback_of_an_older_snapshot_checks_a_path_no_newer_sync_touched_as_before() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, older, older_only, _) = two_syncs(tmp.path());
+        std::fs::write(&older_only, b"user edit").unwrap();
+
+        let report = rollback(&root, Some(older)).unwrap();
+        assert_eq!(std::fs::read(&older_only).unwrap(), b"user edit");
+        assert_eq!(report.changed_since_sync, std::slice::from_ref(&older_only));
+    }
+
+    #[test]
+    fn rollback_of_an_older_snapshot_skips_an_unreadable_newer_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, older, _, shared) = two_syncs(tmp.path());
+        std::fs::write(
+            root.join("20261113T142630Z").join(MANIFEST_FILE),
+            b"not json\n",
+        )
+        .unwrap();
+
+        let report = rollback(&root, Some(older)).unwrap();
+        assert_eq!(std::fs::read(&shared).unwrap(), b"v3");
+        assert_eq!(report.changed_since_sync, std::slice::from_ref(&shared));
     }
 
     #[test]

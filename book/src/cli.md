@@ -191,6 +191,9 @@ The manifest also records what each path held when the sync finished. If a
 file no longer matches that, because you edited, deleted or replaced it
 after the sync, rollback keeps your version and lists it as changed since
 the sync. `--force` restores those files too, discarding the later change.
+Rolling back an older snapshot also accepts what the newest later sync left
+at a path, so files skrills itself rewrote since are restored without
+`--force`; only content that matches neither is kept as your change.
 Snapshots taken before this check existed have no such record and are
 restored as before. A config file's `.skrills-bak` backup is part of the
 snapshot: rollback puts back the previous backup, or removes one the sync
