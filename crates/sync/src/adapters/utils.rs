@@ -449,11 +449,32 @@ pub(crate) fn remove_dir(path: &Path) -> std::io::Result<()> {
 /// `std::fs::copy` opens a destination symlink and writes into what it points
 /// to, so the resolved target is what gets recorded, as [`atomic_write`] does.
 pub(crate) fn copy(src: &Path, dest: &Path) -> std::io::Result<u64> {
-    let resolved = resolve_destination(dest)?;
+    let resolved = copy_destination(dest)?;
     crate::write_session::record_before_write(&resolved)?;
     let copied = std::fs::copy(src, dest)?;
     crate::write_session::record_after_copy(&resolved)?;
     Ok(copied)
+}
+
+/// Most links the kernel follows before giving up with `ELOOP` on Linux.
+const MAX_LINK_HOPS: usize = 40;
+
+/// Where [`std::fs::copy`] writes through `dest`. Unlike the rename in
+/// [`atomic_write`], opening the file follows every link in a chain, so a
+/// chain ending in a missing file creates that file at its end, not at the
+/// first dangling hop [`resolve_destination`] stops at. A loop is left for
+/// the copy itself to report.
+fn copy_destination(dest: &Path) -> std::io::Result<std::path::PathBuf> {
+    let mut resolved = resolve_destination(dest)?;
+    for _ in 0..MAX_LINK_HOPS {
+        match std::fs::symlink_metadata(&resolved) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                resolved = resolve_destination(&resolved)?;
+            }
+            _ => break,
+        }
+    }
+    Ok(resolved)
 }
 
 /// Writes a user-owned config file (`settings.json`, `CLAUDE.md`, `mcp.json`,

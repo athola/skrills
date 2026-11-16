@@ -1277,6 +1277,31 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn rollback_undoes_a_copy_through_a_link_to_a_dangling_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (first, second) = (tmp.path().join("first"), tmp.path().join("second"));
+        std::os::unix::fs::symlink("second", &first).unwrap();
+        std::os::unix::fs::symlink("missing", &second).unwrap();
+        let source = tmp.path().join("source.md");
+        std::fs::write(&source, b"copied").unwrap();
+        let root = tmp.path().join("snaps");
+        let session = begin_at(&root, at(SAMPLE)).unwrap();
+        crate::adapters::utils::copy(&source, &first).unwrap();
+        drop(session);
+        assert_eq!(
+            std::fs::read(tmp.path().join("missing")).unwrap(),
+            b"copied"
+        );
+
+        let report = rollback(&root, None).unwrap();
+        assert!(report.changed_since_sync.is_empty(), "{report:?}");
+        assert_eq!(std::fs::read_link(&first).unwrap(), Path::new("second"));
+        assert_eq!(std::fs::read_link(&second).unwrap(), Path::new("missing"));
+        assert!(std::fs::symlink_metadata(tmp.path().join("missing")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn rollback_refuses_to_replace_a_full_directory_with_a_symlink() {
         let tmp = tempfile::tempdir().unwrap();
         let link = tmp.path().join("link");
