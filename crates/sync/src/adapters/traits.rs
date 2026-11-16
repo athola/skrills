@@ -184,6 +184,19 @@ pub trait AgentAdapter: Send + Sync {
             self.read_skills()
         }))
     }
+
+    /// Whether an interactive sync may ask about `kind` one item at a time.
+    ///
+    /// Rejecting a changed item hands the writer the target's own read-back
+    /// copy, which is only safe when writing it back leaves the file as it
+    /// was. A target that rewrites on write (names, frontmatter, merged
+    /// blocks) keeps the default: one question for the whole category, and a
+    /// rejection skips the category's writer entirely. An adapter opts a
+    /// category in only after `tests/interactive_round_trip.rs` shows
+    /// byte-identical round trips for it.
+    fn decision_scope(&self, _kind: crate::decision::ItemKind) -> crate::decision::DecisionScope {
+        crate::decision::DecisionScope::WholeCategory
+    }
 }
 
 /// Blanket impl so `Box<dyn AgentAdapter>` can be used with `SyncOrchestrator`.
@@ -264,5 +277,8 @@ impl AgentAdapter for Box<dyn AgentAdapter> {
     }
     fn preview_skills(&self, skills: &[Command]) -> Result<WriteReport> {
         (**self).preview_skills(skills)
+    }
+    fn decision_scope(&self, kind: crate::decision::ItemKind) -> crate::decision::DecisionScope {
+        (**self).decision_scope(kind)
     }
 }

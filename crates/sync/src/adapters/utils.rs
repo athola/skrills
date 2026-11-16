@@ -277,23 +277,56 @@ static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 /// say) is resolved first so the link survives and its target is replaced. An
 /// existing file keeps its permission bits; a new one gets `0o600` when
 /// `private` is set and the umask default otherwise.
+///
+/// The destination's prior state goes to the active
+/// [`write_session`](crate::write_session) first, so a snapshot can restore it.
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
-    use std::io::Write;
+    let dest = resolve_destination(path)?;
+    if let Some(parent) = dest.parent().filter(|p| !p.as_os_str().is_empty()) {
+        crate::write_session::record_dirs_before_create(parent)?;
+    }
+    crate::write_session::record_before_write(&dest)?;
+    atomic_write_unrecorded(path, bytes, private)?;
+    crate::write_session::record_after_write(&dest, bytes)
+}
 
-    let dest = match std::fs::symlink_metadata(path) {
+/// [`std::fs::create_dir_all`] that first records each directory it is about
+/// to create, so a rollback can remove the ones the sync added.
+pub(crate) fn create_dir_all(path: &Path) -> std::io::Result<()> {
+    crate::write_session::record_dirs_before_create(path)?;
+    std::fs::create_dir_all(path)
+}
+
+/// Where a write to `path` lands: the path itself, or the target of a symlink
+/// at `path`.
+fn resolve_destination(path: &Path) -> std::io::Result<std::path::PathBuf> {
+    match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.file_type().is_symlink() => match std::fs::canonicalize(path) {
-            Ok(resolved) => resolved,
+            Ok(resolved) => Ok(resolved),
             // A dangling link: write where it points, so the link survives.
             Err(_) => {
                 let target = std::fs::read_link(path)?;
-                match path.parent() {
+                Ok(match path.parent() {
                     Some(parent) if target.is_relative() => parent.join(target),
                     _ => target,
-                }
+                })
             }
         },
-        _ => path.to_path_buf(),
-    };
+        _ => Ok(path.to_path_buf()),
+    }
+}
+
+/// [`atomic_write`] without telling the snapshot recorder. For the files the
+/// snapshot itself keeps and for skrills' own sync state, which must not be
+/// recorded as something a sync changed.
+pub(crate) fn atomic_write_unrecorded(
+    path: &Path,
+    bytes: &[u8],
+    private: bool,
+) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let dest = resolve_destination(path)?;
     let parent = match dest.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
         _ => std::path::PathBuf::from("."),
@@ -351,6 +384,99 @@ pub(crate) fn write_file(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std
     atomic_write(path.as_ref(), bytes.as_ref(), false)
 }
 
+/// Removes one file, recording its content first so a snapshot can restore it.
+pub(crate) fn remove_file(path: &Path) -> std::io::Result<()> {
+    crate::write_session::record_before_write(path)?;
+    std::fs::remove_file(path)?;
+    crate::write_session::record_after_remove(path)
+}
+
+/// Removes a directory tree, recording every file in it first so a snapshot
+/// can restore them.
+pub(crate) fn remove_tree(path: &Path) -> std::io::Result<()> {
+    let removed = crate::write_session::record_tree_before_remove(path)?;
+    std::fs::remove_dir_all(path)?;
+    for file in removed {
+        crate::write_session::record_after_remove(&file)?;
+    }
+    Ok(())
+}
+
+/// [`remove_tree`] for the snapshot's own storage, which is never recorded.
+pub(crate) fn remove_tree_unrecorded(path: &Path) -> std::io::Result<()> {
+    std::fs::remove_dir_all(path)
+}
+
+/// Puts a symlink to `target` at `path`, replacing a file or link there with
+/// one rename so the path is never missing in between. Rollback uses it to
+/// bring back a link exactly as it was, relative targets included.
+#[cfg(unix)]
+pub(crate) fn replace_with_symlink(path: &Path, target: &Path) -> std::io::Result<()> {
+    crate::write_session::record_before_write(path)?;
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    create_dir_all(&parent)?;
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = parent.join(format!(
+        ".{file_name}.skrills-tmp-{}-{}",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::os::unix::fs::symlink(target, &tmp)?;
+    let renamed = std::fs::rename(&tmp, path);
+    if renamed.is_err() {
+        // The rename error is the one worth reporting; a leftover temp link
+        // is hidden and harmless.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    renamed
+}
+
+/// Removes an empty directory. Nothing is recorded: a directory that holds
+/// no file has nothing a rollback needs to bring back, and the OS refuses a
+/// non-empty one.
+pub(crate) fn remove_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::remove_dir(path)
+}
+
+/// [`std::fs::copy`] that records the destination's prior state first.
+///
+/// `std::fs::copy` opens a destination symlink and writes into what it points
+/// to, so the resolved target is what gets recorded, as [`atomic_write`] does.
+pub(crate) fn copy(src: &Path, dest: &Path) -> std::io::Result<u64> {
+    let resolved = copy_destination(dest)?;
+    crate::write_session::record_before_write(&resolved)?;
+    let copied = std::fs::copy(src, dest)?;
+    crate::write_session::record_after_copy(&resolved)?;
+    Ok(copied)
+}
+
+/// Most links the kernel follows before giving up with `ELOOP` on Linux.
+const MAX_LINK_HOPS: usize = 40;
+
+/// Where [`std::fs::copy`] writes through `dest`. Unlike the rename in
+/// [`atomic_write`], opening the file follows every link in a chain, so a
+/// chain ending in a missing file creates that file at its end, not at the
+/// first dangling hop [`resolve_destination`] stops at. A loop is left for
+/// the copy itself to report.
+fn copy_destination(dest: &Path) -> std::io::Result<std::path::PathBuf> {
+    let mut resolved = resolve_destination(dest)?;
+    for _ in 0..MAX_LINK_HOPS {
+        match std::fs::symlink_metadata(&resolved) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                resolved = resolve_destination(&resolved)?;
+            }
+            _ => break,
+        }
+    }
+    Ok(resolved)
+}
+
 /// Writes a user-owned config file (`settings.json`, `CLAUDE.md`, `mcp.json`,
 /// `config.toml`, ...): no-op when the content is unchanged, otherwise keeps a
 /// one-generation copy of the previous content at `<path>.skrills-bak` and
@@ -359,10 +485,16 @@ pub(crate) fn write_file(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std
 /// Returns whether the file was written. Backups are only kept for config
 /// files: a `.skrills-bak` beside a skill would be picked up as one of its
 /// module files on the next sync.
+///
+/// The config is recorded before its backup is written, so a sync cut short
+/// between the two still has the config in its snapshot. The backup write is
+/// recorded too: rollback puts back the previous backup, or removes one this
+/// sync created.
 pub(crate) fn write_config(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<bool> {
     match std::fs::read(path) {
         Ok(existing) if existing == bytes => return Ok(false),
         Ok(existing) => {
+            crate::write_session::record_before_write(&resolve_destination(path)?)?;
             let mut backup = path.as_os_str().to_owned();
             backup.push(BACKUP_SUFFIX);
             // The backup holds the same secrets as the original, so it is
@@ -522,7 +654,7 @@ impl BatchWriter {
             return Ok(());
         }
         let written = match path.parent() {
-            Some(parent) => std::fs::create_dir_all(parent),
+            Some(parent) => create_dir_all(parent),
             None => Ok(()),
         }
         .and_then(|()| write_file(&path, content));
@@ -583,9 +715,7 @@ impl BatchWriter {
 
         let mut changed = false;
         if std::fs::read(&main_path).ok().as_deref() != Some(main) {
-            if let Err(e) =
-                std::fs::create_dir_all(&dir).and_then(|()| write_file(&main_path, main))
-            {
+            if let Err(e) = create_dir_all(&dir).and_then(|()| write_file(&main_path, main)) {
                 refuse_unwritable(item, &main_path, &e, report);
                 return Ok(());
             }
@@ -613,7 +743,7 @@ impl BatchWriter {
                 continue;
             }
             let written = match module_path.parent() {
-                Some(parent) => std::fs::create_dir_all(parent),
+                Some(parent) => create_dir_all(parent),
                 None => Ok(()),
             }
             .and_then(|()| write_file(&module_path, &module.content));
@@ -829,6 +959,321 @@ mod tests {
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&existing), 0o640);
         assert_eq!(mode(&fresh), 0o600);
+    }
+
+    /// A recorded session for the helper tests below, returning the entries
+    /// the recorder stored once the session ends.
+    fn recorded_by(tmp: &tempfile::TempDir, change: impl FnOnce()) -> Vec<crate::snapshot::Entry> {
+        let dir = tmp.path().join("snapshot");
+        let session = crate::write_session::WriteSession::install(&dir).unwrap();
+        change();
+        drop(session);
+        if dir.exists() {
+            crate::snapshot::read_manifest(&dir).unwrap()
+        } else {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn atomic_write_records_the_old_bytes_before_replacing_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("cfg.json");
+        std::fs::write(&path, b"old").unwrap();
+        let entries = recorded_by(&tmp, || atomic_write(&path, b"new", false).unwrap());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, path);
+        assert_eq!(
+            entries[0].prior_hash.as_deref(),
+            Some(hash_content(b"old").as_str())
+        );
+    }
+
+    #[test]
+    fn atomic_write_through_a_symlink_records_the_target_it_replaces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real.md");
+        let link = tmp.path().join("link.md");
+        std::fs::write(&real, b"old").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let entries = recorded_by(&tmp, || atomic_write(&link, b"new", false).unwrap());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, std::fs::canonicalize(&real).unwrap());
+    }
+
+    #[test]
+    fn atomic_write_records_the_parent_directories_it_creates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let new_dir = tmp.path().join("new");
+        let path = new_dir.join("sub").join("f.md");
+        let entries = recorded_by(&tmp, || atomic_write(&path, b"x", false).unwrap());
+        let dirs: Vec<_> = entries
+            .iter()
+            .filter(|e| e.kind == crate::snapshot::Kind::Dir)
+            .map(|e| e.path.clone())
+            .collect();
+        assert_eq!(dirs, [new_dir.clone(), new_dir.join("sub")]);
+        assert!(entries.iter().any(|e| e.path == path));
+    }
+
+    #[test]
+    fn create_dir_all_records_new_directories_then_creates_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let deep = tmp.path().join("one").join("two");
+        let entries = recorded_by(&tmp, || {
+            create_dir_all(&deep).unwrap();
+            write_file(deep.join("f"), b"x").unwrap();
+        });
+        assert!(deep.is_dir());
+        let dirs: Vec<_> = entries
+            .iter()
+            .filter(|e| e.kind == crate::snapshot::Kind::Dir)
+            .map(|e| e.path.clone())
+            .collect();
+        assert_eq!(dirs, [tmp.path().join("one"), deep.clone()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_through_a_link_to_a_missing_link_records_the_link_it_replaces() {
+        // `first` -> `second` -> missing: the write lands on `second`, which
+        // is itself a link and is replaced by a regular file.
+        let tmp = tempfile::tempdir().unwrap();
+        let first = tmp.path().join("first");
+        let second = tmp.path().join("second");
+        std::os::unix::fs::symlink(&second, &first).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("missing"), &second).unwrap();
+        let entries = recorded_by(&tmp, || atomic_write(&first, b"new", false).unwrap());
+        assert!(std::fs::symlink_metadata(&second).unwrap().is_file());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, second);
+        assert_eq!(entries[0].kind, crate::snapshot::Kind::Symlink);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_onto_a_symlink_records_the_target_it_writes_through() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (src, real, link) = (
+            tmp.path().join("src"),
+            tmp.path().join("real"),
+            tmp.path().join("link"),
+        );
+        std::fs::write(&src, b"from source").unwrap();
+        std::fs::write(&real, b"was here").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let entries = recorded_by(&tmp, || {
+            copy(&src, &link).unwrap();
+        });
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(std::fs::read(&real).unwrap(), b"from source");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, std::fs::canonicalize(&real).unwrap());
+        assert_eq!(
+            entries[0].prior_hash.as_deref(),
+            Some(hash_content(b"was here").as_str())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_tree_of_a_symlinked_directory_records_the_link_not_its_contents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        let link = tmp.path().join("link");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("keep.md"), b"k").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let entries = recorded_by(&tmp, || remove_tree(&link).unwrap());
+        assert!(real.join("keep.md").exists());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, link);
+        assert_eq!(entries[0].kind, crate::snapshot::Kind::Symlink);
+    }
+
+    #[test]
+    fn write_config_records_the_config_before_its_backup_and_both_after_hashes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("CLAUDE.md");
+        let backup = tmp.path().join("CLAUDE.md.skrills-bak");
+        std::fs::write(&path, b"mine").unwrap();
+        let entries = recorded_by(&tmp, || {
+            assert!(write_config(&path, b"synced", false).unwrap());
+        });
+        let paths: Vec<_> = entries.iter().map(|e| e.path.clone()).collect();
+        assert_eq!(paths, [path.clone(), backup.clone()]);
+        assert_eq!(entries[1].prior, crate::snapshot::Prior::Absent);
+        assert_eq!(
+            entries[0].after,
+            Some(crate::snapshot::After::File(hash_content(b"synced")))
+        );
+        assert_eq!(
+            entries[1].after,
+            Some(crate::snapshot::After::File(hash_content(b"mine")))
+        );
+    }
+
+    #[test]
+    fn atomic_write_records_the_after_hash_of_what_it_wrote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("f");
+        let entries = recorded_by(&tmp, || atomic_write(&path, b"new", false).unwrap());
+        assert_eq!(
+            entries[0].after,
+            Some(crate::snapshot::After::File(hash_content(b"new")))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_atomic_write_records_no_after_hash() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let locked = tmp.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let path = locked.join("f");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let mut outcome = Ok(());
+        let entries = recorded_by(&tmp, || outcome = atomic_write(&path, b"new", false));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // A privileged user can write anyway; then the after hash is right.
+        match outcome {
+            Ok(()) => assert!(entries[0].after.is_some()),
+            Err(_) => assert_eq!(entries[0].after, None),
+        }
+    }
+
+    #[test]
+    fn copy_records_the_after_hash_of_the_copied_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (src, dest) = (tmp.path().join("src"), tmp.path().join("dest"));
+        std::fs::write(&src, b"from source").unwrap();
+        let entries = recorded_by(&tmp, || {
+            copy(&src, &dest).unwrap();
+        });
+        assert_eq!(
+            entries[0].after,
+            Some(crate::snapshot::After::File(hash_content(b"from source")))
+        );
+    }
+
+    #[test]
+    fn remove_file_records_the_path_as_absent_after_the_sync() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("gone");
+        std::fs::write(&path, b"x").unwrap();
+        let entries = recorded_by(&tmp, || remove_file(&path).unwrap());
+        assert_eq!(entries[0].after, Some(crate::snapshot::After::Absent));
+    }
+
+    #[test]
+    fn remove_tree_records_each_removed_file_as_absent_after_the_sync() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tree = tmp.path().join("tree");
+        std::fs::create_dir_all(tree.join("sub")).unwrap();
+        std::fs::write(tree.join("a"), b"1").unwrap();
+        std::fs::write(tree.join("sub/b"), b"2").unwrap();
+        let entries = recorded_by(&tmp, || remove_tree(&tree).unwrap());
+        assert_eq!(entries.len(), 2);
+        assert!(entries
+            .iter()
+            .all(|e| e.after == Some(crate::snapshot::After::Absent)));
+    }
+
+    #[test]
+    fn write_config_with_unchanged_content_records_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("CLAUDE.md");
+        std::fs::write(&path, b"same").unwrap();
+        let entries = recorded_by(&tmp, || {
+            assert!(!write_config(&path, b"same", false).unwrap());
+        });
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn remove_file_records_the_file_then_deletes_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("gone.md");
+        std::fs::write(&path, b"keep me").unwrap();
+        let entries = recorded_by(&tmp, || remove_file(&path).unwrap());
+        assert!(!path.exists());
+        assert_eq!(
+            entries[0].prior_hash.as_deref(),
+            Some(hash_content(b"keep me").as_str())
+        );
+    }
+
+    #[test]
+    fn remove_file_of_a_missing_path_reports_the_os_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = remove_file(&tmp.path().join("nope")).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn remove_tree_records_every_file_in_the_tree_then_deletes_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tree = tmp.path().join("tree");
+        std::fs::create_dir_all(tree.join("a/b")).unwrap();
+        std::fs::write(tree.join("top"), b"1").unwrap();
+        std::fs::write(tree.join("a/b/deep"), b"2").unwrap();
+        let entries = recorded_by(&tmp, || remove_tree(&tree).unwrap());
+        assert!(!tree.exists());
+        let mut paths: Vec<_> = entries.iter().map(|e| e.path.clone()).collect();
+        paths.sort();
+        assert_eq!(paths, [tree.join("a/b/deep"), tree.join("top")]);
+    }
+
+    #[test]
+    fn remove_tree_of_a_missing_path_reports_the_os_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = remove_tree(&tmp.path().join("nope")).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn remove_dir_removes_an_empty_directory_and_refuses_a_full_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let empty = tmp.path().join("empty");
+        let full = tmp.path().join("full");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::create_dir_all(&full).unwrap();
+        std::fs::write(full.join("f"), b"x").unwrap();
+        let entries = recorded_by(&tmp, || {
+            remove_dir(&empty).unwrap();
+            assert!(remove_dir(&full).is_err());
+        });
+        assert!(!empty.exists());
+        assert!(full.join("f").exists());
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn copy_records_the_destinations_old_bytes_and_copies_the_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (src, dest) = (tmp.path().join("src"), tmp.path().join("dest"));
+        std::fs::write(&src, b"from source").unwrap();
+        std::fs::write(&dest, b"was here").unwrap();
+        let entries = recorded_by(&tmp, || {
+            assert_eq!(copy(&src, &dest).unwrap(), 11);
+        });
+        assert_eq!(std::fs::read(&dest).unwrap(), b"from source");
+        assert_eq!(entries[0].path, dest);
+        assert_eq!(
+            entries[0].prior_hash.as_deref(),
+            Some(hash_content(b"was here").as_str())
+        );
+    }
+
+    #[test]
+    fn helpers_outside_a_session_just_do_the_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("f");
+        atomic_write(&path, b"x", false).unwrap();
+        remove_file(&path).unwrap();
+        assert!(!path.exists());
     }
 
     #[test]

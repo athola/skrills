@@ -277,6 +277,14 @@ fn is_converted_agent(skill_dir: &Path) -> bool {
 }
 
 impl AgentAdapter for CodexAdapter {
+    fn decision_scope(&self, kind: crate::decision::ItemKind) -> crate::decision::DecisionScope {
+        use crate::decision::{DecisionScope, ItemKind};
+        match kind {
+            ItemKind::Command | ItemKind::McpServer => DecisionScope::PerItem,
+            _ => DecisionScope::WholeCategory,
+        }
+    }
+
     fn name(&self) -> &str {
         "codex"
     }
@@ -486,7 +494,7 @@ impl AgentAdapter for CodexAdapter {
     fn write_commands(&self, commands: &[Command]) -> Result<WriteReport> {
         super::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         let dir = self.prompts_dir();
-        fs::create_dir_all(&dir)?;
+        crate::adapters::utils::create_dir_all(&dir)?;
 
         let mut report = WriteReport::default();
 

@@ -154,7 +154,7 @@ pub(super) fn write_commands_impl(
     commands: &[Command],
 ) -> Result<WriteReport> {
     let dir = adapter.commands_dir();
-    fs::create_dir_all(&dir)?;
+    crate::adapters::utils::create_dir_all(&dir)?;
 
     let mut report = WriteReport::default();
 

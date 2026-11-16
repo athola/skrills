@@ -1285,11 +1285,18 @@ mod store_tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn startup_interrupts_only_runs_whose_owner_is_gone() {
-        let mut sleeper = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
-        let mut exited = std::process::Command::new("true").spawn().unwrap();
+        // `sleep` and `true` are found through PATH too, so they need the
+        // same guard as the liveness check below.
+        let (mut sleeper, mut exited) = {
+            let _env = skrills_test_utils::env_guard();
+            (
+                std::process::Command::new("sleep")
+                    .arg("30")
+                    .spawn()
+                    .unwrap(),
+                std::process::Command::new("true").spawn().unwrap(),
+            )
+        };
         exited.wait().unwrap();
 
         let now = OffsetDateTime::now_utc();

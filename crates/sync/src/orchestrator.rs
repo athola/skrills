@@ -2,12 +2,16 @@
 
 use crate::adapters::AgentAdapter;
 use crate::common::Command;
+use crate::conflict::Ledger;
+use crate::decision::{DecisionScope, ItemDecider, ItemKind};
+use crate::interactive::{changed_names, file_key, DecisionBook, Gate, Resolved};
 use crate::models::transform_model;
 use crate::report::{SkipReason, SyncReport, WriteReport};
 use crate::Result;
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// Parameters for a sync operation.
 ///
@@ -62,9 +66,11 @@ pub struct SyncParams {
     /// Sync plugin assets (scripts, binaries, libraries that skills/hooks depend on)
     #[serde(default = "default_true")]
     pub sync_plugin_assets: bool,
-    /// Reserved for a per-file preview-and-confirm mode that is not
-    /// implemented. [`SyncOrchestrator::sync`] refuses to run when it is set,
-    /// rather than writing without the confirmation it promises.
+    /// Ask before writing each new or changed item and write only the ones
+    /// accepted. Needs an [`ItemDecider`] on the orchestrator
+    /// ([`SyncOrchestrator::with_decider`]); without one, and not a dry run,
+    /// [`SyncOrchestrator::sync`] refuses rather than write unasked. A dry
+    /// run writes nothing, so it previews and never asks.
     #[serde(default)]
     pub interactive: bool,
     /// Exclude skills and assets from these plugins (e.g., ["phantom", "scry"]).
@@ -210,6 +216,17 @@ pub(crate) fn preview_skill_items(
     })
 }
 
+/// Whether the target copy `held` already carries `item`'s bytes and every
+/// one of its modules.
+pub(crate) fn is_unchanged(held: &Command, item: &Command) -> bool {
+    held.content == item.content
+        && item.modules.iter().all(|m| {
+            held.modules
+                .iter()
+                .any(|tm| tm.relative_path == m.relative_path && tm.content == m.content)
+        })
+}
+
 fn preview_items_keyed(
     items: &[Command],
     read_target: impl FnOnce() -> Result<Vec<Command>>,
@@ -222,14 +239,9 @@ fn preview_items_keyed(
     let by_key: HashMap<String, &Command> = target.iter().map(|c| (key(c), c)).collect();
     let mut report = WriteReport::default();
     for item in items {
-        let unchanged = by_key.get(&key(item)).is_some_and(|t| {
-            t.content == item.content
-                && item.modules.iter().all(|m| {
-                    t.modules
-                        .iter()
-                        .any(|tm| tm.relative_path == m.relative_path && tm.content == m.content)
-                })
-        });
+        let unchanged = by_key
+            .get(&key(item))
+            .is_some_and(|t| is_unchanged(t, item));
         if unchanged {
             report.skipped.push(SkipReason::Unchanged {
                 item: item.name.clone(),
@@ -338,6 +350,7 @@ fn run_phase(
         Some(
             crate::error::SyncError::TokenBudgetExceeded { .. }
                 | crate::error::SyncError::KillSwitchEngaged
+                | crate::error::SyncError::InteractiveAborted
         )
     ) {
         return Err(e);
@@ -371,7 +384,7 @@ fn without_excluded_plugins(
 /// `.`, spaces and `/` or kebab-case, so `my.cmd`, `my-cmd` and `mycmd` can all
 /// land in one file. Comparing these keys errs towards "already exists", which
 /// in skip-existing mode means keeping the target copy.
-fn existing_key(name: &str) -> String {
+pub(crate) fn existing_key(name: &str) -> String {
     let key: String = name
         .chars()
         .filter(|c| c.is_alphanumeric())
@@ -389,6 +402,10 @@ const SYNC_LOCK_FILE: &str = ".skrills-sync.lock";
 
 /// Waits for and takes the advisory lock on `root`'s [`SYNC_LOCK_FILE`]. The
 /// lock is released when the returned file is dropped.
+///
+/// Opens the file directly, not through the recording helpers, and the
+/// raw-mutation test allows it by name: the lock is not user content, and a
+/// rollback that removed it could pull it from under a running sync.
 fn lock_target(root: &std::path::Path) -> Result<std::fs::File> {
     std::fs::create_dir_all(root)
         .with_context(|| format!("Failed to create {}", root.display()))?;
@@ -411,6 +428,16 @@ pub struct SyncOrchestrator<S: AgentAdapter, T: AgentAdapter> {
     /// Where a `skrills cold-window` process in another process records an
     /// engaged kill switch; see [`crate::kill_switch_marker`].
     kill_switch_marker: Option<std::path::PathBuf>,
+    /// Where each sync's pre-write snapshot goes; `None` takes none. Library
+    /// callers start without one so embedding the orchestrator never writes
+    /// outside the target; the CLI and MCP entry points opt in.
+    snapshot_root: Option<std::path::PathBuf>,
+    /// Answers the per-item questions of an interactive sync.
+    decider: Option<Arc<dyn ItemDecider>>,
+    /// Where the per-target baselines and the resolution log live; `None`
+    /// detects no conflicts and records nothing. Library callers start
+    /// without one, for the reason `snapshot_root` does.
+    state_root: Option<std::path::PathBuf>,
 }
 
 impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
@@ -422,7 +449,32 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             source,
             target,
             kill_switch_marker: crate::kill_switch_marker::marker_path(),
+            snapshot_root: None,
+            decider: None,
+            state_root: None,
         }
+    }
+
+    /// Keeps the conflict baseline and resolution log under `root`. `None`
+    /// keeps none.
+    #[must_use]
+    pub fn with_state_root(mut self, root: Option<std::path::PathBuf>) -> Self {
+        self.state_root = root;
+        self
+    }
+
+    /// [`Self::with_state_root`] at the per-user `~/.skrills/sync-state`.
+    #[must_use]
+    pub fn with_default_sync_state(self) -> Self {
+        self.with_state_root(crate::conflict::default_root())
+    }
+
+    /// Lets `params.interactive` ask `decider` about each new or changed
+    /// item before anything is written.
+    #[must_use]
+    pub fn with_decider(mut self, decider: Arc<dyn ItemDecider>) -> Self {
+        self.decider = Some(decider);
+        self
     }
 
     /// Consults the kill-switch marker at `path` instead of the per-user one;
@@ -433,18 +485,39 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         self
     }
 
+    /// Snapshots what each non-dry-run sync overwrites or deletes under
+    /// `root`, for `skrills sync-rollback`; `None` takes no snapshots.
+    #[must_use]
+    pub fn with_snapshot_root(mut self, root: Option<std::path::PathBuf>) -> Self {
+        self.snapshot_root = root;
+        self
+    }
+
+    /// [`Self::with_snapshot_root`] at [`crate::snapshot::default_root`].
+    #[must_use]
+    pub fn with_default_snapshots(self) -> Self {
+        self.with_snapshot_root(crate::snapshot::default_root())
+    }
+
     /// Performs the sync operation.
     ///
     /// Logs [`crate::adapters::traits::FieldSupport`] mismatches for observability but always delegates
     /// to the target adapter, adapters may implement creative mappings for
     /// fields they don't "natively" support (e.g., Copilot maps commands to
     /// prompts, Codex converts agents to skills).
+    ///
+    /// With `params.interactive`, every question is asked before the first
+    /// write, so cancelling writes nothing.
     pub fn sync(&self, params: &SyncParams) -> Result<SyncReport> {
-        if params.interactive {
-            // Nothing implements the per-file preview and confirmation this
-            // flag promises; running anyway would write without asking.
-            bail!("interactive sync is not implemented; preview with dry_run instead");
-        }
+        // A dry run writes nothing, so there is nothing to confirm.
+        let decider = if params.interactive && !params.dry_run {
+            let Some(decider) = self.decider.as_deref() else {
+                bail!("interactive sync needs an item decider; nothing was written");
+            };
+            Some(decider)
+        } else {
+            None
+        };
 
         // A `skrills cold-window` in another process may have engaged its
         // kill switch (FR12). A dry run writes nothing, so it still runs.
@@ -461,6 +534,33 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             Some(lock_target(&self.target.config_root())?)
         };
 
+        // After the checks above so a refused sync leaves no snapshot, and
+        // after the lock so the prior state is read once no other sync can
+        // change it. A caller that already holds a session, such as
+        // `sync-all` covering every target, gets one snapshot for the lot.
+        let _snapshot = match (&self.snapshot_root, params.dry_run) {
+            (Some(root), false) => crate::snapshot::begin_unless_active(root),
+            _ => None,
+        };
+
+        // Read once, before any phase writes, so every pass compares against
+        // the state the last sync left.
+        let ledger = Ledger::load(
+            self.state_root.as_deref(),
+            crate::conflict::target_key(self.target.name(), &self.target.config_root()),
+        );
+        let Some(decider) = decider else {
+            return self.run_phases(params, &Gate::off(), &ledger);
+        };
+        let book = DecisionBook::default();
+        drop(self.run_phases(params, &Gate::collect(decider, &book), &ledger)?);
+        self.run_phases(params, &Gate::apply(&book), &ledger)
+    }
+
+    /// Runs every phase once. `gate` decides what each writer is given: all of
+    /// it when off, nothing (the questions are only asked) when collecting,
+    /// the accepted items when applying.
+    fn run_phases(&self, params: &SyncParams, gate: &Gate, ledger: &Ledger) -> Result<SyncReport> {
         let mut report = SyncReport::new();
         let target_support = self.target.write_support();
         let source_support = self.source.read_support();
@@ -499,20 +599,35 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                     |c| c.name.clone(),
                     |c| c.source_path.display().to_string(),
                 );
+                // Only the writer's own directory: plugin-cache and
+                // marketplace commands are never overwritten, so they
+                // cannot make a command "already exist".
+                let read_existing = || -> Result<Vec<Command>> {
+                    let mut existing = self.target.read_commands(false)?;
+                    existing.retain(|c| c.plugin_origin.is_none());
+                    Ok(existing)
+                };
+                // A skipped existing command is never overwritten, so it
+                // cannot be a conflict either.
+                if params.dry_run && (params.force || !params.skip_existing_commands) {
+                    self.scan_files(ledger, ItemKind::Command, &commands, read_existing);
+                }
                 *slot = sync_items(
                     commands,
                     params.force,
                     params.dry_run,
                     params.skip_existing_commands,
-                    // Only the writer's own directory: plugin-cache and
-                    // marketplace commands are never overwritten, so they
-                    // cannot make a command "already exist".
-                    || {
-                        let mut existing = self.target.read_commands(false)?;
-                        existing.retain(|c| c.plugin_origin.is_none());
-                        Ok(existing)
+                    read_existing,
+                    |items| {
+                        self.write_files_gated(
+                            gate,
+                            ledger,
+                            ItemKind::Command,
+                            items.to_vec(),
+                            read_existing,
+                            |kept| self.target.write_commands(kept),
+                        )
                     },
-                    |items| self.target.write_commands(items),
                 )?;
                 slot.duplicates = cmd_dups;
                 Ok(())
@@ -568,14 +683,29 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                     |s| s.source_path.display().to_string(),
                 );
                 if !params.dry_run {
-                    *slot = self.target.write_skills(&skills)?;
+                    *slot = self.write_files_gated(
+                        gate,
+                        ledger,
+                        ItemKind::Skill,
+                        skills,
+                        || self.target.read_skills(),
+                        |kept| self.target.write_skills(kept),
+                    )?;
                 } else {
+                    self.scan_files(ledger, ItemKind::Skill, &skills, || {
+                        self.target.read_skills()
+                    });
                     *slot = self.target.preview_skills(&skills)?;
                 }
-                if !params.keep_versions && !in_mirror_names.is_empty() {
-                    let removed = self
-                        .target
-                        .remove_flat_skill_copies(&in_mirror_names, params.dry_run)?;
+                // The flat copies go only because the plugin mirror carries
+                // those skills; a rejected mirror leaves them as the only copy.
+                let mirror_rejected =
+                    gate.rejected(ItemKind::PluginAssets, ItemKind::PluginAssets.plural());
+                if !params.keep_versions && !in_mirror_names.is_empty() && !mirror_rejected {
+                    let removed = self.target.remove_flat_skill_copies(
+                        &in_mirror_names,
+                        params.dry_run || gate.is_collecting(),
+                    )?;
                     slot.warnings.extend(removed.warnings);
                 }
                 slot.duplicates = skill_dups;
@@ -604,10 +734,13 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 |slot| {
                     let servers = self.source.read_mcp_servers()?;
                     if !params.dry_run {
-                        *slot = self.target.write_mcp_servers(&servers)?;
+                        *slot = self.write_servers_gated(gate, ledger, servers)?;
                     } else {
                         // A target the real run would refuse fails the preview too.
                         let target = self.target.read_mcp_servers()?;
+                        for (name, server) in &servers {
+                            ledger.server_conflict(name, server, target.get(name));
+                        }
                         *slot = preview_servers(&servers, &target);
                     }
                     Ok(())
@@ -656,7 +789,22 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                     }
 
                     if !params.dry_run {
-                        *slot = self.target.write_preferences(&prefs)?;
+                        let accepted = match prefs.model.as_deref() {
+                            Some(model) if !gate.is_off() => {
+                                let current = self.target.read_preferences()?.model;
+                                gate.accept_model(current.as_deref(), model)?
+                            }
+                            _ => true,
+                        };
+                        if gate.is_collecting() {
+                            // Asked above; the applying pass writes.
+                        } else if accepted {
+                            *slot = self.target.write_preferences(&prefs)?;
+                        } else {
+                            slot.skipped.push(SkipReason::Declined {
+                                item: "model".to_string(),
+                            });
+                        }
                     } else if let Some(model) = &prefs.model {
                         let current = self.target.read_preferences().ok().and_then(|p| p.model);
                         if current.as_ref() == Some(model) {
@@ -686,8 +834,18 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             run_phase("agents", &mut report.agents, &mut failed, |slot| {
                 let agents = without_excluded_plugins(self.source.read_agents()?, params);
                 if !params.dry_run {
-                    *slot = self.target.write_agents(&agents)?;
+                    *slot = self.write_files_gated(
+                        gate,
+                        ledger,
+                        ItemKind::Agent,
+                        agents,
+                        || self.target.read_agents(),
+                        |kept| self.target.write_agents(kept),
+                    )?;
                 } else {
+                    self.scan_files(ledger, ItemKind::Agent, &agents, || {
+                        self.target.read_agents()
+                    });
                     *slot = preview_items(&agents, || self.target.read_agents());
                 }
                 Ok(())
@@ -718,8 +876,16 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             run_phase("hooks", &mut report.hooks, &mut failed, |slot| {
                 let hooks = without_excluded_plugins(self.source.read_hooks()?, params);
                 if !params.dry_run {
-                    *slot = self.target.write_hooks(&hooks)?;
+                    *slot = self.write_files_gated(
+                        gate,
+                        ledger,
+                        ItemKind::Hook,
+                        hooks,
+                        || self.target.read_hooks(),
+                        |kept| self.target.write_hooks(kept),
+                    )?;
                 } else {
+                    self.scan_files(ledger, ItemKind::Hook, &hooks, || self.target.read_hooks());
                     *slot = preview_items(&hooks, || self.target.read_hooks());
                 }
                 Ok(())
@@ -742,13 +908,31 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 &mut failed,
                 |slot| {
                     let instructions = self.source.read_instructions()?;
+                    let read_existing = || self.target.read_instructions();
+                    if params.dry_run && (params.force || !params.skip_existing_instructions) {
+                        self.scan_files(
+                            ledger,
+                            ItemKind::Instruction,
+                            &instructions,
+                            read_existing,
+                        );
+                    }
                     *slot = sync_items(
                         instructions,
                         params.force,
                         params.dry_run,
                         params.skip_existing_instructions,
-                        || self.target.read_instructions(),
-                        |items| self.target.write_instructions(items),
+                        read_existing,
+                        |items| {
+                            self.write_files_gated(
+                                gate,
+                                ledger,
+                                ItemKind::Instruction,
+                                items.to_vec(),
+                                read_existing,
+                                |kept| self.target.write_instructions(kept),
+                            )
+                        },
                     )?;
                     Ok(())
                 },
@@ -809,7 +993,30 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                             let options = crate::adapters::MirrorOptions {
                                 keep_versions: params.keep_versions,
                             };
-                            *slot = self.target.write_plugin_assets_with(&assets, &options)?;
+                            // The mirror prunes as well as writes and has no
+                            // per-file round trip, so it is one question.
+                            let accepted = if gate.is_off() {
+                                true
+                            } else {
+                                let pending = self.target.preview_plugin_assets(&assets)?.written;
+                                pending == 0
+                                    || gate.accept_category(
+                                        ItemKind::PluginAssets,
+                                        &[format!(
+                                            "{pending} plugin asset file(s) to write or prune"
+                                        )],
+                                        0,
+                                    )?
+                            };
+                            if gate.is_collecting() {
+                                // Asked above; the applying pass writes.
+                            } else if accepted {
+                                *slot = self.target.write_plugin_assets_with(&assets, &options)?;
+                            } else {
+                                slot.skipped.push(SkipReason::Declined {
+                                    item: ItemKind::PluginAssets.plural().to_string(),
+                                });
+                            }
                         } else {
                             // The writer also deletes, so the preview has to come from
                             // the adapter rather than from the batch length alone.
@@ -825,9 +1032,285 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         }
 
         report.success = !failed;
+        // A plain run overwrites what the baseline says the target changed;
+        // an interactive one asked, so the person already knows.
+        if gate.is_off() {
+            self.warn_of_conflicts(params, ledger, &mut report);
+        }
+        if !params.dry_run && !gate.is_collecting() && !failed {
+            let saved = ledger.persist(std::time::SystemTime::now(), |kind, name| {
+                gate.answered(kind, name)
+            });
+            if let Err(e) = saved {
+                tracing::warn!(error = %format!("{e:#}"), "Could not save the conflict baseline");
+                // The report has no list of its own, so this rides on the
+                // first phase.
+                report.commands.warnings.push(format!(
+                    "The sync worked, but its conflict baseline could not be saved: {e:#}"
+                ));
+            }
+        }
         report.summary = report.format_summary(self.source.name(), self.target.name());
 
         Ok(report)
+    }
+
+    /// Adds, per kind, one warning naming the items both sides changed since
+    /// the last sync. The source wins in a plain run, so the target's edits
+    /// are gone unless a snapshot can bring them back.
+    fn warn_of_conflicts(&self, params: &SyncParams, ledger: &Ledger, report: &mut SyncReport) {
+        for kind in [
+            ItemKind::Command,
+            ItemKind::Skill,
+            ItemKind::Agent,
+            ItemKind::Hook,
+            ItemKind::Instruction,
+            ItemKind::McpServer,
+        ] {
+            let names = ledger.found_names(kind);
+            if names.is_empty() {
+                continue;
+            }
+            let label = if names.len() == 1 {
+                kind.to_string()
+            } else {
+                format!("{} {}", names.len(), kind.plural())
+            };
+            let outcome = match (params.dry_run, crate::write_session::is_active()) {
+                (true, _) => "a sync would overwrite the target's edits",
+                (false, true) => {
+                    "the source overwrote the target's edits; `skrills sync-rollback` undoes it"
+                }
+                (false, false) => "the source overwrote the target's edits",
+            };
+            let slot = match kind {
+                ItemKind::Command => &mut report.commands,
+                ItemKind::Skill => &mut report.skills,
+                ItemKind::Agent => &mut report.agents,
+                ItemKind::Hook => &mut report.hooks,
+                ItemKind::Instruction => &mut report.instructions,
+                ItemKind::McpServer => &mut report.mcp_servers,
+                ItemKind::Preferences => &mut report.preferences,
+                ItemKind::PluginAssets => &mut report.plugin_assets,
+            };
+            slot.warnings.push(format!(
+                "{label} changed on both the source and the target since the last sync, so {outcome}: {}",
+                names.join(", ")
+            ));
+        }
+    }
+
+    /// Finds the items the source and the target both changed, for a run that
+    /// asks nobody (a plain sync or a dry run). A target that cannot be read
+    /// reports none: the write reports the real failure.
+    fn scan_files(
+        &self,
+        ledger: &Ledger,
+        kind: ItemKind,
+        items: &[Command],
+        read_target: impl FnOnce() -> Result<Vec<Command>>,
+    ) {
+        if !ledger.has_baseline() {
+            return;
+        }
+        let held = match read_target() {
+            Ok(held) => held,
+            Err(e) => {
+                tracing::debug!(error = %format!("{e:#}"), "Could not read the target to look for conflicts");
+                return;
+            }
+        };
+        let by_key: HashMap<String, &Command> = held
+            .iter()
+            .filter(|t| t.plugin_origin.is_none())
+            .map(|t| (file_key(kind, t), t))
+            .collect();
+        for item in items {
+            ledger.file_conflict(kind, item, by_key.get(&file_key(kind, item)).copied());
+        }
+    }
+
+    /// Notes what each item of `items` hashed to on both sides after the
+    /// write, so the next sync can tell what changed. `skip` leaves out items
+    /// whose baseline should not move.
+    fn record_files(
+        &self,
+        ledger: &Ledger,
+        kind: ItemKind,
+        items: &[Command],
+        read_target: impl FnOnce() -> Result<Vec<Command>>,
+        skip: impl Fn(&Command) -> bool,
+    ) {
+        if !ledger.is_enabled() {
+            return;
+        }
+        let held = match read_target() {
+            Ok(held) => held,
+            Err(e) => {
+                tracing::debug!(error = %format!("{e:#}"), "Could not read the target to record a baseline");
+                return;
+            }
+        };
+        let by_key: HashMap<String, &Command> = held
+            .iter()
+            .filter(|t| t.plugin_origin.is_none())
+            .map(|t| (file_key(kind, t), t))
+            .collect();
+        for item in items.iter().filter(|item| !skip(item)) {
+            if let Some(after) = by_key.get(&file_key(kind, item)) {
+                ledger.record_file(kind, item, after);
+            }
+        }
+    }
+
+    /// Hands `write` what `gate` allows: everything when off, nothing when
+    /// collecting (the questions are asked and the target untouched), and the
+    /// accepted items when applying.
+    ///
+    /// A category the target's writer does not give back byte for byte
+    /// ([`AgentAdapter::decision_scope`]) is one question, and a rejection
+    /// skips `write` altogether so none of its sweeps can run.
+    fn write_files_gated(
+        &self,
+        gate: &Gate,
+        ledger: &Ledger,
+        kind: ItemKind,
+        items: Vec<Command>,
+        read_target: impl Fn() -> Result<Vec<Command>>,
+        write: impl FnOnce(&[Command]) -> Result<WriteReport>,
+    ) -> Result<WriteReport> {
+        if gate.is_off() {
+            self.scan_files(ledger, kind, &items, &read_target);
+            let report = write(&items)?;
+            self.record_files(ledger, kind, &items, &read_target, |_| false);
+            return Ok(report);
+        }
+        // An unreadable target cannot be classified, so it is not written.
+        let mut target = read_target()?;
+        target.retain(|t| t.plugin_origin.is_none());
+        let resolved = match self.target.decision_scope(kind) {
+            DecisionScope::PerItem => {
+                gate.resolve_files(kind, items.clone(), &target, |c| file_key(kind, c), ledger)?
+            }
+            DecisionScope::WholeCategory => {
+                let pending = changed_names(&items, &target, |c| file_key(kind, c));
+                // The target's own preview is the arbiter where it differs
+                // from a byte compare (Codex rewrites a skill's `name`).
+                let anything = match kind {
+                    ItemKind::Skill => self.target.preview_skills(&items)?.written > 0,
+                    _ => !pending.is_empty(),
+                };
+                let conflicting = items
+                    .iter()
+                    .filter(|item| {
+                        let by_key = file_key(kind, item);
+                        let held = target.iter().find(|t| file_key(kind, t) == by_key);
+                        ledger.file_conflict(kind, item, held)
+                    })
+                    .count();
+                if anything && !gate.accept_category(kind, &pending, conflicting)? {
+                    Resolved {
+                        items: Vec::new(),
+                        declined: vec![kind.plural().to_string()],
+                        skip_write: true,
+                    }
+                } else {
+                    Resolved {
+                        items: items.clone(),
+                        declined: Vec::new(),
+                        skip_write: false,
+                    }
+                }
+            }
+        };
+        if gate.is_collecting() {
+            return Ok(WriteReport::default());
+        }
+        let report = if resolved.skip_write {
+            WriteReport::default()
+        } else {
+            write(&resolved.items)?
+        };
+        // A rejected change leaves its baseline where it was, except a
+        // rejected conflict: that was resolved, and asking again every sync
+        // would be noise.
+        let declined = |item: &Command| {
+            resolved
+                .declined
+                .iter()
+                .any(|name| name == &item.name || name == kind.plural())
+                && !ledger.is_found(kind, &item.name)
+        };
+        self.record_files(ledger, kind, &items, &read_target, declined);
+        Ok(gate.annotate(report, &resolved.declined))
+    }
+
+    /// [`Self::write_files_gated`] for MCP servers, which are keyed by name
+    /// and merged into the target's config.
+    fn write_servers_gated(
+        &self,
+        gate: &Gate,
+        ledger: &Ledger,
+        servers: HashMap<String, crate::common::McpServer>,
+    ) -> Result<WriteReport> {
+        if gate.is_off() {
+            if ledger.has_baseline() {
+                match self.target.read_mcp_servers() {
+                    Ok(held) => {
+                        for (name, server) in &servers {
+                            ledger.server_conflict(name, server, held.get(name));
+                        }
+                    }
+                    Err(e) => tracing::debug!(
+                        error = %format!("{e:#}"),
+                        "Could not read the target to look for conflicts"
+                    ),
+                }
+            }
+            let report = self.target.write_mcp_servers(&servers)?;
+            self.record_servers(ledger, &servers, &[]);
+            return Ok(report);
+        }
+        let held = self.target.read_mcp_servers()?;
+        let scope = self.target.decision_scope(ItemKind::McpServer);
+        let source = servers.clone();
+        let (kept, declined) = gate.resolve_servers(scope, servers, &held, ledger)?;
+        if gate.is_collecting() {
+            return Ok(WriteReport::default());
+        }
+        let report = if kept.is_empty() && !declined.is_empty() {
+            WriteReport::default()
+        } else {
+            self.target.write_mcp_servers(&kept)?
+        };
+        self.record_servers(ledger, &source, &declined);
+        Ok(gate.annotate(report, &declined))
+    }
+
+    /// [`Self::record_files`] for MCP servers; `declined` names keep their
+    /// baseline unless they were a conflict.
+    fn record_servers(
+        &self,
+        ledger: &Ledger,
+        servers: &HashMap<String, crate::common::McpServer>,
+        declined: &[String],
+    ) {
+        if !ledger.is_enabled() {
+            return;
+        }
+        let held = match self.target.read_mcp_servers() {
+            Ok(held) => held,
+            Err(e) => {
+                tracing::debug!(error = %format!("{e:#}"), "Could not read the target to record a baseline");
+                return;
+            }
+        };
+        for (name, server) in servers {
+            let moved = !declined.contains(name) || ledger.is_found(ItemKind::McpServer, name);
+            if let (true, Some(after)) = (moved, held.get(name)) {
+                ledger.record_server(name, server, after);
+            }
+        }
     }
 }
 
@@ -840,9 +1323,72 @@ pub fn sync_between(
     to: crate::Platform,
     params: &SyncParams,
 ) -> Result<SyncReport> {
-    let source = create_source_adapter(from, params)?;
-    let target = create_adapter(to)?;
-    SyncOrchestrator::new(source, target).sync(params)
+    sync_between_endpoints(&from.into(), &to.into(), params)
+}
+
+/// [`sync_between`] that answers `params.interactive` with `decider`.
+pub fn sync_between_with_decider(
+    from: crate::Platform,
+    to: crate::Platform,
+    params: &SyncParams,
+    decider: Arc<dyn ItemDecider>,
+) -> Result<SyncReport> {
+    sync_between_endpoints_with_decider(&from.into(), &to.into(), params, decider)
+}
+
+/// [`sync_between`] for endpoints, which may be configured adapters.
+pub fn sync_between_endpoints(
+    from: &crate::SyncEndpoint,
+    to: &crate::SyncEndpoint,
+    params: &SyncParams,
+) -> Result<SyncReport> {
+    let source = create_endpoint_source_adapter(from, params)?;
+    let target = create_endpoint_adapter(to)?;
+    SyncOrchestrator::new(source, target)
+        .with_default_snapshots()
+        .with_default_sync_state()
+        .sync(params)
+}
+
+/// [`sync_between_endpoints`] that answers `params.interactive` with `decider`.
+pub fn sync_between_endpoints_with_decider(
+    from: &crate::SyncEndpoint,
+    to: &crate::SyncEndpoint,
+    params: &SyncParams,
+    decider: Arc<dyn ItemDecider>,
+) -> Result<SyncReport> {
+    let source = create_endpoint_source_adapter(from, params)?;
+    let target = create_endpoint_adapter(to)?;
+    SyncOrchestrator::new(source, target)
+        .with_default_snapshots()
+        .with_default_sync_state()
+        .with_decider(decider)
+        .sync(params)
+}
+
+/// [`create_adapter`] for an endpoint. A custom name that is not configured,
+/// or whose file is invalid, is an error that says what exists or what is
+/// wrong, before anything is read or written.
+pub fn create_endpoint_adapter(endpoint: &crate::SyncEndpoint) -> Result<Box<dyn AgentAdapter>> {
+    match endpoint {
+        crate::SyncEndpoint::Builtin(platform) => create_adapter(*platform),
+        crate::SyncEndpoint::Custom(name) => {
+            let home = crate::adapter_config::user_home()?;
+            let config = crate::adapter_config::load_adapter(name, &home)?;
+            Ok(Box::new(crate::adapters::ConfigAdapter::new(config)))
+        }
+    }
+}
+
+/// [`create_source_adapter`] for an endpoint.
+pub fn create_endpoint_source_adapter(
+    endpoint: &crate::SyncEndpoint,
+    params: &SyncParams,
+) -> Result<Box<dyn AgentAdapter>> {
+    match endpoint {
+        crate::SyncEndpoint::Builtin(platform) => create_source_adapter(*platform, params),
+        crate::SyncEndpoint::Custom(_) => create_endpoint_adapter(endpoint),
+    }
 }
 
 /// [`create_adapter`] for the side being read: a Claude source also reads
@@ -890,7 +1436,9 @@ pub fn sync_claude_skills_to_codex(
         include_marketplace,
         ..Default::default()
     };
-    SyncOrchestrator::new(source, target).sync(&params)
+    SyncOrchestrator::new(source, target)
+        .with_snapshot_root(Some(home.join(".skrills").join("snapshots")))
+        .sync(&params)
 }
 
 /// Creates an adapter for the given platform name.
@@ -1549,26 +2097,6 @@ mod tests {
         assert!(report.success);
     }
 
-    /// `interactive` promised a per-file confirmation that does not exist, so
-    /// a caller asking for it got an unconfirmed write.
-    #[test]
-    fn interactive_mode_is_refused_before_anything_is_written() {
-        let src_dir = tempdir().unwrap();
-        let tgt_dir = tempdir().unwrap();
-        fs::create_dir_all(src_dir.path().join("commands")).unwrap();
-        fs::write(src_dir.path().join("commands/hello.md"), "# Hello").unwrap();
-
-        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
-        let target = ClaudeAdapter::with_root(tgt_dir.path().to_path_buf());
-        let result = SyncOrchestrator::new(source, target).sync(&SyncParams {
-            interactive: true,
-            ..Default::default()
-        });
-
-        assert!(result.is_err());
-        assert!(!tgt_dir.path().join("commands/hello.md").exists());
-    }
-
     /// The writer stores `my.cmd` as `mycmd.md`; skip-existing compared the
     /// raw names, missed the match and overwrote the target's file.
     #[test]
@@ -2219,6 +2747,226 @@ mod tests {
         );
     }
 
+    fn tree_of(root: &std::path::Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+        walkdir::WalkDir::new(root)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().is_file())
+            .filter(|entry| entry.file_name() != SYNC_LOCK_FILE)
+            .map(|entry| {
+                let relative = entry.path().strip_prefix(root).unwrap().to_path_buf();
+                (relative, fs::read(entry.path()).unwrap())
+            })
+            .collect()
+    }
+
+    fn deciding(
+        answer: impl Fn(&crate::decision::ItemChange) -> crate::decision::Decision
+            + Send
+            + Sync
+            + 'static,
+    ) -> Arc<dyn ItemDecider> {
+        Arc::new(move |change: &crate::decision::ItemChange| Ok(answer(change)))
+    }
+
+    /// Syncs the seeded plugin root into a Cursor target that still holds a
+    /// legacy flat copy of the plugin skill, interactively.
+    fn interactive_mirror_sync(
+        answer: impl Fn(&crate::decision::ItemChange) -> crate::decision::Decision
+            + Send
+            + Sync
+            + 'static,
+    ) -> (tempfile::TempDir, SyncReport) {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        seed_claude_root_with_plugin_and_local_skill(src_dir.path());
+        let flat = tgt_dir.path().join("skills/deep-work");
+        fs::create_dir_all(&flat).unwrap();
+        fs::write(flat.join("SKILL.md"), "Old description\n# Deep work\n").unwrap();
+
+        let report = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            crate::adapters::CursorAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .with_kill_switch_marker(None)
+        .with_decider(deciding(answer))
+        .sync(&SyncParams {
+            interactive: true,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_agents: false,
+            sync_hooks: false,
+            sync_instructions: false,
+            full_plugin_mirror: true,
+            ..Default::default()
+        })
+        .unwrap();
+        (tgt_dir, report)
+    }
+
+    #[test]
+    fn rejecting_everything_keeps_the_plugin_mirror_and_the_flat_copy_it_would_replace() {
+        let before = {
+            let probe = tempdir().unwrap();
+            let flat = probe.path().join("skills/deep-work");
+            fs::create_dir_all(&flat).unwrap();
+            fs::write(flat.join("SKILL.md"), "Old description\n# Deep work\n").unwrap();
+            tree_of(probe.path())
+        };
+
+        let (tgt_dir, report) = interactive_mirror_sync(|_| crate::decision::Decision::Reject);
+
+        assert_eq!(tree_of(tgt_dir.path()), before);
+        assert_eq!(report.plugin_assets.written, 0);
+        assert!(report
+            .plugin_assets
+            .skipped
+            .iter()
+            .any(|r| matches!(r, SkipReason::Declined { item } if item == "plugin assets")));
+    }
+
+    #[test]
+    fn rejecting_only_the_mirror_keeps_the_flat_copy_but_writes_what_was_accepted() {
+        let (tgt_dir, _) = interactive_mirror_sync(|change| {
+            if change.kind == ItemKind::PluginAssets {
+                crate::decision::Decision::Reject
+            } else {
+                crate::decision::Decision::Accept
+            }
+        });
+
+        assert!(tgt_dir.path().join("skills/deep-work/SKILL.md").exists());
+        assert!(tgt_dir.path().join("skills/local-only/SKILL.md").exists());
+        assert!(!tgt_dir.path().join("plugins").exists());
+    }
+
+    #[test]
+    fn accepting_the_mirror_removes_the_flat_copy_as_a_default_sync_does() {
+        let (tgt_dir, report) = interactive_mirror_sync(|_| crate::decision::Decision::Accept);
+
+        assert!(!tgt_dir.path().join("skills/deep-work").exists());
+        assert!(tgt_dir
+            .path()
+            .join("plugins/local/my-plugin/skills/deep-work/SKILL.md")
+            .exists());
+        assert!(report.success, "{report:?}");
+    }
+
+    /// Hooks are rewritten into the target's JSON, so they are one question,
+    /// and a rejection must not reach the writer at all.
+    #[test]
+    fn rejecting_the_hooks_never_calls_the_hook_writer() {
+        use crate::adapters::traits::{FieldSupport, MockAgentAdapter};
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("hooks")).unwrap();
+        fs::write(src_dir.path().join("hooks/PreToolUse.md"), "echo hi").unwrap();
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = asked.clone();
+
+        let mut target = MockAgentAdapter::new();
+        target.expect_name().return_const("mock".to_string());
+        let root = tgt_dir.path().to_path_buf();
+        target.expect_config_root().returning(move || root.clone());
+        target.expect_write_support().returning(|| FieldSupport {
+            hooks: true,
+            ..FieldSupport::default()
+        });
+        target.expect_read_hooks().returning(|| Ok(Vec::new()));
+        target
+            .expect_decision_scope()
+            .returning(|_| DecisionScope::WholeCategory);
+        target.expect_write_hooks().times(0);
+
+        let report = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            target,
+        )
+        .with_kill_switch_marker(None)
+        .with_decider(Arc::new(move |change: &crate::decision::ItemChange| {
+            record.lock().unwrap().push(change.clone());
+            Ok(crate::decision::Decision::Reject)
+        }))
+        .sync(&SyncParams {
+            interactive: true,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            sync_agents: false,
+            sync_hooks: true,
+            sync_instructions: false,
+            sync_plugin_assets: false,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert_eq!(asked[0].kind, ItemKind::Hook);
+        assert_eq!(asked[0].diff, "PreToolUse");
+        assert_eq!(report.hooks.written, 0);
+        assert!(matches!(
+            report.hooks.skipped.as_slice(),
+            [SkipReason::Declined { item }] if item == "hooks"
+        ));
+    }
+
+    #[test]
+    fn accepting_the_hooks_calls_the_hook_writer_once_with_all_of_them() {
+        use crate::adapters::traits::{FieldSupport, MockAgentAdapter};
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("hooks")).unwrap();
+        fs::write(src_dir.path().join("hooks/PreToolUse.md"), "echo hi").unwrap();
+
+        let mut target = MockAgentAdapter::new();
+        target.expect_name().return_const("mock".to_string());
+        let root = tgt_dir.path().to_path_buf();
+        target.expect_config_root().returning(move || root.clone());
+        target.expect_write_support().returning(|| FieldSupport {
+            hooks: true,
+            ..FieldSupport::default()
+        });
+        target.expect_read_hooks().returning(|| Ok(Vec::new()));
+        target
+            .expect_decision_scope()
+            .returning(|_| DecisionScope::WholeCategory);
+        target
+            .expect_write_hooks()
+            .times(1)
+            .withf(|hooks| hooks.len() == 1 && hooks[0].name == "PreToolUse")
+            .returning(|_| {
+                Ok(WriteReport {
+                    written: 1,
+                    ..WriteReport::default()
+                })
+            });
+
+        let report = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            target,
+        )
+        .with_kill_switch_marker(None)
+        .with_decider(deciding(|_| crate::decision::Decision::Accept))
+        .sync(&SyncParams {
+            interactive: true,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            sync_agents: false,
+            sync_hooks: true,
+            sync_instructions: false,
+            sync_plugin_assets: false,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(report.hooks.written, 1);
+    }
+
     #[test]
     fn create_adapter_all_platforms() {
         // These only verify the adapter constructs; the actual root may not exist
@@ -2226,5 +2974,248 @@ mod tests {
         for platform in crate::Platform::ALL {
             assert_eq!(create_adapter(platform).unwrap().name(), platform.as_str());
         }
+    }
+
+    /// A sync with a snapshot root: the source command and the target prompt
+    /// it overwrites, plus a second command the target has never had.
+    fn snapshotted_sync(
+        root: &std::path::Path,
+        dry_run: bool,
+    ) -> (tempfile::TempDir, std::path::PathBuf) {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("commands")).unwrap();
+        fs::write(src_dir.path().join("commands/hello.md"), "# New Hello").unwrap();
+        fs::write(src_dir.path().join("commands/fresh.md"), "# Fresh").unwrap();
+        fs::create_dir_all(tgt_dir.path().join("prompts")).unwrap();
+        fs::write(tgt_dir.path().join("prompts/hello.md"), "# Old Hello").unwrap();
+
+        SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .with_snapshot_root(Some(root.to_path_buf()))
+        .sync(&SyncParams {
+            dry_run,
+            sync_commands: true,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            ..Default::default()
+        })
+        .unwrap()
+        .success
+        .then_some(())
+        .expect("sync succeeds");
+        let target = tgt_dir.path().to_path_buf();
+        (tgt_dir, target)
+    }
+
+    #[test]
+    fn a_sync_over_an_existing_file_snapshots_its_old_bytes() {
+        let snaps = tempdir().unwrap();
+        let (_tgt, target) = snapshotted_sync(snaps.path(), false);
+
+        assert_eq!(
+            fs::read_to_string(target.join("prompts/hello.md")).unwrap(),
+            "# New Hello"
+        );
+        let taken = crate::snapshot::list(snaps.path()).unwrap();
+        assert_eq!(taken.len(), 1);
+        let blob = snaps
+            .path()
+            .join(&taken[0].name)
+            .join("blobs")
+            .join(crate::adapters::utils::hash_content(b"# Old Hello"));
+        assert_eq!(fs::read(blob).unwrap(), b"# Old Hello");
+    }
+
+    #[test]
+    fn rollback_undoes_a_sync_by_restoring_old_bytes_and_deleting_new_files() {
+        let snaps = tempdir().unwrap();
+        let (_tgt, target) = snapshotted_sync(snaps.path(), false);
+        assert!(target.join("prompts/fresh.md").exists());
+
+        crate::snapshot::rollback(snaps.path(), None).unwrap();
+        assert_eq!(
+            fs::read_to_string(target.join("prompts/hello.md")).unwrap(),
+            "# Old Hello"
+        );
+        assert!(!target.join("prompts/fresh.md").exists());
+    }
+
+    #[test]
+    fn a_dry_run_takes_no_snapshot() {
+        let snaps = tempdir().unwrap();
+        let root = snaps.path().join("snapshots");
+        let (_tgt, target) = snapshotted_sync(&root, true);
+
+        assert!(!root.exists());
+        assert_eq!(
+            fs::read_to_string(target.join("prompts/hello.md")).unwrap(),
+            "# Old Hello"
+        );
+    }
+
+    #[test]
+    fn a_sync_refused_before_it_starts_takes_no_snapshot() {
+        let snaps = tempdir().unwrap();
+        let root = snaps.path().join("snapshots");
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        let outcome = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .with_snapshot_root(Some(root.clone()))
+        .sync(&SyncParams {
+            interactive: true,
+            ..Default::default()
+        });
+
+        assert!(outcome.is_err());
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn a_sync_that_changes_nothing_leaves_no_snapshot() {
+        let snaps = tempdir().unwrap();
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        let sync_once = || {
+            SyncOrchestrator::new(
+                ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+                CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+            )
+            .with_snapshot_root(Some(snaps.path().to_path_buf()))
+            .sync(&SyncParams {
+                sync_mcp_servers: false,
+                sync_preferences: false,
+                ..Default::default()
+            })
+            .unwrap()
+            .success
+            .then_some(())
+            .expect("sync succeeds");
+        };
+        // The first sync creates the target's folders, which rollback must
+        // be able to remove; the second finds them and changes nothing.
+        sync_once();
+        let first = crate::snapshot::list(snaps.path()).unwrap();
+        assert_eq!(first.len(), 1);
+        sync_once();
+
+        assert_eq!(crate::snapshot::list(snaps.path()).unwrap(), first);
+    }
+
+    #[test]
+    fn a_sync_without_a_snapshot_root_records_nothing_and_still_writes() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("commands")).unwrap();
+        fs::write(src_dir.path().join("commands/hello.md"), "# Hello").unwrap();
+        let orchestrator = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        );
+        assert_eq!(orchestrator.snapshot_root, None);
+        orchestrator
+            .sync(&SyncParams {
+                sync_mcp_servers: false,
+                sync_preferences: false,
+                sync_skills: false,
+                ..Default::default()
+            })
+            .unwrap()
+            .success
+            .then_some(())
+            .expect("sync succeeds");
+        assert!(tgt_dir.path().join("prompts/hello.md").exists());
+    }
+
+    #[test]
+    fn a_sync_inside_a_running_session_joins_it_instead_of_starting_another() {
+        let snaps = tempdir().unwrap();
+        let outer_root = snaps.path().join("outer");
+        let inner_root = snaps.path().join("inner");
+        let outer = crate::snapshot::begin(&outer_root).unwrap();
+        let (_tgt, _target) = snapshotted_sync(&inner_root, false);
+        drop(outer);
+
+        assert!(!inner_root.exists());
+        let joined = crate::snapshot::list(&outer_root).unwrap();
+        assert_eq!(joined.len(), 1);
+        assert_eq!(
+            joined[0].entries, 2,
+            "both of the sync's writes land in the outer snapshot"
+        );
+    }
+
+    #[test]
+    fn a_sync_still_writes_when_the_snapshot_root_cannot_be_created() {
+        let tmp = tempdir().unwrap();
+        let blocker = tmp.path().join("blocker");
+        fs::write(&blocker, "a file where the snapshot root should go").unwrap();
+        let (_tgt, target) = snapshotted_sync(&blocker.join("snapshots"), false);
+
+        assert_eq!(
+            fs::read_to_string(target.join("prompts/hello.md")).unwrap(),
+            "# New Hello"
+        );
+    }
+
+    #[test]
+    fn an_interactive_sync_snapshots_what_the_user_accepted() {
+        let _lock = skrills_test_utils::env_guard();
+        let home = tempdir().unwrap();
+        let _env = skrills_test_utils::set_env_var("HOME", Some(home.path().to_str().unwrap()));
+        fs::create_dir_all(home.path().join(".claude/commands")).unwrap();
+        fs::write(home.path().join(".claude/commands/hello.md"), "# New Hello").unwrap();
+        fs::create_dir_all(home.path().join(".codex/prompts")).unwrap();
+        fs::write(home.path().join(".codex/prompts/hello.md"), "# Old Hello").unwrap();
+
+        let accept_all = |_: &crate::decision::ItemChange| Ok(crate::decision::Decision::Accept);
+        let report = sync_between_with_decider(
+            crate::Platform::Claude,
+            crate::Platform::Codex,
+            &SyncParams {
+                interactive: true,
+                sync_commands: true,
+                sync_mcp_servers: false,
+                sync_preferences: false,
+                sync_skills: false,
+                ..Default::default()
+            },
+            Arc::new(accept_all),
+        )
+        .unwrap();
+
+        assert!(report.success);
+        let snaps = home.path().join(".skrills/snapshots");
+        let taken = crate::snapshot::list(&snaps).unwrap();
+        assert_eq!(taken.len(), 1, "the accepted overwrite is snapshotted");
+        let blob = snaps
+            .join(&taken[0].name)
+            .join("blobs")
+            .join(crate::adapters::utils::hash_content(b"# Old Hello"));
+        assert_eq!(fs::read(blob).unwrap(), b"# Old Hello");
+    }
+
+    #[test]
+    fn default_snapshots_point_at_the_per_user_snapshot_directory() {
+        let _lock = skrills_test_utils::env_guard();
+        let home = tempdir().unwrap();
+        let _env = skrills_test_utils::set_env_var("HOME", Some(home.path().to_str().unwrap()));
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        let orchestrator = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .with_default_snapshots();
+        assert_eq!(
+            orchestrator.snapshot_root,
+            Some(home.path().join(".skrills").join("snapshots"))
+        );
     }
 }

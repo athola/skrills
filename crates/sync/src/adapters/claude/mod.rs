@@ -19,7 +19,7 @@ use std::time::SystemTime;
 mod agents;
 mod commands;
 mod hooks;
-mod instructions;
+pub(crate) mod instructions;
 mod plugin_assets;
 mod plugin_cache;
 mod settings;
@@ -118,6 +118,14 @@ impl ClaudeAdapter {
 // ClaudeAdapter::new() or ClaudeAdapter::with_root() instead.
 
 impl AgentAdapter for ClaudeAdapter {
+    fn decision_scope(&self, kind: crate::decision::ItemKind) -> crate::decision::DecisionScope {
+        use crate::decision::{DecisionScope, ItemKind};
+        match kind {
+            ItemKind::Command | ItemKind::Agent | ItemKind::McpServer => DecisionScope::PerItem,
+            _ => DecisionScope::WholeCategory,
+        }
+    }
+
     fn name(&self) -> &str {
         "claude"
     }

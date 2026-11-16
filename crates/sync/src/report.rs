@@ -41,6 +41,9 @@ pub enum SkipReason {
     /// sanitizes to nothing, it collides with another item after sanitizing,
     /// or a symlink sits on the path.
     Refused { item: String, reason: String },
+    /// The person running an interactive sync rejected this change, so the
+    /// target keeps what it has.
+    Declined { item: String },
 }
 
 impl SkipReason {
@@ -83,6 +86,7 @@ impl SkipReason {
             }
             Self::PluginExcluded => "excluded by --exclude-plugins filter".to_string(),
             Self::Refused { item, reason } => format!("{item} not written: {reason}"),
+            Self::Declined { item } => format!("{item} not written: rejected in interactive sync"),
         }
     }
 
@@ -105,6 +109,9 @@ impl SkipReason {
             }
             Self::PluginExcluded => None,
             Self::Refused { .. } => Some("Rename the item or fix the destination path"),
+            Self::Declined { .. } => {
+                Some("Rerun `sync-all --interactive` and accept it to write it")
+            }
         }
     }
 }

@@ -20,7 +20,7 @@ default = ["subagents", "http-transport", "dashboard", "watch"]
 subagents = ["skrills-server/subagents"]
 http-transport = ["skrills-server/http-transport", "dep:rcgen", "dep:x509-parser", "dep:axum"]
 dashboard = ["skrills-server/dashboard", "dep:skrills-dashboard"]
-watch = ["skrills-server/watch"]
+watch = ["skrills-server/watch", "skrills-validate/watch"]
 
 [dependencies]
 # default-features off so the features above are the only switch: with it on,
@@ -39,6 +39,8 @@ tracing-subscriber.workspace = true
 walkdir.workspace = true
 dirs.workspace = true
 inquire.workspace = true
+# Terminal width for the side-by-side conflict view; already in the tree via inquire.
+crossterm = "0.29"
 toml.workspace = true
 shellexpand = "3"
 time.workspace = true

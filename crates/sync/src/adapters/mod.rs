@@ -3,6 +3,7 @@
 mod claude;
 mod codex;
 mod codex_toml;
+mod config_adapter;
 mod copilot;
 mod cursor;
 pub(crate) mod json_config;
@@ -14,6 +15,7 @@ pub(crate) mod utils;
 
 pub use claude::ClaudeAdapter;
 pub use codex::CodexAdapter;
+pub use config_adapter::ConfigAdapter;
 pub use copilot::CopilotAdapter;
 pub use cursor::CursorAdapter;
 pub use traits::{AgentAdapter, FieldSupport, MirrorOptions};

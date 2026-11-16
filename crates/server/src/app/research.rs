@@ -19,6 +19,9 @@ use skrills_tome::knowledge_graph::{EdgeKind, KnowledgeGraph, NodeKind};
 use skrills_tome::models::{Paper, PaperSource};
 use skrills_tome::triz::{Parameter, TrizMatrix};
 
+use crate::app::offline::{
+    cached_tool_result, fetch_or_replay, open_cache, outcome_to_tool_result, remember, replay,
+};
 use crate::app::SkillService;
 use crate::handler::{invalid_params, run_blocking};
 use crate::mcp_result::{tool_err, tool_ok};
@@ -345,6 +348,19 @@ impl SkillService {
             .min(100) as usize;
         let (sources, mut errors) = paper_sources(args.get("sources").and_then(|v| v.as_array()));
 
+        let cache = open_cache();
+        let cache_key = format!(
+            "{}|{limit}|{}",
+            query.trim().to_lowercase(),
+            sources.join(",")
+        );
+        if skrills_state::is_offline() {
+            let hit = replay(cache.as_ref(), "search-papers", &cache_key)?;
+            return Ok(cached_tool_result(hit, |papers| {
+                format!("Found {} papers", papers["count"])
+            }));
+        }
+
         let mut per_source: Vec<Vec<Paper>> = Vec::new();
         for source in sources {
             let result: Result<Vec<Paper>, _> = match source {
@@ -391,11 +407,21 @@ impl SkillService {
         }
 
         let content = vec![ContentBlock::text(text)];
-        let structured = Some(json!({
+        let structured = json!({
             "papers": paper_json,
             "count": deduped.len(),
             "errors": errors,
-        }));
+        });
+        if !all_failed {
+            remember(
+                cache.as_ref(),
+                "search-papers",
+                &cache_key,
+                query,
+                &structured,
+            );
+        }
+        let structured = Some(structured);
         Ok(if all_failed {
             tool_err(content, structured)
         } else {
@@ -417,37 +443,43 @@ impl SkillService {
             .unwrap_or(10)
             .min(100) as usize;
 
-        let client = HnAlgoliaClient::new();
-        let discussions = client.search(query, limit).await?;
+        let cache_key = format!("{}|{limit}", query.trim().to_lowercase());
+        let outcome = fetch_or_replay(
+            open_cache().as_ref(),
+            skrills_state::is_offline(),
+            "search-discussions",
+            &cache_key,
+            query,
+            || async {
+                let discussions = HnAlgoliaClient::new().search(query, limit).await?;
+                let discussion_json: Vec<Value> = discussions
+                    .iter()
+                    .map(|d| {
+                        json!({
+                            "id": d.id,
+                            "title": d.title,
+                            "url": d.url,
+                            "points": d.points,
+                            "comment_count": d.comment_count,
+                            "source": d.source,
+                            "created_at": d.created_at.map(|t| {
+                                t.format(&time::format_description::well_known::Rfc3339)
+                                    .unwrap_or_default()
+                            }),
+                        })
+                    })
+                    .collect();
+                Ok(json!({
+                    "discussions": discussion_json,
+                    "count": discussions.len(),
+                }))
+            },
+        )
+        .await?;
 
-        let discussion_json: Vec<Value> = discussions
-            .iter()
-            .map(|d| {
-                json!({
-                    "id": d.id,
-                    "title": d.title,
-                    "url": d.url,
-                    "points": d.points,
-                    "comment_count": d.comment_count,
-                    "source": d.source,
-                    "created_at": d.created_at.map(|t| {
-                        t.format(&time::format_description::well_known::Rfc3339)
-                            .unwrap_or_default()
-                    }),
-                })
-            })
-            .collect();
-
-        Ok(tool_ok(
-            vec![ContentBlock::text(format!(
-                "Found {} discussions",
-                discussions.len()
-            ))],
-            Some(json!({
-                "discussions": discussion_json,
-                "count": discussions.len(),
-            })),
-        ))
+        Ok(outcome_to_tool_result(outcome, |found| {
+            format!("Found {} discussions", found["count"])
+        }))
     }
 
     pub(crate) async fn resolve_doi_tool(
@@ -459,35 +491,47 @@ impl SkillService {
             .and_then(|v| v.as_str())
             .ok_or_else(|| invalid_params("Missing required parameter: doi"))?;
 
-        let crossref = CrossRefClient::new();
-        let metadata = crossref.resolve_doi(doi).await?;
+        let outcome = fetch_or_replay(
+            open_cache().as_ref(),
+            skrills_state::is_offline(),
+            "resolve-doi",
+            &doi.trim().to_lowercase(),
+            doi,
+            || async {
+                let metadata = CrossRefClient::new().resolve_doi(doi).await?;
 
-        let unpaywall = UnpaywallClient::default();
-        let pdf_url = match unpaywall.find_pdf_url(doi).await {
-            Ok(url) => url,
-            Err(e) => {
-                tracing::warn!(doi = doi, error = %e, "Unpaywall lookup failed");
-                None
-            }
-        };
+                let pdf_url = match UnpaywallClient::default().find_pdf_url(doi).await {
+                    Ok(url) => url,
+                    Err(e) => {
+                        tracing::warn!(doi = doi, error = %e, "Unpaywall lookup failed");
+                        None
+                    }
+                };
 
-        Ok(tool_ok(
-            vec![ContentBlock::text(format!(
+                Ok(json!({
+                    "doi": metadata.doi,
+                    "title": metadata.title,
+                    "authors": metadata.authors,
+                    "publisher": metadata.publisher,
+                    "year": metadata.year,
+                    "url": metadata.url,
+                    "journal": metadata.journal,
+                    "pdf_url": pdf_url,
+                }))
+            },
+        )
+        .await?;
+
+        Ok(outcome_to_tool_result(outcome, |metadata| {
+            format!(
                 "{} ({})",
-                metadata.title,
-                metadata.year.map(|y| y.to_string()).unwrap_or_default()
-            ))],
-            Some(json!({
-                "doi": metadata.doi,
-                "title": metadata.title,
-                "authors": metadata.authors,
-                "publisher": metadata.publisher,
-                "year": metadata.year,
-                "url": metadata.url,
-                "journal": metadata.journal,
-                "pdf_url": pdf_url,
-            })),
-        ))
+                metadata["title"].as_str().unwrap_or_default(),
+                metadata["year"]
+                    .as_i64()
+                    .map(|y| y.to_string())
+                    .unwrap_or_default()
+            )
+        }))
     }
 
     pub(crate) async fn fetch_pdf_tool(
@@ -516,6 +560,12 @@ impl SkillService {
                     "url": null,
                     "cached": true,
                 })),
+            ));
+        }
+
+        if skrills_state::is_offline() {
+            return Err(anyhow!(
+                "offline mode: the PDF for DOI {doi} is not cached and downloading it needs the network"
             ));
         }
 

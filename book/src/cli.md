@@ -25,10 +25,13 @@ skrills validate --format json --errors-only  # Machine-readable output
 | `--backup` | Create backups before autofix |
 | `--format <FORMAT>` | `text` or `json` (default: `text`) |
 | `--errors-only` | Hide passing skills |
+| `--watch` | Revalidate each `SKILL.md` as it changes, until Ctrl+C |
+| `--debounce-ms <MS>` | Wait this long after a change before revalidating (default: `300`) |
 
 `validate` exits non-zero when any skill has an error, cannot be read, or
 could not be auto-fixed, so a script or CI step can gate on the exit code.
-`--watch` is not implemented yet and is refused.
+`--watch` keeps running and prints results as files change, so it refuses
+`--autofix` and `--format json`.
 
 ### analyze
 
@@ -84,6 +87,7 @@ Sync everything between Claude Code and Codex CLI:
 skrills sync-all --from claude                        # Copy everything from Claude
 skrills sync-all --from claude --skip-existing-commands  # Keep local commands
 skrills sync-all --dry-run                            # Preview without changing
+skrills sync-all --interactive                        # Diff each change, accept or reject it
 skrills sync-all --from claude --validate             # Refuse to sync skills that do not validate
 skrills sync-all --from claude --autofix --dry-run    # Check what autofix would leave, write nothing
 ```
@@ -92,8 +96,8 @@ skrills sync-all --from claude --autofix --dry-run    # Check what autofix would
 
 | Option | Purpose |
 |--------|---------|
-| `--from` | Source CLI: `claude`, `codex`, `copilot`, or `cursor` (default: `claude`) |
-| `--to` | Target CLI, same values; omitted, syncs to every other CLI |
+| `--from` | Source CLI: `claude`, `codex`, `copilot`, `cursor`, or the name of a [custom adapter](custom-adapters.md) (default: `claude`) |
+| `--to` | Target CLI, same values; omitted, syncs to every other built-in CLI (a custom adapter is written only when named) |
 | `--dry-run` | Preview changes without writing |
 | `--skip-existing-commands` | Keep existing commands on target side |
 | `--include-marketplace` | Include marketplace content from uninstalled plugins (`SKRILLS_INCLUDE_MARKETPLACE`) |
@@ -101,6 +105,45 @@ skrills sync-all --from claude --autofix --dry-run    # Check what autofix would
 | `--exclude-plugins <NAMES>` | Comma-separated plugin names whose skills and assets are not synced (`SKRILLS_EXCLUDE_PLUGINS`) |
 | `--validate` | Validate the source skills before any target is written |
 | `--autofix` | Add missing frontmatter to the source skills, then validate as `--validate` does |
+| `--interactive` | Show a diff for each new or changed item and ask Accept or Reject; only accepted items are written. Needs a terminal |
+
+With `--interactive`, every question is asked before the first write, so
+Esc or Ctrl-C leaves the target untouched. Items already in sync are not
+asked about. Rejecting a changed item keeps the target's copy; rejecting a
+new item skips it. These categories are asked per item: commands, agents,
+MCP servers, the model preference, and Copilot instructions. Skills, hooks,
+Claude and Cursor instructions, Codex agents, the plugin mirror rewrite
+files when written (frontmatter, marker files, merged blocks), so each is
+one question for the whole category, and rejecting it skips its writer.
+Rejecting the plugin mirror also keeps the flat skill copies it would
+replace. Without a terminal `--interactive` fails before anything is
+written. With `--dry-run` it only previews and asks nothing.
+
+### Conflicts
+
+After each successful, non-dry sync, skrills records per item (kind and
+name) the hash of the source copy and of the target copy it wrote, in
+`~/.skrills/sync-state/<platform>-<root hash>.json`. Only hashes are kept.
+A later sync reports a conflict when the source and the target copy both
+differ from those hashes and from each other. A target with no record
+(a first sync) never has conflicts. Commands, skills, agents, hooks,
+instructions and MCP servers are covered; the model preference and plugin
+assets are not.
+
+- **Plain sync:** the source still overwrites. The report gets a warning
+  naming the items whose target edits were lost, and that
+  `skrills sync-rollback` can undo it. With `--dry-run` the warning says
+  the sync would overwrite them, and nothing is written.
+- **`--interactive`:** a conflicting item is shown as two columns, target
+  left and source right, fitted to the terminal width (100 columns when
+  the size is unknown). Choose Keep source (overwrite), Keep target (leave
+  the target's copy) or Abort (nothing written). A whole-category prompt
+  says how many of its items conflict.
+- **Resolution log:** each choice you make is appended to
+  `~/.skrills/sync-state/resolutions.jsonl` as one JSON line (timestamp,
+  target key, kind, name, choice `keep_source` or `keep_target`, scope
+  `item` or `category`, source and target hashes). It holds no content.
+  Dry runs, aborted runs and plain syncs record no resolutions.
 
 With `--validate` or `--autofix`, the `--from` skill tree is validated for
 the strictest of the targets being synced (Codex and Copilot are stricter
@@ -117,6 +160,53 @@ Preview what would change before syncing:
 skrills sync-status --from claude
 ```
 
+### sync-rollback
+
+Every `sync-all`, `mirror`, `sync-agents` and MCP sync snapshots what it is
+about to overwrite or delete, so a bad sync can be undone (`sync-pull` writes
+nothing yet, so it takes no snapshot):
+
+```bash
+skrills sync-rollback            # Restore the most recent snapshot
+skrills sync-rollback --list     # Show snapshots, newest first, with timestamps
+skrills sync-rollback <NAME>     # Restore a snapshot named in --list
+skrills sync-rollback --force    # Also restore files changed since the sync
+```
+
+Snapshots live in `~/.skrills/snapshots/<UTC timestamp>/` as a JSON-lines
+`manifest.jsonl` plus the prior bytes of each touched file, so only changed
+files are stored. The directory is mode `0700` and its files `0600`, because
+configs can hold secrets. A dry run takes no snapshot, and a sync that
+changes nothing leaves none. A sync that only creates empty directories
+keeps its snapshot, so rollback can remove them. `sync-all` takes one snapshot for the whole
+invocation, covering every target.
+
+Rollback restores prior bytes and permissions, deletes files the sync
+created, and touches only paths listed in the manifest. A symlink is kept as
+its link target, never followed: a write through a link records the file it
+points to, and a link the sync removed or replaced is recreated exactly.
+A fifo, socket or device file cannot be kept; rollback skips it and names it
+in the output.
+
+The manifest also records what each path held when the sync finished. If a
+file no longer matches that, because you edited, deleted or replaced it
+after the sync, rollback keeps your version and lists it as changed since
+the sync. `--force` restores those files too, discarding the later change.
+Rolling back an older snapshot also accepts what the newest later sync left
+at a path, so files skrills itself rewrote since are restored without
+`--force`; only content that matches neither is kept as your change.
+Snapshots taken before this check existed have no such record and are
+restored as before. A config file's `.skrills-bak` backup is part of the
+snapshot: rollback puts back the previous backup, or removes one the sync
+created. A manifest path that
+is not absolute or contains `..` refuses the whole rollback. Directories a
+sync created are removed after the files, deepest first, but only when they
+are empty; one you have since put files in is left and named in the output.
+The snapshot is kept after a rollback.
+
+Snapshots older than 30 days are pruned at the start of the next sync. Set
+`SKRILLS_SNAPSHOT_RETENTION_DAYS` to change the period.
+
 ### Individual Sync Commands
 
 Sync specific items when you don't want everything:
@@ -127,6 +217,8 @@ skrills sync-commands --from claude
 skrills sync-mcp-servers --from claude
 skrills sync-preferences --from claude
 ```
+
+`--from` and `--to` of these commands, `sync-all` and `sync-status` also take the name of a [custom adapter](custom-adapters.md). An unknown name fails and lists the built-in and configured names.
 
 **Technical notes:**
 - `skrills sync` honors `SKRILLS_MIRROR_SOURCE` to change the source root
@@ -381,18 +473,24 @@ skrills create-skill my-new-skill --description "Helps with testing"
 skrills create-skill my-new-skill --description "..." --method github
 skrills create-skill my-new-skill --description "..." --method empirical  # From session patterns
 skrills create-skill my-new-skill --description "..." --dry-run  # Preview
+skrills create-skill --template list                         # List built-in templates
+skrills create-skill my-new-skill --template debugging --target codex
 ```
 
 **Options:**
 
 | Option | Purpose |
 |--------|---------|
-| `--description <TEXT>` | Required description of the skill |
-| `--method <METHOD>` | `github`, `llm`, `empirical`, or `both` (default: `both`) |
+| `--description <TEXT>` | Description of the skill. Required, except with `--template`, where it replaces the template's own |
+| `--method <METHOD>` | `github`, `llm`, `empirical`, or `both` (default: `both`). Cannot be combined with `--template` |
+| `--template <NAME>` | Scaffold from a built-in template, or pass `list` to print them (no skill name needed) |
+| `--target <CLI>` | With `--template`: `claude`, `codex`, `copilot`, or `cursor` (default: `claude`). Picks the default directory and the validator the output must pass |
 | `--target-dir <DIR>` | Where to save (default: installed client, Claude preferred) |
-| `--project-dir <DIR>` | Project directory for context |
+| `--project-dir <DIR>` | Project directory for context. Cannot be combined with `--template` |
 | `--dry-run` | Preview without writing files |
 | `--format <FORMAT>` | `text` or `json` (default: `text`) |
+
+The built-in templates are `debugging`, `code-review`, `testing`, `documentation`, and `refactoring`. They are compiled into the binary, so `--template` makes no network or LLM call. Each run renders `name` and `description` frontmatter plus the template body, then checks the result against the target's validator before writing (Cursor has no validator of its own and is checked against all three). Without `--target-dir` the skill goes to `~/.claude/skills`, `~/.agents/skills` (Codex), `~/.copilot/skills`, or `~/.cursor/skills`. Like the other methods, it refuses to replace an existing `SKILL.md`. An unknown template name fails and lists the valid names.
 
 The `empirical` method analyzes Claude Code and Codex CLI session history to extract successful tool sequences and failure anti-patterns. It clusters similar sessions and generates skills based on observed behavior.
 
@@ -404,6 +502,8 @@ Find existing skills on GitHub:
 skrills search-skills-github "testing workflow"
 skrills search-skills-github "deployment" --limit 20
 ```
+
+Offline (`--offline` or `SKRILLS_OFFLINE=1`) it returns the last stored result for the same query and limit, marked `offline — using cached data` with its age. See [Offline Mode](runtime-tuning.md#offline-mode).
 
 ### resolve-dependencies
 
@@ -559,6 +659,42 @@ skrills skill-usage-report --period 7 --format json --output usage.json
 `--format` is `text` or `json`; `--output` writes to a file instead of
 stdout; `--period <DAYS>` defaults to `30`.
 
+### prune
+
+Find skills that your session history shows you have not used, and
+optionally remove them. One of `--suggest` or `--apply` is required.
+
+```bash
+skrills prune --suggest
+skrills prune --suggest --older-than-days 180 --format json
+skrills prune --apply
+```
+
+`--suggest` lists each stale skill with the date it was last used and changes
+nothing. A skill that no mined session used is listed as "never used in
+mined sessions", with no date. Usage comes from the Claude and Codex session
+logs (`~/.claude/projects`, `~/.codex/sessions`). When they hold no skill use
+at all, `prune` stops with an error instead of calling every skill stale.
+
+`--apply` lists the same skills, asks once for confirmation, takes a snapshot
+and deletes them. `skrills sync-rollback` restores them. `--yes` skips the
+prompt; without `--yes` and without a terminal, `--apply` fails before
+deleting anything.
+
+`--older-than-days <DAYS>` sets the threshold (default: `90`). A skill is
+stale when its last use is more than that many days ago, so one used exactly
+`DAYS` days ago is kept. `--skill-dir` narrows the search, and `--format` is
+`text` or `json` (with `--suggest` only).
+
+Usage is matched to a skill by its directory name or frontmatter `name`,
+ignoring case, because the session logs record skills by name and not by
+path. Skills that share a name in different roots share one usage record.
+
+Never deleted, whatever their usage: skills from the Claude plugin cache or
+marketplaces (a plugin update would restore them), sync mirrors, symlinked
+skill directories, and a skill directory that contains another skill. They
+are listed under "Stale but protected".
+
 ### pre-commit-validate
 
 Validate skill files from a git pre-commit hook:
@@ -605,6 +741,8 @@ skrills doctor
 ```
 
 Verifies the Codex MCP registration in `~/.codex/config.toml`, where `skrills setup` writes it, and identifies problems. A legacy `~/.codex/mcp_servers.json` is inspected only when present.
+
+With files in `~/.skrills/adapters/`, it also validates each [custom adapter](custom-adapters.md): parse errors, missing keys, name clashes, paths that leave `root`, and a `root` that does not exist (a warning). It exits non-zero when any line is marked `!`.
 
 ### setup
 

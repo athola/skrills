@@ -90,6 +90,14 @@ impl CursorAdapter {
 }
 
 impl AgentAdapter for CursorAdapter {
+    fn decision_scope(&self, kind: crate::decision::ItemKind) -> crate::decision::DecisionScope {
+        use crate::decision::{DecisionScope, ItemKind};
+        match kind {
+            ItemKind::Command | ItemKind::Agent | ItemKind::McpServer => DecisionScope::PerItem,
+            _ => DecisionScope::WholeCategory,
+        }
+    }
+
     fn name(&self) -> &str {
         "cursor"
     }
@@ -214,7 +222,6 @@ impl AgentAdapter for CursorAdapter {
     ) -> Result<WriteReport> {
         crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         use std::collections::HashSet;
-        use std::fs;
         use std::path::PathBuf;
 
         let mut report = WriteReport::default();
@@ -224,7 +231,7 @@ impl AgentAdapter for CursorAdapter {
         }
 
         let local_dir = self.root.join("plugins").join("local");
-        fs::create_dir_all(&local_dir)?;
+        crate::adapters::utils::create_dir_all(&local_dir)?;
 
         let plan = plan_mirror(&local_dir, assets);
         report.warnings.extend(plan.refusals);
@@ -551,7 +558,7 @@ fn prepare_plugin_dir(plugin_dir: &std::path::Path) -> std::result::Result<(), S
             plugin_dir.display()
         )),
         Ok(_) => Ok(()),
-        Err(_) => fs::create_dir_all(plugin_dir).map_err(|e| {
+        Err(_) => crate::adapters::utils::create_dir_all(plugin_dir).map_err(|e| {
             format!(
                 "Could not create plugin mirror {}: {e}",
                 plugin_dir.display()
@@ -673,7 +680,7 @@ fn write_one_asset(
 
     if !content_matches {
         if let Some(parent) = dest.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
+            if let Err(e) = crate::adapters::utils::create_dir_all(parent) {
                 tracing::warn!(plugin = %dir_name, error = %e, "Could not create asset parent");
                 report.warnings.push(format!(
                     "Skipped plugin asset {}/{}: {e}",
@@ -781,7 +788,7 @@ fn clear_conflicting_path(
                 Ok(_) if !owned => return refuse(&walked),
                 // A file or a symlink: a symlinked parent would also steer the
                 // write out of the plugin directory.
-                Ok(_) => fs::remove_file(&walked)?,
+                Ok(_) => crate::adapters::utils::remove_file(&walked)?,
                 // Nothing here yet, so nothing deeper can exist either.
                 Err(_) => break,
             }
@@ -791,8 +798,8 @@ fn clear_conflicting_path(
     match fs::symlink_metadata(dest) {
         Ok(meta) if meta.is_file() => Ok(()),
         Ok(_) if !owned => refuse(dest),
-        Ok(meta) if meta.is_dir() => fs::remove_dir_all(dest),
-        Ok(_) => fs::remove_file(dest),
+        Ok(meta) if meta.is_dir() => crate::adapters::utils::remove_tree(dest),
+        Ok(_) => crate::adapters::utils::remove_file(dest),
         Err(_) => Ok(()),
     }
 }
@@ -848,7 +855,6 @@ fn sweep_unreferenced(
     kept: &std::collections::HashSet<std::path::PathBuf>,
     report: &mut WriteReport,
 ) {
-    use std::fs;
     use walkdir::WalkDir;
 
     let marker = plugin_dir.join(MIRROR_MARKER);
@@ -877,13 +883,13 @@ fn sweep_unreferenced(
         if entry.file_type().is_dir() {
             // `contents_first` means the directory is already empty if every file
             // under it went away with the upstream plugin.
-            let _ = fs::remove_dir(path);
+            let _ = crate::adapters::utils::remove_dir(path);
             continue;
         }
         if kept.contains(path) {
             continue;
         }
-        match fs::remove_file(path) {
+        match crate::adapters::utils::remove_file(path) {
             // A dropped skill's marker is not a file the plugin shipped.
             Ok(()) if entry.file_name() == crate::adapters::utils::SYNCED_MARKER => {}
             Ok(()) => removed += 1,
@@ -945,7 +951,7 @@ fn sweep_ledger(
             carried.push(relative.clone());
             continue;
         }
-        match fs::remove_file(&path) {
+        match crate::adapters::utils::remove_file(&path) {
             Ok(()) => {
                 if path.file_name()
                     != Some(std::ffi::OsStr::new(crate::adapters::utils::SYNCED_MARKER))
@@ -957,7 +963,7 @@ fn sweep_ledger(
                     .skip(1)
                     .take_while(|dir| *dir != plugin_dir)
                 {
-                    if fs::remove_dir(dir).is_err() {
+                    if crate::adapters::utils::remove_dir(dir).is_err() {
                         break;
                     }
                 }
@@ -1088,8 +1094,6 @@ fn prune_stale_mirrors(
     touched: &std::collections::HashSet<String>,
     report: &mut WriteReport,
 ) {
-    use std::fs;
-
     let (marked, warnings) = marked_mirror_dirs(local_dir);
     report.warnings.extend(warnings);
 
@@ -1101,8 +1105,8 @@ fn prune_stale_mirrors(
         if let Some(listed) = read_ledger(&path) {
             let none_kept = std::collections::HashSet::new();
             sweep_ledger(&path, &name, &listed, &none_kept, false, report);
-            let _ = fs::remove_file(path.join(MIRROR_MARKER));
-            if fs::remove_dir(&path).is_ok() {
+            let _ = crate::adapters::utils::remove_file(&path.join(MIRROR_MARKER));
+            if crate::adapters::utils::remove_dir(&path).is_ok() {
                 report.warnings.push(format!("Pruned stale plugin: {name}"));
             } else {
                 report.warnings.push(format!(
@@ -1112,7 +1116,7 @@ fn prune_stale_mirrors(
             }
             continue;
         }
-        match fs::remove_dir_all(&path) {
+        match crate::adapters::utils::remove_tree(&path) {
             Ok(()) => {
                 tracing::info!(plugin = %name, "Pruned stale local plugin");
                 report.warnings.push(format!("Pruned stale plugin: {name}"));

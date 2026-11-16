@@ -13,6 +13,7 @@
 - [Skill Analysis](analysis.md)
 - [Cold-Window Real-Time Analysis](cold-window.md)
 - [Sync Guide](sync-guide.md)
+- [Custom Adapters](custom-adapters.md)
 
 ## Configuration
 

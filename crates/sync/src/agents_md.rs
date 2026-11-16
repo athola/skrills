@@ -38,11 +38,11 @@ fn is_hidden_rel_path(rel: &Path) -> bool {
 fn mirror_path_if_changed(src: &Path, dest_root: &Path, rel: &Path) -> Result<bool> {
     let dest = dest_root.join(rel);
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
+        crate::adapters::utils::create_dir_all(parent)?;
     }
     let should_copy = should_copy_by_content(src, &dest)?;
     if should_copy {
-        fs::copy(src, &dest)?;
+        crate::adapters::utils::copy(src, &dest)?;
     }
     Ok(should_copy)
 }
@@ -207,7 +207,7 @@ pub(crate) fn sync_agents_with_assets(
         None => format!("{content}\n{agents_section}"),
     };
 
-    fs::write(path, final_content)?;
+    crate::adapters::utils::write_file(path, final_content)?;
     Ok(())
 }
 

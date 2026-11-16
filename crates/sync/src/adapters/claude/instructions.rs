@@ -12,17 +12,23 @@ use crate::report::{SkipReason, WriteReport};
 use crate::Result;
 
 use std::fs;
+use std::path::Path;
 use std::time::SystemTime;
 
 use super::ClaudeAdapter;
 
 pub(super) fn read_instructions_impl(adapter: &ClaudeAdapter) -> Result<Vec<Command>> {
-    let path = adapter.instructions_path();
+    read_instructions_at(&adapter.instructions_path())
+}
+
+/// Reads one instructions file without the managed block. Config-registered
+/// adapters share it so every target treats the block the same way.
+pub(crate) fn read_instructions_at(path: &Path) -> Result<Vec<Command>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
 
-    let raw = fs::read(&path)?;
+    let raw = fs::read(path)?;
     // The managed block came from another tool. Reading it back would send
     // those rules to every other target a second time, inside CLAUDE.
     let content = match String::from_utf8(raw) {
@@ -32,7 +38,7 @@ pub(super) fn read_instructions_impl(adapter: &ClaudeAdapter) -> Result<Vec<Comm
     if content.iter().all(u8::is_ascii_whitespace) {
         return Ok(Vec::new());
     }
-    let metadata = fs::metadata(&path)?;
+    let metadata = fs::metadata(path)?;
     let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
     let hash = hash_content(&content);
 
@@ -46,7 +52,7 @@ pub(super) fn read_instructions_impl(adapter: &ClaudeAdapter) -> Result<Vec<Comm
     Ok(vec![Command {
         name,
         content,
-        source_path: path.clone(),
+        source_path: path.to_path_buf(),
         modified,
         hash,
         modules: Vec::new(),
@@ -66,13 +72,18 @@ pub(super) fn write_instructions_impl(
     adapter: &ClaudeAdapter,
     instructions: &[Command],
 ) -> Result<WriteReport> {
+    write_instructions_at(&adapter.instructions_path(), instructions)
+}
+
+/// Splices `instructions` into the managed block of the file at `path`.
+/// Config-registered adapters share it with Claude.
+pub(crate) fn write_instructions_at(path: &Path, instructions: &[Command]) -> Result<WriteReport> {
     let mut report = WriteReport::default();
     if instructions.is_empty() {
         return Ok(report);
     }
 
-    let path = adapter.instructions_path();
-    let existing = match fs::read_to_string(&path) {
+    let existing = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e.into()),
@@ -83,13 +94,16 @@ pub(super) fn write_instructions_impl(
 
     if updated == existing {
         report.skipped.push(SkipReason::Unchanged {
-            item: "CLAUDE.md".to_string(),
+            item: path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
         });
         return Ok(report);
     }
 
     // The user's CLAUDE.md is a config file: keep the previous version.
-    crate::adapters::utils::write_config(&path, updated.as_bytes(), false)?;
+    crate::adapters::utils::write_config(path, updated.as_bytes(), false)?;
     report.written += 1;
 
     Ok(report)

@@ -115,7 +115,7 @@ pub(super) fn write_agents_impl(
     agents: &[Command],
 ) -> Result<WriteReport> {
     let dir = adapter.agents_dir();
-    fs::create_dir_all(&dir)?;
+    crate::adapters::utils::create_dir_all(&dir)?;
 
     let mut report = WriteReport::default();
 

@@ -14,6 +14,7 @@
 
 mod intelligence;
 mod mcp_registry;
+mod offline;
 mod research;
 mod skill_metrics;
 mod skill_recommendations;

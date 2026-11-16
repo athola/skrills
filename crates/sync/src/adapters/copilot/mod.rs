@@ -81,6 +81,16 @@ impl CopilotAdapter {
 // CopilotAdapter::new() or CopilotAdapter::with_root() instead.
 
 impl AgentAdapter for CopilotAdapter {
+    fn decision_scope(&self, kind: crate::decision::ItemKind) -> crate::decision::DecisionScope {
+        use crate::decision::{DecisionScope, ItemKind};
+        match kind {
+            ItemKind::Command | ItemKind::Agent | ItemKind::Instruction | ItemKind::McpServer => {
+                DecisionScope::PerItem
+            }
+            _ => DecisionScope::WholeCategory,
+        }
+    }
+
     fn name(&self) -> &str {
         "copilot"
     }

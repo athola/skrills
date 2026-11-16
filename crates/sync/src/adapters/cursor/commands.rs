@@ -90,7 +90,7 @@ pub fn write_commands(root: &Path, commands: &[Command]) -> Result<WriteReport> 
         return Ok(report);
     }
 
-    fs::create_dir_all(&dir)?;
+    crate::adapters::utils::create_dir_all(&dir)?;
 
     let mut writer = crate::adapters::utils::BatchWriter::new(&dir);
     for cmd in commands {

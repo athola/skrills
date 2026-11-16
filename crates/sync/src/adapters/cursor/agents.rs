@@ -105,7 +105,7 @@ pub fn write_agents(root: &Path, agents: &[Command]) -> Result<WriteReport> {
         return Ok(report);
     }
 
-    fs::create_dir_all(&dir)?;
+    crate::adapters::utils::create_dir_all(&dir)?;
 
     let mut writer = crate::adapters::utils::BatchWriter::new(&dir);
     for agent in agents {

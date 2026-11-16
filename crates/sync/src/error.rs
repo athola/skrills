@@ -38,6 +38,10 @@ pub enum SyncError {
         "cold-window kill-switch engaged; sync writes refuse until the operator releases the switch"
     )]
     KillSwitchEngaged,
+    /// The person answering an interactive sync cancelled the prompts. Every
+    /// decision is collected before the first write, so nothing was written.
+    #[error("interactive sync cancelled; nothing was written")]
+    InteractiveAborted,
 }
 
 #[cfg(test)]

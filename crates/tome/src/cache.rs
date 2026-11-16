@@ -7,6 +7,15 @@ use std::path::PathBuf;
 /// Longest TTL `put` stores (ten years).
 const MAX_TTL_HOURS: u32 = 10 * 365 * 24;
 
+/// A stored response and when it was stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedResponse {
+    /// The JSON text passed to `put`.
+    pub response_json: String,
+    /// Store time in seconds since the Unix epoch, so callers can show age.
+    pub cached_at_unix: u64,
+}
+
 /// Cache for API responses and downloaded PDFs.
 pub struct ResearchCache {
     conn: std::sync::Mutex<Connection>,
@@ -88,6 +97,29 @@ impl ResearchCache {
         );
         match result {
             Ok(json) => Ok(Some(json)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(TomeError::Cache(e)),
+        }
+    }
+
+    /// Get the stored response for `cache_key` with its store time, ignoring
+    /// expiry: offline, a stale answer beats none, and the timestamp lets the
+    /// caller say how stale.
+    pub fn get_latest(&self, cache_key: &str) -> TomeResult<Option<CachedResponse>> {
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        let found = conn.query_row(
+            "SELECT response_json, CAST(strftime('%s', created_at) AS INTEGER)
+             FROM api_cache WHERE cache_key = ?1",
+            [cache_key],
+            |row| {
+                Ok(CachedResponse {
+                    response_json: row.get(0)?,
+                    cached_at_unix: row.get::<_, i64>(1)?.max(0) as u64,
+                })
+            },
+        );
+        match found {
+            Ok(hit) => Ok(Some(hit)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(TomeError::Cache(e)),
         }
@@ -243,5 +275,51 @@ mod tests {
         assert_eq!(cache.purge_expired().unwrap(), 1);
         assert!(cache.get("fresh").unwrap().is_some());
         assert!(cache.get("forever").unwrap().is_some());
+    }
+
+    #[test]
+    fn get_latest_misses_on_unknown_key() {
+        let (cache, _temp) = test_cache();
+        assert!(cache.get_latest("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn get_latest_returns_the_response_with_its_store_time() {
+        let (cache, _temp) = test_cache();
+        let before = unix_now();
+        cache.put("k", "api", "q", r#"{"n":1}"#, None).unwrap();
+        let hit = cache.get_latest("k").unwrap().expect("stored entry");
+        assert_eq!(hit.response_json, r#"{"n":1}"#);
+        assert!(
+            hit.cached_at_unix >= before - 1 && hit.cached_at_unix <= unix_now() + 1,
+            "timestamp {} not near now",
+            hit.cached_at_unix
+        );
+    }
+
+    /// Offline, an expired answer beats no answer; `get` still hides it.
+    #[test]
+    fn get_latest_serves_an_expired_entry_that_get_hides() {
+        let (cache, _temp) = test_cache();
+        cache
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO api_cache (cache_key, api, query, response_json, created_at, expires_at)
+                 VALUES ('old', 'api', 'q', '{}', datetime('now', '-3 hours'), datetime('now', '-1 hours'))",
+                [],
+            )
+            .unwrap();
+        assert!(cache.get("old").unwrap().is_none());
+        let hit = cache.get_latest("old").unwrap().expect("expired entry");
+        assert!(hit.cached_at_unix + 3 * 3600 <= unix_now() + 5);
+    }
+
+    fn unix_now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
     }
 }
