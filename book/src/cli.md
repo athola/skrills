@@ -162,8 +162,9 @@ skrills sync-status --from claude
 
 ### sync-rollback
 
-Every `sync-all`, `mirror` and MCP sync snapshots what it is about to
-overwrite or delete, so a bad sync can be undone:
+Every `sync-all`, `mirror`, `sync-agents` and MCP sync snapshots what it is
+about to overwrite or delete, so a bad sync can be undone (`sync-pull` writes
+nothing yet, so it takes no snapshot):
 
 ```bash
 skrills sync-rollback            # Restore the most recent snapshot

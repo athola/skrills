@@ -18,14 +18,40 @@ pub(crate) fn print_skill_warnings(report: &skrills_sync::SyncReport) {
     }
 }
 
+/// Handle the `sync-agents` command, in its own snapshot so `sync-rollback`
+/// can put the previous AGENTS.md back.
 pub(crate) fn handle_sync_agents_command(
     path: Option<PathBuf>,
     skill_dirs: Vec<PathBuf>,
 ) -> Result<()> {
     let path = path.unwrap_or_else(|| PathBuf::from("AGENTS.md"));
-    sync_agents(&path, &merge_extra_dirs(&skill_dirs))?;
+    let path = resolve_parent_components(&path);
+    let _snapshot = skrills_sync::snapshot::begin_default();
+    refresh_agents_md(&path, skill_dirs)
+}
+
+/// Writes AGENTS.md under whatever snapshot is already running; `mirror`
+/// calls it inside its own, which cannot be nested.
+fn refresh_agents_md(path: &Path, skill_dirs: Vec<PathBuf>) -> Result<()> {
+    sync_agents(path, &merge_extra_dirs(&skill_dirs))?;
     println!("Updated {}", path.display());
     Ok(())
+}
+
+/// `path` with `..` resolved through its existing parent directory. The
+/// snapshot recorder refuses a path holding `..`, so `--path ../AGENTS.md`
+/// would otherwise fail inside a snapshot. A path whose parent does not exist
+/// yet is returned unchanged.
+fn resolve_parent_components(path: &Path) -> PathBuf {
+    let has_parent_component = path
+        .components()
+        .any(|part| part == std::path::Component::ParentDir);
+    match (has_parent_component, path.parent(), path.file_name()) {
+        (true, Some(parent), Some(name)) => parent
+            .canonicalize()
+            .map_or_else(|_| path.to_path_buf(), |real| real.join(name)),
+        _ => path.to_path_buf(),
+    }
 }
 
 /// Handle the `sync` command.
@@ -103,7 +129,7 @@ pub(crate) fn handle_mirror_command(
     // now populated). Never the working directory's AGENTS.md: that is
     // whatever repository `mirror` happens to run from.
     if !dry_run {
-        handle_sync_agents_command(Some(home.join(".codex/AGENTS.md")), vec![])?;
+        refresh_agents_md(&home.join(".codex/AGENTS.md"), vec![])?;
     }
 
     println!(
@@ -796,6 +822,31 @@ mod tests {
             &skrills_sync::adapters_dir(home).join("windsurf.toml"),
             SKILLS_AND_COMMANDS,
         );
+    }
+
+    #[test]
+    fn a_path_without_parent_components_is_kept_as_given() {
+        assert_eq!(
+            resolve_parent_components(Path::new("docs/AGENTS.md")),
+            PathBuf::from("docs/AGENTS.md")
+        );
+    }
+
+    #[test]
+    fn parent_components_resolve_through_the_existing_parent() -> Result<()> {
+        let tmp = tempdir()?;
+        std::fs::create_dir(tmp.path().join("work"))?;
+        let resolved = resolve_parent_components(&tmp.path().join("work/../AGENTS.md"));
+        assert_eq!(resolved, tmp.path().canonicalize()?.join("AGENTS.md"));
+        Ok(())
+    }
+
+    #[test]
+    fn parent_components_under_a_missing_parent_are_kept_as_given() -> Result<()> {
+        let tmp = tempdir()?;
+        let missing = tmp.path().join("gone/../AGENTS.md");
+        assert_eq!(resolve_parent_components(&missing), missing);
+        Ok(())
     }
 
     #[test]

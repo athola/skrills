@@ -328,3 +328,71 @@ fn retention_days_env_keeps_snapshots_newer_than_the_setting() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(old.exists());
 }
+
+#[test]
+fn sync_agents_is_snapshotted_so_rollback_restores_agents_md() {
+    let home = tempfile::tempdir().unwrap();
+    let agents_md = home.path().join("AGENTS.md");
+    fs::write(&agents_md, "# Mine\n").unwrap();
+
+    let output = skrills(
+        home.path(),
+        &["sync-agents", "--path", agents_md.to_str().unwrap()],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_ne!(fs::read_to_string(&agents_md).unwrap(), "# Mine\n");
+    assert_eq!(snapshot_names(home.path()).len(), 1);
+
+    let output = skrills(home.path(), &["sync-rollback"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(fs::read_to_string(&agents_md).unwrap(), "# Mine\n");
+}
+
+#[test]
+fn sync_agents_with_a_parent_relative_path_is_snapshotted() {
+    let home = tempfile::tempdir().unwrap();
+    let work = home.path().join("work");
+    fs::create_dir(&work).unwrap();
+    let agents_md = home.path().join("AGENTS.md");
+    fs::write(&agents_md, "# Mine\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_skrills"))
+        .env("HOME", home.path())
+        .current_dir(&work)
+        .args(["sync-agents", "--path", "../AGENTS.md"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let output = skrills(home.path(), &["sync-rollback"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(fs::read_to_string(&agents_md).unwrap(), "# Mine\n");
+}
+
+#[test]
+fn mirror_refreshes_codex_agents_md_inside_its_own_snapshot() {
+    let home = tempfile::tempdir().unwrap();
+
+    let output = skrills(home.path(), &["mirror"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let agents_md = home.path().join(".codex/AGENTS.md");
+    assert!(agents_md.exists());
+    assert_eq!(snapshot_names(home.path()).len(), 1);
+
+    let output = skrills(home.path(), &["sync-rollback"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!agents_md.exists());
+}
+
+/// `sync-pull` only prints guidance until remote registries exist, so it has
+/// nothing to snapshot; this pins that it writes nothing at all.
+#[test]
+fn sync_pull_takes_no_snapshot_and_writes_nothing_under_home() {
+    let home = tempfile::tempdir().unwrap();
+
+    let output = skrills(home.path(), &["sync-pull"]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let written: Vec<_> = fs::read_dir(home.path()).unwrap().collect();
+    assert!(written.is_empty(), "sync-pull wrote {written:?}");
+}
