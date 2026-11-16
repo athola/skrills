@@ -63,6 +63,41 @@ pub struct Entry {
     /// Where a [`Kind::Symlink`] pointed, exactly as the link held it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_target: Option<PathBuf>,
+    /// What the sync left at the path, from the last after-line for it.
+    /// `None` when the manifest has none (an older manifest, or a write that
+    /// failed); such a path is restored without checking what is there now.
+    #[serde(skip)]
+    pub after: Option<After>,
+}
+
+/// What a path held once the sync was done with it. Rollback compares this
+/// with the path today, so an edit made after the sync is not overwritten.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum After {
+    /// A regular file with this SHA-256 (lowercase hex).
+    File(String),
+    /// Nothing: the sync removed the path.
+    Absent,
+    /// A directory the sync made where it had removed something else.
+    Dir,
+}
+
+/// A manifest line appended once a recorded change completes. A path may
+/// get several; the last one describes the end of the sync.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct AfterLine {
+    pub(crate) path: PathBuf,
+    pub(crate) after: After,
+}
+
+/// Either kind of manifest line. An entry always has `prior` and an
+/// after-line never does, which is what tells them apart.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ManifestLine {
+    Entry(Entry),
+    After(AfterLine),
 }
 
 /// The sort of filesystem object an [`Entry`] describes.
@@ -116,6 +151,10 @@ pub struct RollbackReport {
     /// Paths skipped because rollback cannot recreate what was there: a
     /// special file, or a symlink on a platform without Unix links.
     pub not_restorable: Vec<PathBuf>,
+    /// Paths that no longer hold what the sync left, so someone changed
+    /// them since; they are kept as they are. [`force_rollback`] restores
+    /// them too.
+    pub changed_since_sync: Vec<PathBuf>,
 }
 
 /// `~/.skrills/snapshots`, or `None` when no home directory is known.
@@ -299,7 +338,20 @@ pub fn prune(root: &Path, now: SystemTime, keep: Duration) -> Result<usize> {
 /// directory, or the reverse, comes back in the order it was lost.
 /// Directories the sync created go last, deepest first, once the files in
 /// them are gone; one that still holds anything is left and reported.
+///
+/// A path that no longer holds what the sync left there was changed since,
+/// and is kept and listed in [`RollbackReport::changed_since_sync`].
 pub fn rollback(root: &Path, name: Option<&str>) -> Result<RollbackReport> {
+    rollback_checked(root, name, false)
+}
+
+/// [`rollback`] that also restores paths changed since the sync, discarding
+/// those changes.
+pub fn force_rollback(root: &Path, name: Option<&str>) -> Result<RollbackReport> {
+    rollback_checked(root, name, true)
+}
+
+fn rollback_checked(root: &Path, name: Option<&str>, force: bool) -> Result<RollbackReport> {
     let mut snapshots = list(root)?.into_iter();
     let chosen = match name {
         Some(wanted) => snapshots
@@ -319,12 +371,20 @@ pub fn rollback(root: &Path, name: Option<&str>) -> Result<RollbackReport> {
     let (mut restored, mut removed) = (0, 0);
     let mut created_dirs = Vec::new();
     let mut not_restorable = Vec::new();
+    let mut changed_since_sync = Vec::new();
     for (entry, blob) in entries.iter().zip(&blobs).rev() {
-        match entry.kind {
-            Kind::Dir => {
-                created_dirs.push(entry.path.as_path());
+        if entry.kind == Kind::Dir {
+            created_dirs.push(entry.path.as_path());
+            continue;
+        }
+        if let Some(left_by_sync) = &entry.after {
+            if !force && current_state(&entry.path)?.as_ref() != Some(left_by_sync) {
+                changed_since_sync.push(entry.path.clone());
                 continue;
             }
+        }
+        match entry.kind {
+            Kind::Dir => continue,
             Kind::Special => {
                 tracing::warn!(path = %entry.path.display(), "Cannot recreate a special file");
                 not_restorable.push(entry.path.clone());
@@ -371,7 +431,25 @@ pub fn rollback(root: &Path, name: Option<&str>) -> Result<RollbackReport> {
         dirs_removed,
         left_in_place,
         not_restorable,
+        changed_since_sync,
     })
+}
+
+/// What `path` holds now, in the terms of an after-line; `None` for
+/// something no after-line describes (a link or special file).
+/// The type is checked before any read, so a fifo is never opened.
+fn current_state(path: &Path) -> Result<Option<After>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => Ok(Some(After::Dir)),
+        Ok(meta) if meta.is_file() => {
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("Failed to read {}", path.display()))?;
+            Ok(Some(After::File(hash_content(&bytes))))
+        }
+        Ok(_) => Ok(None),
+        Err(e) if is_gone(&e) => Ok(Some(After::Absent)),
+        Err(e) => Err(e).with_context(|| format!("Failed to inspect {}", path.display())),
+    }
 }
 
 /// Whether `error` from inspecting a path means nothing is there: it is
@@ -401,18 +479,31 @@ fn remove_created_dir(path: &Path) -> Result<bool> {
 
 /// Reads a snapshot's manifest. A final line without its newline is a write
 /// an interrupt cut short, so it is skipped; any other bad line is an error.
+/// After-lines are folded into the entry for their path, the last one
+/// winning; one for a path with no entry is ignored.
 pub(crate) fn read_manifest(dir: &Path) -> Result<Vec<Entry>> {
     let path = dir.join(MANIFEST_FILE);
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
     let lines: Vec<&str> = text.lines().collect();
-    let mut entries = Vec::with_capacity(lines.len());
+    let mut entries: Vec<Entry> = Vec::with_capacity(lines.len());
+    let mut by_path = std::collections::HashMap::new();
     for (index, line) in lines.iter().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
         match serde_json::from_str(line) {
-            Ok(entry) => entries.push(entry),
+            Ok(ManifestLine::Entry(entry)) => {
+                by_path.insert(entry.path.clone(), entries.len());
+                entries.push(entry);
+            }
+            Ok(ManifestLine::After(after_line)) => match by_path.get(&after_line.path) {
+                Some(&position) => entries[position].after = Some(after_line.after),
+                None => tracing::warn!(
+                    path = %after_line.path.display(),
+                    "Ignoring an after-line for a path the snapshot never recorded"
+                ),
+            },
             Err(_) if index + 1 == lines.len() && !text.ends_with('\n') => {
                 tracing::warn!(path = %path.display(), "Ignoring a manifest line cut short by an interrupt");
             }
@@ -1120,8 +1211,8 @@ mod tests {
         let root = tmp.path().join("snaps");
         let session = begin_at(&root, at(SAMPLE)).unwrap();
         crate::adapters::utils::remove_file(&link).unwrap();
+        crate::adapters::utils::create_dir_all(&link).unwrap();
         drop(session);
-        std::fs::create_dir(&link).unwrap();
         std::fs::write(link.join("users-own.txt"), b"keep").unwrap();
 
         let err = rollback(&root, None).unwrap_err();
@@ -1158,6 +1249,157 @@ mod tests {
         snapshot_with_manifest(&root, &line);
         let err = rollback(&root, None).unwrap_err();
         assert!(err.to_string().contains("no link target"), "{err}");
+    }
+
+    #[test]
+    fn rollback_skips_a_file_the_user_edited_after_the_sync_and_reports_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = drop_a_recorded_change(tmp.path(), at(SAMPLE));
+        std::fs::write(&target, b"user edit").unwrap();
+
+        let report = rollback(&tmp.path().join("snaps"), None).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"user edit");
+        assert_eq!(report.changed_since_sync, std::slice::from_ref(&target));
+        assert_eq!(report.restored, 0);
+    }
+
+    #[test]
+    fn rollback_keeps_a_directory_the_user_put_where_the_sync_removed_a_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("asset");
+        std::fs::write(&path, b"was a file").unwrap();
+        let root = tmp.path().join("snaps");
+        let session = begin_at(&root, at(SAMPLE)).unwrap();
+        crate::adapters::utils::remove_file(&path).unwrap();
+        drop(session);
+        std::fs::create_dir(&path).unwrap();
+
+        let report = rollback(&root, None).unwrap();
+        assert!(path.is_dir());
+        assert_eq!(report.changed_since_sync, [path]);
+    }
+
+    #[test]
+    fn force_rollback_restores_a_file_the_user_edited_after_the_sync() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = drop_a_recorded_change(tmp.path(), at(SAMPLE));
+        std::fs::write(&target, b"user edit").unwrap();
+
+        let report = force_rollback(&tmp.path().join("snaps"), None).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"before");
+        assert!(report.changed_since_sync.is_empty());
+        assert_eq!(report.restored, 1);
+    }
+
+    #[test]
+    fn rollback_skips_a_file_the_user_deleted_after_the_sync() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = drop_a_recorded_change(tmp.path(), at(SAMPLE));
+        std::fs::remove_file(&target).unwrap();
+
+        let report = rollback(&tmp.path().join("snaps"), None).unwrap();
+        assert!(!target.exists(), "the user's deletion stands");
+        assert_eq!(report.changed_since_sync, std::slice::from_ref(&target));
+    }
+
+    #[test]
+    fn rollback_keeps_a_created_file_the_user_edited_after_the_sync() {
+        let tmp = tempfile::tempdir().unwrap();
+        let created = tmp.path().join("made.md");
+        let root = tmp.path().join("snaps");
+        let session = begin_at(&root, at(SAMPLE)).unwrap();
+        write_file(&created, b"by sync").unwrap();
+        drop(session);
+        std::fs::write(&created, b"now mine").unwrap();
+
+        let report = rollback(&root, None).unwrap();
+        assert_eq!(std::fs::read(&created).unwrap(), b"now mine");
+        assert_eq!(report.removed, 0);
+        assert_eq!(report.changed_since_sync, [created]);
+    }
+
+    #[test]
+    fn rollback_restores_a_file_the_sync_wrote_then_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("t.txt");
+        std::fs::write(&target, b"before").unwrap();
+        let root = tmp.path().join("snaps");
+        let session = begin_at(&root, at(SAMPLE)).unwrap();
+        write_file(&target, b"interim").unwrap();
+        crate::adapters::utils::remove_file(&target).unwrap();
+        drop(session);
+
+        let report = rollback(&root, None).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"before");
+        assert!(report.changed_since_sync.is_empty());
+    }
+
+    #[test]
+    fn rollback_of_a_manifest_without_after_hashes_restores_whatever_is_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("t");
+        std::fs::write(&target, b"edited by anyone").unwrap();
+        let root = tmp.path().join("snaps");
+        let dir = snapshot_with_manifest(
+            &root,
+            &format!(
+                "{{\"path\":{},\"prior\":\"file\",\"prior_hash\":\"{}\"}}\n",
+                serde_json::to_string(target.to_str().unwrap()).unwrap(),
+                hash_content(b"old")
+            ),
+        );
+        std::fs::write(dir.join(BLOB_DIR).join(hash_content(b"old")), b"old").unwrap();
+
+        let report = rollback(&root, None).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+        assert!(report.changed_since_sync.is_empty());
+    }
+
+    #[test]
+    fn rollback_restores_the_previous_backup_and_the_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("settings.json");
+        let backup = tmp.path().join("settings.json.skrills-bak");
+        std::fs::write(&config, b"v2").unwrap();
+        std::fs::write(&backup, b"v1").unwrap();
+        let root = tmp.path().join("snaps");
+        let session = begin_at(&root, at(SAMPLE)).unwrap();
+        crate::adapters::utils::write_config(&config, b"v3", false).unwrap();
+        drop(session);
+        assert_eq!(std::fs::read(&backup).unwrap(), b"v2");
+
+        rollback(&root, None).unwrap();
+        assert_eq!(std::fs::read(&config).unwrap(), b"v2");
+        assert_eq!(std::fs::read(&backup).unwrap(), b"v1");
+    }
+
+    #[test]
+    fn rollback_removes_a_backup_the_sync_created() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("settings.json");
+        let backup = tmp.path().join("settings.json.skrills-bak");
+        std::fs::write(&config, b"v1").unwrap();
+        let root = tmp.path().join("snaps");
+        let session = begin_at(&root, at(SAMPLE)).unwrap();
+        crate::adapters::utils::write_config(&config, b"v2", false).unwrap();
+        drop(session);
+
+        rollback(&root, None).unwrap();
+        assert_eq!(std::fs::read(&config).unwrap(), b"v1");
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn manifest_after_line_for_an_unrecorded_path_is_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = format!(
+            "{}{{\"path\":\"/tmp/other\",\"after\":\"absent\"}}\n",
+            absent_line("/tmp/a")
+        );
+        let dir = snapshot_with_manifest(tmp.path(), &manifest);
+        let entries = read_manifest(&dir).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].after, None);
     }
 
     #[test]
@@ -1211,9 +1453,9 @@ mod tests {
         let root = tmp.path().join("snaps");
         let session = begin_at(&root, at(SAMPLE)).unwrap();
         crate::adapters::utils::remove_file(&path).unwrap();
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(path.join("users-own.txt"), b"keep").unwrap();
+        crate::adapters::utils::create_dir_all(&path).unwrap();
         drop(session);
+        std::fs::write(path.join("users-own.txt"), b"keep").unwrap();
 
         let err = rollback(&root, None).unwrap_err();
         assert!(format!("{err:#}").contains("not empty"), "{err:#}");

@@ -133,6 +133,39 @@ fn sync_rollback_names_a_created_directory_it_left_because_it_is_not_empty() {
 }
 
 #[test]
+fn sync_rollback_keeps_a_file_edited_after_the_sync_unless_forced() {
+    let home = tempfile::tempdir().unwrap();
+    seed_codex_skill(home.path());
+    skrills(
+        home.path(),
+        &["sync-all", "--from", "codex", "--to", "claude"],
+    );
+    let synced = home.path().join(".claude/skills/cli-test/SKILL.md");
+    fs::write(&synced, "edited after the sync").unwrap();
+
+    let output = skrills(home.path(), &["sync-rollback"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let printed = stdout(&output);
+    assert!(printed.contains("Changed since the sync"), "{printed}");
+    assert!(printed.contains("--force"), "{printed}");
+    assert_eq!(
+        fs::read_to_string(&synced).unwrap(),
+        "edited after the sync"
+    );
+
+    let output = skrills(home.path(), &["sync-rollback", "--force"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!synced.exists());
+}
+
+#[test]
+fn sync_rollback_force_and_list_conflict() {
+    let home = tempfile::tempdir().unwrap();
+    let output = skrills(home.path(), &["sync-rollback", "--list", "--force"]);
+    assert!(!output.status.success());
+}
+
+#[test]
 fn sync_rollback_names_a_special_file_it_cannot_recreate() {
     let home = tempfile::tempdir().unwrap();
     let snapshot = home.path().join(".skrills/snapshots/20260101T000000Z");

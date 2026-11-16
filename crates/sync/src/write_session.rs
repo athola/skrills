@@ -13,7 +13,7 @@
 //! The directory is `0700` and its files `0600`; configs can hold secrets.
 
 use crate::adapters::utils::{atomic_write_unrecorded, hash_content, remove_tree_unrecorded};
-use crate::snapshot::{Entry, Kind, Prior, BLOB_DIR, MANIFEST_FILE};
+use crate::snapshot::{After, AfterLine, Entry, Kind, Prior, BLOB_DIR, MANIFEST_FILE};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::io::Write;
@@ -130,12 +130,55 @@ pub(crate) fn record_before_write(path: &Path) -> std::io::Result<()> {
     })
 }
 
+/// Appends the hash of `bytes`, which a write just put at `path`, so a
+/// rollback can tell whether anyone changed the file since. Call it only once
+/// the write succeeded. Does nothing outside a session or for a path this
+/// session never recorded.
+pub(crate) fn record_after_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    record_after(path, || Ok(After::File(hash_content(bytes))))
+}
+
+/// [`record_after_write`] for a copy, whose bytes are read back from `path`.
+pub(crate) fn record_after_copy(path: &Path) -> std::io::Result<()> {
+    record_after(path, || {
+        Ok(After::File(hash_content(&std::fs::read(path)?)))
+    })
+}
+
+/// Notes that the sync removed `path`, so a write earlier in the same sync is
+/// not mistaken for the user's file later.
+pub(crate) fn record_after_remove(path: &Path) -> std::io::Result<()> {
+    record_after(path, || Ok(After::Absent))
+}
+
+fn record_after(
+    path: &Path,
+    state: impl FnOnce() -> std::io::Result<After>,
+) -> std::io::Result<()> {
+    ACTIVE.with(|active| match active.borrow_mut().as_mut() {
+        Some(recorder) => {
+            let path = checked_path(path)?;
+            if !recorder.seen.contains(&path) {
+                return Ok(());
+            }
+            let after = AfterLine {
+                path,
+                after: state()?,
+            };
+            recorder.write_line(&serde_json::to_vec(&after)?)
+        }
+        None => Ok(()),
+    })
+}
+
 /// Stores the prior state of every file under `path` before the tree is
-/// removed. A `path` that is already gone records nothing; the removal
-/// reports that itself.
-pub(crate) fn record_tree_before_remove(path: &Path) -> std::io::Result<()> {
+/// removed, and returns the paths it recorded so the removal can mark them
+/// absent afterwards. A `path` that is already gone records nothing; the
+/// removal reports that itself.
+pub(crate) fn record_tree_before_remove(path: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut recorded = Vec::new();
     if !is_active() {
-        return Ok(());
+        return Ok(recorded);
     }
     // A root that is a symlink is recorded as the link: removing the tree
     // unlinks it and leaves what it points to alone.
@@ -150,15 +193,16 @@ pub(crate) fn record_tree_before_remove(path: &Path) -> std::io::Result<()> {
                 if e.io_error()
                     .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
             {
-                return Ok(());
+                return Ok(recorded);
             }
             Err(e) => return Err(e.into()),
         };
         if !entry.file_type().is_dir() {
             record_before_write(entry.path())?;
+            recorded.push(entry.path().to_path_buf());
         }
     }
-    Ok(())
+    Ok(recorded)
 }
 
 /// Records each directory missing on the way down to `dir` as one the sync
@@ -177,6 +221,17 @@ pub(crate) fn record_dirs_before_create(dir: &Path) -> std::io::Result<()> {
                 .collect();
             missing.reverse();
             for created in missing {
+                if recorder.seen.contains(created) {
+                    // The sync removed what was here earlier; say what it
+                    // leaves instead, or rollback would take this
+                    // directory for someone else's.
+                    let after = AfterLine {
+                        path: created.to_path_buf(),
+                        after: After::Dir,
+                    };
+                    recorder.write_line(&serde_json::to_vec(&after)?)?;
+                    continue;
+                }
                 let entry = Entry {
                     path: created.to_path_buf(),
                     prior: Prior::Absent,
@@ -184,6 +239,7 @@ pub(crate) fn record_dirs_before_create(dir: &Path) -> std::io::Result<()> {
                     mode: None,
                     kind: Kind::Dir,
                     link_target: None,
+                    after: None,
                 };
                 recorder.append(entry, None)?;
             }
@@ -207,6 +263,15 @@ fn checked_path(path: &Path) -> std::io::Result<PathBuf> {
 }
 
 impl Recorder {
+    /// Appends one manifest line and syncs it, so an interrupt leaves a
+    /// manifest that matches what was changed.
+    fn write_line(&mut self, json: &[u8]) -> std::io::Result<()> {
+        let mut line = json.to_vec();
+        line.push(b'\n');
+        self.manifest.write_all(&line)?;
+        self.manifest.sync_all()
+    }
+
     fn record(&mut self, path: &Path) -> std::io::Result<()> {
         let path = checked_path(path)?;
         if path.starts_with(&self.dir) || self.seen.contains(&path) {
@@ -235,10 +300,7 @@ impl Recorder {
                 atomic_write_unrecorded(&blob, &bytes, true)?;
             }
         }
-        let mut line = serde_json::to_vec(&entry)?;
-        line.push(b'\n');
-        self.manifest.write_all(&line)?;
-        self.manifest.sync_all()?;
+        self.write_line(&serde_json::to_vec(&entry)?)?;
         self.changed_content |= entry.kind != Kind::Dir;
         self.seen.insert(entry.path);
         Ok(())
@@ -262,6 +324,7 @@ fn capture(path: &Path) -> std::io::Result<Option<(Entry, Option<Vec<u8>>)>> {
                 mode: None,
                 kind: Kind::File,
                 link_target: None,
+                after: None,
             };
             return Ok(Some((absent, None)));
         }
@@ -278,6 +341,7 @@ fn capture(path: &Path) -> std::io::Result<Option<(Entry, Option<Vec<u8>>)>> {
             mode: None,
             kind: Kind::Symlink,
             link_target: Some(std::fs::read_link(path)?),
+            after: None,
         };
         return Ok(Some((link, None)));
     }
@@ -290,6 +354,7 @@ fn capture(path: &Path) -> std::io::Result<Option<(Entry, Option<Vec<u8>>)>> {
             mode: None,
             kind: Kind::Special,
             link_target: None,
+            after: None,
         };
         return Ok(Some((special, None)));
     }
@@ -301,6 +366,7 @@ fn capture(path: &Path) -> std::io::Result<Option<(Entry, Option<Vec<u8>>)>> {
         mode: file_mode(&meta),
         kind: Kind::File,
         link_target: None,
+        after: None,
     };
     Ok(Some((entry, Some(bytes))))
 }
@@ -319,7 +385,7 @@ fn file_mode(_meta: &std::fs::Metadata) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::snapshot::{read_manifest, Kind};
+    use crate::snapshot::{read_manifest, After, Kind};
 
     fn session_in(root: &Path) -> (WriteSession, PathBuf) {
         let dir = root.join("snap");
@@ -595,6 +661,85 @@ mod tests {
         let escaping = tmp.path().join("a").join("..").join("b");
         let err = record_dirs_before_create(&escaping).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn a_completed_write_appends_the_after_hash_of_its_final_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.txt");
+        std::fs::write(&file, b"old").unwrap();
+        let (session, dir) = session_in(tmp.path());
+        record_before_write(&file).unwrap();
+        record_after_write(&file, b"first").unwrap();
+        record_after_write(&file, b"final").unwrap();
+        drop(session);
+
+        let entries = read_manifest(&dir).unwrap();
+        assert_eq!(entries.len(), 1, "after lines are not entries of their own");
+        assert_eq!(entries[0].after, Some(After::File(hash_content(b"final"))));
+    }
+
+    #[test]
+    fn a_removal_after_a_write_leaves_the_path_absent_after_the_sync() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.txt");
+        let (session, dir) = session_in(tmp.path());
+        record_before_write(&file).unwrap();
+        record_after_write(&file, b"made").unwrap();
+        record_after_remove(&file).unwrap();
+        drop(session);
+        assert_eq!(read_manifest(&dir).unwrap()[0].after, Some(After::Absent));
+    }
+
+    #[test]
+    fn creating_a_directory_where_the_sync_removed_a_file_marks_it_a_directory_after() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("asset");
+        std::fs::write(&path, b"file").unwrap();
+        let (session, dir) = session_in(tmp.path());
+        record_before_write(&path).unwrap();
+        record_after_remove(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        record_dirs_before_create(&path).unwrap();
+        drop(session);
+
+        let entries = read_manifest(&dir).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, Kind::File);
+        assert_eq!(entries[0].after, Some(After::Dir));
+    }
+
+    #[test]
+    fn an_after_hash_for_a_path_never_recorded_is_not_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_session, dir) = session_in(tmp.path());
+        record_after_write(&tmp.path().join("unseen"), b"x").unwrap();
+        let text = std::fs::read_to_string(dir.join(MANIFEST_FILE)).unwrap();
+        assert!(text.is_empty());
+    }
+
+    #[test]
+    fn after_hashes_outside_a_session_do_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        record_after_write(&tmp.path().join("f"), b"x").unwrap();
+        record_after_remove(&tmp.path().join("f")).unwrap();
+        record_after_copy(&tmp.path().join("f")).unwrap();
+        assert!(!is_active());
+    }
+
+    #[test]
+    fn a_copy_appends_the_hash_of_the_file_it_produced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("copied");
+        let (session, dir) = session_in(tmp.path());
+        record_before_write(&file).unwrap();
+        std::fs::write(&file, b"copied bytes").unwrap();
+        record_after_copy(&file).unwrap();
+        drop(session);
+        assert_eq!(
+            read_manifest(&dir).unwrap()[0].after,
+            Some(After::File(hash_content(b"copied bytes")))
+        );
     }
 
     #[test]

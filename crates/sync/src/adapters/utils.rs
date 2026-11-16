@@ -286,7 +286,8 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8], private: bool) -> std::io:
         crate::write_session::record_dirs_before_create(parent)?;
     }
     crate::write_session::record_before_write(&dest)?;
-    atomic_write_unrecorded(path, bytes, private)
+    atomic_write_unrecorded(path, bytes, private)?;
+    crate::write_session::record_after_write(&dest, bytes)
 }
 
 /// [`std::fs::create_dir_all`] that first records each directory it is about
@@ -316,7 +317,7 @@ fn resolve_destination(path: &Path) -> std::io::Result<std::path::PathBuf> {
 }
 
 /// [`atomic_write`] without telling the snapshot recorder. For the files the
-/// snapshot itself keeps and for `.skrills-bak` backups, which must not be
+/// snapshot itself keeps and for skrills' own sync state, which must not be
 /// recorded as something a sync changed.
 pub(crate) fn atomic_write_unrecorded(
     path: &Path,
@@ -386,14 +387,19 @@ pub(crate) fn write_file(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std
 /// Removes one file, recording its content first so a snapshot can restore it.
 pub(crate) fn remove_file(path: &Path) -> std::io::Result<()> {
     crate::write_session::record_before_write(path)?;
-    std::fs::remove_file(path)
+    std::fs::remove_file(path)?;
+    crate::write_session::record_after_remove(path)
 }
 
 /// Removes a directory tree, recording every file in it first so a snapshot
 /// can restore them.
 pub(crate) fn remove_tree(path: &Path) -> std::io::Result<()> {
-    crate::write_session::record_tree_before_remove(path)?;
-    std::fs::remove_dir_all(path)
+    let removed = crate::write_session::record_tree_before_remove(path)?;
+    std::fs::remove_dir_all(path)?;
+    for file in removed {
+        crate::write_session::record_after_remove(&file)?;
+    }
+    Ok(())
 }
 
 /// [`remove_tree`] for the snapshot's own storage, which is never recorded.
@@ -443,8 +449,11 @@ pub(crate) fn remove_dir(path: &Path) -> std::io::Result<()> {
 /// `std::fs::copy` opens a destination symlink and writes into what it points
 /// to, so the resolved target is what gets recorded, as [`atomic_write`] does.
 pub(crate) fn copy(src: &Path, dest: &Path) -> std::io::Result<u64> {
-    crate::write_session::record_before_write(&resolve_destination(dest)?)?;
-    std::fs::copy(src, dest)
+    let resolved = resolve_destination(dest)?;
+    crate::write_session::record_before_write(&resolved)?;
+    let copied = std::fs::copy(src, dest)?;
+    crate::write_session::record_after_copy(&resolved)?;
+    Ok(copied)
 }
 
 /// Writes a user-owned config file (`settings.json`, `CLAUDE.md`, `mcp.json`,
@@ -455,15 +464,21 @@ pub(crate) fn copy(src: &Path, dest: &Path) -> std::io::Result<u64> {
 /// Returns whether the file was written. Backups are only kept for config
 /// files: a `.skrills-bak` beside a skill would be picked up as one of its
 /// module files on the next sync.
+///
+/// The config is recorded before its backup is written, so a sync cut short
+/// between the two still has the config in its snapshot. The backup write is
+/// recorded too: rollback puts back the previous backup, or removes one this
+/// sync created.
 pub(crate) fn write_config(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<bool> {
     match std::fs::read(path) {
         Ok(existing) if existing == bytes => return Ok(false),
         Ok(existing) => {
+            crate::write_session::record_before_write(&resolve_destination(path)?)?;
             let mut backup = path.as_os_str().to_owned();
             backup.push(BACKUP_SUFFIX);
             // The backup holds the same secrets as the original, so it is
             // always private.
-            atomic_write_unrecorded(Path::new(&backup), &existing, true)?;
+            atomic_write(Path::new(&backup), &existing, true)?;
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
@@ -1056,16 +1071,93 @@ mod tests {
     }
 
     #[test]
-    fn write_config_snapshots_the_config_but_not_its_backup_file() {
+    fn write_config_records_the_config_before_its_backup_and_both_after_hashes() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("CLAUDE.md");
+        let backup = tmp.path().join("CLAUDE.md.skrills-bak");
         std::fs::write(&path, b"mine").unwrap();
         let entries = recorded_by(&tmp, || {
             assert!(write_config(&path, b"synced", false).unwrap());
         });
         let paths: Vec<_> = entries.iter().map(|e| e.path.clone()).collect();
-        assert_eq!(paths, std::slice::from_ref(&path));
-        assert!(tmp.path().join("CLAUDE.md.skrills-bak").exists());
+        assert_eq!(paths, [path.clone(), backup.clone()]);
+        assert_eq!(entries[1].prior, crate::snapshot::Prior::Absent);
+        assert_eq!(
+            entries[0].after,
+            Some(crate::snapshot::After::File(hash_content(b"synced")))
+        );
+        assert_eq!(
+            entries[1].after,
+            Some(crate::snapshot::After::File(hash_content(b"mine")))
+        );
+    }
+
+    #[test]
+    fn atomic_write_records_the_after_hash_of_what_it_wrote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("f");
+        let entries = recorded_by(&tmp, || atomic_write(&path, b"new", false).unwrap());
+        assert_eq!(
+            entries[0].after,
+            Some(crate::snapshot::After::File(hash_content(b"new")))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_atomic_write_records_no_after_hash() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let locked = tmp.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let path = locked.join("f");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let mut outcome = Ok(());
+        let entries = recorded_by(&tmp, || outcome = atomic_write(&path, b"new", false));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // A privileged user can write anyway; then the after hash is right.
+        match outcome {
+            Ok(()) => assert!(entries[0].after.is_some()),
+            Err(_) => assert_eq!(entries[0].after, None),
+        }
+    }
+
+    #[test]
+    fn copy_records_the_after_hash_of_the_copied_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (src, dest) = (tmp.path().join("src"), tmp.path().join("dest"));
+        std::fs::write(&src, b"from source").unwrap();
+        let entries = recorded_by(&tmp, || {
+            copy(&src, &dest).unwrap();
+        });
+        assert_eq!(
+            entries[0].after,
+            Some(crate::snapshot::After::File(hash_content(b"from source")))
+        );
+    }
+
+    #[test]
+    fn remove_file_records_the_path_as_absent_after_the_sync() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("gone");
+        std::fs::write(&path, b"x").unwrap();
+        let entries = recorded_by(&tmp, || remove_file(&path).unwrap());
+        assert_eq!(entries[0].after, Some(crate::snapshot::After::Absent));
+    }
+
+    #[test]
+    fn remove_tree_records_each_removed_file_as_absent_after_the_sync() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tree = tmp.path().join("tree");
+        std::fs::create_dir_all(tree.join("sub")).unwrap();
+        std::fs::write(tree.join("a"), b"1").unwrap();
+        std::fs::write(tree.join("sub/b"), b"2").unwrap();
+        let entries = recorded_by(&tmp, || remove_tree(&tree).unwrap());
+        assert_eq!(entries.len(), 2);
+        assert!(entries
+            .iter()
+            .all(|e| e.after == Some(crate::snapshot::After::Absent)));
     }
 
     #[test]

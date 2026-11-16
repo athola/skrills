@@ -440,7 +440,11 @@ pub(crate) fn skipped_commands_note(
 }
 
 /// Handle the `sync-rollback` command.
-pub(crate) fn handle_sync_rollback_command(list: bool, snapshot: Option<String>) -> Result<()> {
+pub(crate) fn handle_sync_rollback_command(
+    list: bool,
+    snapshot: Option<String>,
+    force: bool,
+) -> Result<()> {
     let root = skrills_sync::snapshot::default_root()
         .ok_or_else(|| anyhow!("no home directory, so ~/.skrills/snapshots cannot be located"))?;
     if list {
@@ -450,11 +454,21 @@ pub(crate) fn handle_sync_rollback_command(list: bool, snapshot: Option<String>)
         );
         return Ok(());
     }
-    let report = skrills_sync::snapshot::rollback(&root, snapshot.as_deref())?;
+    let report = if force {
+        skrills_sync::snapshot::force_rollback(&root, snapshot.as_deref())?
+    } else {
+        skrills_sync::snapshot::rollback(&root, snapshot.as_deref())?
+    };
     println!(
         "Rolled back {}: restored {} file(s), deleted {} file(s) and {} director(ies) the sync had created",
         report.snapshot, report.restored, report.removed, report.dirs_removed
     );
+    for path in &report.changed_since_sync {
+        println!(
+            "Changed since the sync, not restored (--force restores it): {}",
+            path.display()
+        );
+    }
     for path in &report.not_restorable {
         println!(
             "Not restored (a special file or link this platform cannot recreate): {}",
@@ -804,7 +818,7 @@ mod tests {
             "# Hello\n"
         );
 
-        handle_sync_rollback_command(false, None)?;
+        handle_sync_rollback_command(false, None, false)?;
 
         assert!(!root.join("skills/alpha/SKILL.md").exists());
         assert!(!root.join("workflows/hello.md").exists());

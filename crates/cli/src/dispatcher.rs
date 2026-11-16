@@ -291,7 +291,11 @@ pub fn run() -> Result<()> {
             interactive,
         }),
         Commands::SyncStatus { from, to } => handle_sync_status_command(from, to),
-        Commands::SyncRollback { list, snapshot } => handle_sync_rollback_command(list, snapshot),
+        Commands::SyncRollback {
+            list,
+            snapshot,
+            force,
+        } => handle_sync_rollback_command(list, snapshot, force),
         Commands::Doctor => doctor_report(),
         Commands::Tui { skill_dirs } => tui_flow(&merge_extra_dirs(&skill_dirs)),
         #[cfg(feature = "dashboard")]

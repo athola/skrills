@@ -169,6 +169,7 @@ overwrite or delete, so a bad sync can be undone:
 skrills sync-rollback            # Restore the most recent snapshot
 skrills sync-rollback --list     # Show snapshots, newest first, with timestamps
 skrills sync-rollback <NAME>     # Restore a snapshot named in --list
+skrills sync-rollback --force    # Also restore files changed since the sync
 ```
 
 Snapshots live in `~/.skrills/snapshots/<UTC timestamp>/` as a JSON-lines
@@ -183,7 +184,16 @@ created, and touches only paths listed in the manifest. A symlink is kept as
 its link target, never followed: a write through a link records the file it
 points to, and a link the sync removed or replaced is recreated exactly.
 A fifo, socket or device file cannot be kept; rollback skips it and names it
-in the output. A manifest path that
+in the output.
+
+The manifest also records what each path held when the sync finished. If a
+file no longer matches that, because you edited, deleted or replaced it
+after the sync, rollback keeps your version and lists it as changed since
+the sync. `--force` restores those files too, discarding the later change.
+Snapshots taken before this check existed have no such record and are
+restored as before. A config file's `.skrills-bak` backup is part of the
+snapshot: rollback puts back the previous backup, or removes one the sync
+created. A manifest path that
 is not absolute or contains `..` refuses the whole rollback. Directories a
 sync created are removed after the files, deepest first, but only when they
 are empty; one you have since put files in is left and named in the output.

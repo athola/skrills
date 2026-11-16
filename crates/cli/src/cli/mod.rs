@@ -307,6 +307,10 @@ pub enum Commands {
         list: bool,
         /// Snapshot name from `--list` (default: the most recent).
         snapshot: Option<String>,
+        /// Also restore files changed since the sync, discarding those
+        /// changes. Without it they are kept and listed.
+        #[arg(long, conflicts_with = "list")]
+        force: bool,
     },
     /// Diagnoses Codex MCP configuration for this server.
     Doctor,
