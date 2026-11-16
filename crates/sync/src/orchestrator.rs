@@ -3082,22 +3082,30 @@ mod tests {
         let snaps = tempdir().unwrap();
         let src_dir = tempdir().unwrap();
         let tgt_dir = tempdir().unwrap();
-        SyncOrchestrator::new(
-            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
-            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
-        )
-        .with_snapshot_root(Some(snaps.path().to_path_buf()))
-        .sync(&SyncParams {
-            sync_mcp_servers: false,
-            sync_preferences: false,
-            ..Default::default()
-        })
-        .unwrap()
-        .success
-        .then_some(())
-        .expect("sync succeeds");
+        let sync_once = || {
+            SyncOrchestrator::new(
+                ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+                CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+            )
+            .with_snapshot_root(Some(snaps.path().to_path_buf()))
+            .sync(&SyncParams {
+                sync_mcp_servers: false,
+                sync_preferences: false,
+                ..Default::default()
+            })
+            .unwrap()
+            .success
+            .then_some(())
+            .expect("sync succeeds");
+        };
+        // The first sync creates the target's folders, which rollback must
+        // be able to remove; the second finds them and changes nothing.
+        sync_once();
+        let first = crate::snapshot::list(snaps.path()).unwrap();
+        assert_eq!(first.len(), 1);
+        sync_once();
 
-        assert!(crate::snapshot::list(snaps.path()).unwrap().is_empty());
+        assert_eq!(crate::snapshot::list(snaps.path()).unwrap(), first);
     }
 
     #[test]

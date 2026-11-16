@@ -1139,6 +1139,36 @@ mod tests {
         assert!(report.left_in_place.is_empty());
     }
 
+    /// A sync that only makes `new/deeper` below `base`, as an adapter
+    /// creating its target folders with nothing to write into them.
+    fn sync_creating_only_directories(base: &Path, root: &Path, now: SystemTime) {
+        let session = begin_at(root, now).unwrap();
+        crate::adapters::utils::create_dir_all(&base.join("new").join("deeper")).unwrap();
+        drop(session);
+    }
+
+    #[test]
+    fn rollback_removes_the_directories_a_directories_only_sync_created() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        sync_creating_only_directories(tmp.path(), &root, at(SAMPLE));
+
+        let report = rollback(&root, None).unwrap();
+        assert!(!tmp.path().join("new").exists());
+        assert_eq!(report.dirs_removed, 2);
+    }
+
+    #[test]
+    fn rerunning_a_directories_only_sync_leaves_no_second_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        sync_creating_only_directories(tmp.path(), &root, at(SAMPLE));
+        sync_creating_only_directories(tmp.path(), &root, at(SAMPLE + 60));
+
+        let names: Vec<String> = list(&root).unwrap().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["20261113T142530Z"]);
+    }
+
     #[test]
     fn rollback_leaves_a_created_directory_the_user_added_files_to() {
         let tmp = tempfile::tempdir().unwrap();

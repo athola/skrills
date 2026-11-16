@@ -177,7 +177,8 @@ Snapshots live in `~/.skrills/snapshots/<UTC timestamp>/` as a JSON-lines
 `manifest.jsonl` plus the prior bytes of each touched file, so only changed
 files are stored. The directory is mode `0700` and its files `0600`, because
 configs can hold secrets. A dry run takes no snapshot, and a sync that
-changes nothing leaves none. `sync-all` takes one snapshot for the whole
+changes nothing leaves none. A sync that only creates empty directories
+keeps its snapshot, so rollback can remove them. `sync-all` takes one snapshot for the whole
 invocation, covering every target.
 
 Rollback restores prior bytes and permissions, deletes files the sync

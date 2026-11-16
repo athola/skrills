@@ -29,17 +29,14 @@ struct Recorder {
     dir: PathBuf,
     manifest: std::fs::File,
     seen: HashSet<PathBuf>,
-    /// Whether anything other than a created directory was recorded.
-    changed_content: bool,
 }
 
 /// Keeps a recorder installed on this thread until dropped.
 ///
-/// A session whose sync changed nothing removes its directory on drop, so an
+/// A session whose sync recorded nothing removes its directory on drop, so an
 /// idle sync does not bury the last useful snapshot under an empty one. A
-/// sync that only created empty directories (adapters make their target
-/// folders up front) counts as idle: those directories are left behind, as
-/// they were before directories were recorded.
+/// sync that only created directories keeps its snapshot, or rollback could
+/// not remove them; running it again finds them there and records nothing.
 /// Not `Send`: the recorder lives in the installing thread's storage.
 #[must_use = "dropping the session immediately stops recording"]
 pub struct WriteSession {
@@ -71,7 +68,6 @@ impl WriteSession {
                 dir: dir.to_path_buf(),
                 manifest,
                 seen: HashSet::new(),
-                changed_content: false,
             });
         });
         Ok(Self {
@@ -85,7 +81,7 @@ impl Drop for WriteSession {
         let Some(recorder) = ACTIVE.with(|active| active.borrow_mut().take()) else {
             return;
         };
-        if recorder.changed_content {
+        if !recorder.seen.is_empty() {
             return;
         }
         if let Err(e) = remove_tree_unrecorded(&recorder.dir) {
@@ -301,7 +297,6 @@ impl Recorder {
             }
         }
         self.write_line(&serde_json::to_vec(&entry)?)?;
-        self.changed_content |= entry.kind != Kind::Dir;
         self.seen.insert(entry.path);
         Ok(())
     }
@@ -619,12 +614,12 @@ mod tests {
     }
 
     #[test]
-    fn a_session_that_only_created_directories_leaves_no_snapshot() {
+    fn a_session_that_only_created_directories_keeps_its_snapshot() {
         let tmp = tempfile::tempdir().unwrap();
         let (session, dir) = session_in(tmp.path());
         record_dirs_before_create(&tmp.path().join("empty")).unwrap();
         drop(session);
-        assert!(!dir.exists());
+        assert_eq!(read_manifest(&dir).unwrap().len(), 1);
     }
 
     #[test]
