@@ -402,6 +402,10 @@ const SYNC_LOCK_FILE: &str = ".skrills-sync.lock";
 
 /// Waits for and takes the advisory lock on `root`'s [`SYNC_LOCK_FILE`]. The
 /// lock is released when the returned file is dropped.
+///
+/// Opens the file directly, not through the recording helpers, and the
+/// raw-mutation test allows it by name: the lock is not user content, and a
+/// rollback that removed it could pull it from under a running sync.
 fn lock_target(root: &std::path::Path) -> Result<std::fs::File> {
     std::fs::create_dir_all(root)
         .with_context(|| format!("Failed to create {}", root.display()))?;
