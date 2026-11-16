@@ -222,7 +222,6 @@ impl AgentAdapter for CursorAdapter {
     ) -> Result<WriteReport> {
         crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         use std::collections::HashSet;
-        use std::fs;
         use std::path::PathBuf;
 
         let mut report = WriteReport::default();
@@ -232,7 +231,7 @@ impl AgentAdapter for CursorAdapter {
         }
 
         let local_dir = self.root.join("plugins").join("local");
-        fs::create_dir_all(&local_dir)?;
+        crate::adapters::utils::create_dir_all(&local_dir)?;
 
         let plan = plan_mirror(&local_dir, assets);
         report.warnings.extend(plan.refusals);
@@ -559,7 +558,7 @@ fn prepare_plugin_dir(plugin_dir: &std::path::Path) -> std::result::Result<(), S
             plugin_dir.display()
         )),
         Ok(_) => Ok(()),
-        Err(_) => fs::create_dir_all(plugin_dir).map_err(|e| {
+        Err(_) => crate::adapters::utils::create_dir_all(plugin_dir).map_err(|e| {
             format!(
                 "Could not create plugin mirror {}: {e}",
                 plugin_dir.display()
@@ -681,7 +680,7 @@ fn write_one_asset(
 
     if !content_matches {
         if let Some(parent) = dest.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
+            if let Err(e) = crate::adapters::utils::create_dir_all(parent) {
                 tracing::warn!(plugin = %dir_name, error = %e, "Could not create asset parent");
                 report.warnings.push(format!(
                     "Skipped plugin asset {}/{}: {e}",

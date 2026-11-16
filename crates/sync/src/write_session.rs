@@ -13,7 +13,7 @@
 //! The directory is `0700` and its files `0600`; configs can hold secrets.
 
 use crate::adapters::utils::{atomic_write_unrecorded, hash_content, remove_tree_unrecorded};
-use crate::snapshot::{Entry, Prior, BLOB_DIR, MANIFEST_FILE};
+use crate::snapshot::{Entry, Kind, Prior, BLOB_DIR, MANIFEST_FILE};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::io::Write;
@@ -29,12 +29,17 @@ struct Recorder {
     dir: PathBuf,
     manifest: std::fs::File,
     seen: HashSet<PathBuf>,
+    /// Whether anything other than a created directory was recorded.
+    changed_content: bool,
 }
 
 /// Keeps a recorder installed on this thread until dropped.
 ///
 /// A session whose sync changed nothing removes its directory on drop, so an
-/// idle sync does not bury the last useful snapshot under an empty one.
+/// idle sync does not bury the last useful snapshot under an empty one. A
+/// sync that only created empty directories (adapters make their target
+/// folders up front) counts as idle: those directories are left behind, as
+/// they were before directories were recorded.
 /// Not `Send`: the recorder lives in the installing thread's storage.
 #[must_use = "dropping the session immediately stops recording"]
 pub struct WriteSession {
@@ -66,6 +71,7 @@ impl WriteSession {
                 dir: dir.to_path_buf(),
                 manifest,
                 seen: HashSet::new(),
+                changed_content: false,
             });
         });
         Ok(Self {
@@ -79,7 +85,7 @@ impl Drop for WriteSession {
         let Some(recorder) = ACTIVE.with(|active| active.borrow_mut().take()) else {
             return;
         };
-        if !recorder.seen.is_empty() {
+        if recorder.changed_content {
             return;
         }
         if let Err(e) = remove_tree_unrecorded(&recorder.dir) {
@@ -149,21 +155,68 @@ pub(crate) fn record_tree_before_remove(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Records each directory missing on the way down to `dir` as one the sync
+/// creates, shallowest first, so a rollback can remove what the sync added
+/// to the tree and not only the files. Does nothing outside a session.
+pub(crate) fn record_dirs_before_create(dir: &Path) -> std::io::Result<()> {
+    ACTIVE.with(|active| match active.borrow_mut().as_mut() {
+        Some(recorder) => {
+            let dir = checked_path(dir)?;
+            let mut missing: Vec<&Path> = dir
+                .ancestors()
+                .take_while(|ancestor| {
+                    matches!(std::fs::symlink_metadata(ancestor),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+                })
+                .collect();
+            missing.reverse();
+            for created in missing {
+                let entry = Entry {
+                    path: created.to_path_buf(),
+                    prior: Prior::Absent,
+                    prior_hash: None,
+                    mode: None,
+                    kind: Kind::Dir,
+                };
+                recorder.append(entry, None)?;
+            }
+            Ok(())
+        }
+        None => Ok(()),
+    })
+}
+
+/// `path` made absolute, refused when it holds `..`, which would let a
+/// manifest name a path outside what the sync wrote.
+fn checked_path(path: &Path) -> std::io::Result<PathBuf> {
+    let path = std::path::absolute(path)?;
+    if path.components().any(|part| part == Component::ParentDir) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("cannot snapshot {}: it contains `..`", path.display()),
+        ));
+    }
+    Ok(path)
+}
+
 impl Recorder {
     fn record(&mut self, path: &Path) -> std::io::Result<()> {
-        let path = std::path::absolute(path)?;
-        if path.components().any(|part| part == Component::ParentDir) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("cannot snapshot {}: it contains `..`", path.display()),
-            ));
-        }
+        let path = checked_path(path)?;
         if path.starts_with(&self.dir) || self.seen.contains(&path) {
             return Ok(());
         }
         let Some((entry, bytes)) = capture(&path)? else {
             return Ok(());
         };
+        self.append(entry, bytes)
+    }
+
+    /// Stores `entry` and its prior bytes, unless its path is the snapshot's
+    /// own or was already recorded in this session.
+    fn append(&mut self, entry: Entry, bytes: Option<Vec<u8>>) -> std::io::Result<()> {
+        if entry.path.starts_with(&self.dir) || self.seen.contains(&entry.path) {
+            return Ok(());
+        }
         if let (Some(bytes), Some(hash)) = (bytes, entry.prior_hash.as_deref()) {
             let blob = self.dir.join(BLOB_DIR).join(hash);
             if !blob.exists() {
@@ -179,7 +232,8 @@ impl Recorder {
         line.push(b'\n');
         self.manifest.write_all(&line)?;
         self.manifest.sync_all()?;
-        self.seen.insert(path);
+        self.changed_content |= entry.kind != Kind::Dir;
+        self.seen.insert(entry.path);
         Ok(())
     }
 }
@@ -196,6 +250,7 @@ fn capture(path: &Path) -> std::io::Result<Option<(Entry, Option<Vec<u8>>)>> {
                 prior: Prior::Absent,
                 prior_hash: None,
                 mode: None,
+                kind: Kind::File,
             };
             return Ok(Some((absent, None)));
         }
@@ -214,6 +269,7 @@ fn capture(path: &Path) -> std::io::Result<Option<(Entry, Option<Vec<u8>>)>> {
         prior: Prior::File,
         prior_hash: Some(hash_content(&bytes)),
         mode: file_mode(&meta),
+        kind: Kind::File,
     };
     Ok(Some((entry, Some(bytes))))
 }
@@ -232,7 +288,7 @@ fn file_mode(_meta: &std::fs::Metadata) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::snapshot::read_manifest;
+    use crate::snapshot::{read_manifest, Kind};
 
     fn session_in(root: &Path) -> (WriteSession, PathBuf) {
         let dir = root.join("snap");
@@ -410,6 +466,67 @@ mod tests {
         record_tree_before_remove(&tmp.path().join("gone")).unwrap();
         drop(session);
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn creating_directories_records_each_new_one_shallowest_first_as_an_absent_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let deep = tmp.path().join("a").join("b").join("c");
+        let (_session, dir) = session_in(tmp.path());
+        record_dirs_before_create(&deep).unwrap();
+
+        let entries = read_manifest(&dir).unwrap();
+        let paths: Vec<_> = entries.iter().map(|e| e.path.clone()).collect();
+        let a = tmp.path().join("a");
+        assert_eq!(paths, [a.clone(), a.join("b"), a.join("b").join("c")]);
+        assert!(entries
+            .iter()
+            .all(|e| e.prior == Prior::Absent && e.kind == Kind::Dir));
+    }
+
+    #[test]
+    fn a_session_that_only_created_directories_leaves_no_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (session, dir) = session_in(tmp.path());
+        record_dirs_before_create(&tmp.path().join("empty")).unwrap();
+        drop(session);
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn creating_a_directory_that_exists_records_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let existing = tmp.path().join("there");
+        std::fs::create_dir(&existing).unwrap();
+        let (session, dir) = session_in(tmp.path());
+        record_dirs_before_create(&existing).unwrap();
+        drop(session);
+        assert!(!dir.exists(), "nothing was recorded");
+    }
+
+    #[test]
+    fn directories_inside_the_snapshot_are_not_recorded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (session, dir) = session_in(tmp.path());
+        record_dirs_before_create(&dir.join(BLOB_DIR).join("sub")).unwrap();
+        drop(session);
+        assert!(!dir.exists(), "nothing was recorded");
+    }
+
+    #[test]
+    fn creating_directories_outside_a_session_records_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        record_dirs_before_create(&tmp.path().join("x/y")).unwrap();
+        assert!(!tmp.path().join("x").exists(), "recording never creates");
+    }
+
+    #[test]
+    fn a_directory_path_with_parent_components_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_session, _dir) = session_in(tmp.path());
+        let escaping = tmp.path().join("a").join("..").join("b");
+        let err = record_dirs_before_create(&escaping).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]

@@ -38,7 +38,7 @@ fn is_hidden_rel_path(rel: &Path) -> bool {
 fn mirror_path_if_changed(src: &Path, dest_root: &Path, rel: &Path) -> Result<bool> {
     let dest = dest_root.join(rel);
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
+        crate::adapters::utils::create_dir_all(parent)?;
     }
     let should_copy = should_copy_by_content(src, &dest)?;
     if should_copy {

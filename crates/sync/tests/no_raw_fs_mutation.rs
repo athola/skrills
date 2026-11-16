@@ -5,9 +5,10 @@
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-/// Call shapes that mutate files. Directory creation is absent on purpose:
-/// an empty directory holds nothing a rollback needs to restore.
+/// Call shapes that mutate files. Directory creation is among them: a
+/// directory the recorder never saw is one a rollback cannot remove.
 const RAW_MUTATIONS: &[&str] = &[
+    "fs::create_dir_all(",
     "fs::write(",
     "fs::copy(",
     "fs::rename(",

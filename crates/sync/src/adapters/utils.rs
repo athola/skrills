@@ -281,8 +281,19 @@ static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 /// The destination's prior state goes to the active
 /// [`write_session`](crate::write_session) first, so a snapshot can restore it.
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
-    crate::write_session::record_before_write(&resolve_destination(path)?)?;
+    let dest = resolve_destination(path)?;
+    if let Some(parent) = dest.parent().filter(|p| !p.as_os_str().is_empty()) {
+        crate::write_session::record_dirs_before_create(parent)?;
+    }
+    crate::write_session::record_before_write(&dest)?;
     atomic_write_unrecorded(path, bytes, private)
+}
+
+/// [`std::fs::create_dir_all`] that first records each directory it is about
+/// to create, so a rollback can remove the ones the sync added.
+pub(crate) fn create_dir_all(path: &Path) -> std::io::Result<()> {
+    crate::write_session::record_dirs_before_create(path)?;
+    std::fs::create_dir_all(path)
 }
 
 /// Where a write to `path` lands: the path itself, or the target of a symlink
@@ -574,7 +585,7 @@ impl BatchWriter {
             return Ok(());
         }
         let written = match path.parent() {
-            Some(parent) => std::fs::create_dir_all(parent),
+            Some(parent) => create_dir_all(parent),
             None => Ok(()),
         }
         .and_then(|()| write_file(&path, content));
@@ -635,9 +646,7 @@ impl BatchWriter {
 
         let mut changed = false;
         if std::fs::read(&main_path).ok().as_deref() != Some(main) {
-            if let Err(e) =
-                std::fs::create_dir_all(&dir).and_then(|()| write_file(&main_path, main))
-            {
+            if let Err(e) = create_dir_all(&dir).and_then(|()| write_file(&main_path, main)) {
                 refuse_unwritable(item, &main_path, &e, report);
                 return Ok(());
             }
@@ -665,7 +674,7 @@ impl BatchWriter {
                 continue;
             }
             let written = match module_path.parent() {
-                Some(parent) => std::fs::create_dir_all(parent),
+                Some(parent) => create_dir_all(parent),
                 None => Ok(()),
             }
             .and_then(|()| write_file(&module_path, &module.content));
@@ -921,6 +930,38 @@ mod tests {
         let entries = recorded_by(&tmp, || atomic_write(&link, b"new", false).unwrap());
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, std::fs::canonicalize(&real).unwrap());
+    }
+
+    #[test]
+    fn atomic_write_records_the_parent_directories_it_creates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let new_dir = tmp.path().join("new");
+        let path = new_dir.join("sub").join("f.md");
+        let entries = recorded_by(&tmp, || atomic_write(&path, b"x", false).unwrap());
+        let dirs: Vec<_> = entries
+            .iter()
+            .filter(|e| e.kind == crate::snapshot::Kind::Dir)
+            .map(|e| e.path.clone())
+            .collect();
+        assert_eq!(dirs, [new_dir.clone(), new_dir.join("sub")]);
+        assert!(entries.iter().any(|e| e.path == path));
+    }
+
+    #[test]
+    fn create_dir_all_records_new_directories_then_creates_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let deep = tmp.path().join("one").join("two");
+        let entries = recorded_by(&tmp, || {
+            create_dir_all(&deep).unwrap();
+            write_file(deep.join("f"), b"x").unwrap();
+        });
+        assert!(deep.is_dir());
+        let dirs: Vec<_> = entries
+            .iter()
+            .filter(|e| e.kind == crate::snapshot::Kind::Dir)
+            .map(|e| e.path.clone())
+            .collect();
+        assert_eq!(dirs, [tmp.path().join("one"), deep.clone()]);
     }
 
     #[test]

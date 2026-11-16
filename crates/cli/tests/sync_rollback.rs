@@ -96,6 +96,43 @@ fn sync_rollback_deletes_what_the_last_sync_all_created() {
 }
 
 #[test]
+fn sync_rollback_removes_the_skill_directory_the_sync_created() {
+    let home = tempfile::tempdir().unwrap();
+    seed_codex_skill(home.path());
+    skrills(
+        home.path(),
+        &["sync-all", "--from", "codex", "--to", "claude"],
+    );
+    let skill_dir = home.path().join(".claude/skills/cli-test");
+    assert!(skill_dir.is_dir());
+
+    let output = skrills(home.path(), &["sync-rollback"]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!skill_dir.exists());
+}
+
+#[test]
+fn sync_rollback_names_a_created_directory_it_left_because_it_is_not_empty() {
+    let home = tempfile::tempdir().unwrap();
+    seed_codex_skill(home.path());
+    skrills(
+        home.path(),
+        &["sync-all", "--from", "codex", "--to", "claude"],
+    );
+    let skill_dir = home.path().join(".claude/skills/cli-test");
+    fs::write(skill_dir.join("notes.md"), "mine").unwrap();
+
+    let output = skrills(home.path(), &["sync-rollback"]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(skill_dir.join("notes.md").exists());
+    let printed = stdout(&output);
+    assert!(printed.contains("Left in place"), "{printed}");
+    assert!(printed.contains("cli-test"), "{printed}");
+}
+
+#[test]
 fn sync_rollback_restores_a_file_the_sync_overwrote() {
     let home = tempfile::tempdir().unwrap();
     seed_codex_skill(home.path());

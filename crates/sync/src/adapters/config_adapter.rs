@@ -98,7 +98,7 @@ fn write_markdown_dir(dir: Option<&PathBuf>, items: &[Command]) -> Result<WriteR
     if items.is_empty() {
         return Ok(report);
     }
-    std::fs::create_dir_all(dir)?;
+    crate::adapters::utils::create_dir_all(dir)?;
     let mut writer = BatchWriter::new(dir);
     for entry in items {
         writer.write_single(
@@ -216,7 +216,7 @@ impl AgentAdapter for ConfigAdapter {
         if skills.is_empty() {
             return Ok(report);
         }
-        std::fs::create_dir_all(dir)?;
+        crate::adapters::utils::create_dir_all(dir)?;
         let mut writer = BatchWriter::new(dir);
         for skill in skills {
             writer.write(

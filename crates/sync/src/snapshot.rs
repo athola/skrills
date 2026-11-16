@@ -55,6 +55,28 @@ pub struct Entry {
     /// Unix permission bits of the prior file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<u32>,
+    /// What sort of filesystem object the path is. Manifests written before
+    /// directories were recorded have no `kind`, and every line in them is a
+    /// file.
+    #[serde(default, skip_serializing_if = "Kind::is_file")]
+    pub kind: Kind,
+}
+
+/// The sort of filesystem object an [`Entry`] describes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    /// A regular file.
+    #[default]
+    File,
+    /// A directory the sync created. Rollback removes it once it is empty.
+    Dir,
+}
+
+impl Kind {
+    fn is_file(&self) -> bool {
+        *self == Kind::File
+    }
 }
 
 /// A snapshot as `sync-rollback --list` shows it.
@@ -77,6 +99,11 @@ pub struct RollbackReport {
     pub restored: usize,
     /// Files the sync created that were deleted.
     pub removed: usize,
+    /// Directories the sync created that were removed.
+    pub dirs_removed: usize,
+    /// Directories the sync created that were kept because something other
+    /// than the sync's own files is in them now, or no longer a directory.
+    pub left_in_place: Vec<PathBuf>,
 }
 
 /// `~/.skrills/snapshots`, or `None` when no home directory is known.
@@ -258,6 +285,8 @@ pub fn prune(root: &Path, now: SystemTime, keep: Duration) -> Result<usize> {
 /// or containing `..`) refuses the whole rollback instead of half of it.
 /// Entries are undone newest first, so a path a sync replaced with a
 /// directory, or the reverse, comes back in the order it was lost.
+/// Directories the sync created go last, deepest first, once the files in
+/// them are gone; one that still holds anything is left and reported.
 pub fn rollback(root: &Path, name: Option<&str>) -> Result<RollbackReport> {
     let mut snapshots = list(root)?.into_iter();
     let chosen = match name {
@@ -276,7 +305,12 @@ pub fn rollback(root: &Path, name: Option<&str>) -> Result<RollbackReport> {
         .collect::<Result<Vec<_>>>()?;
 
     let (mut restored, mut removed) = (0, 0);
+    let mut created_dirs = Vec::new();
     for (entry, blob) in entries.iter().zip(&blobs).rev() {
+        if entry.kind == Kind::Dir {
+            created_dirs.push(entry.path.as_path());
+            continue;
+        }
         match blob {
             Some(blob) => {
                 restore_file(entry, blob)?;
@@ -289,11 +323,48 @@ pub fn rollback(root: &Path, name: Option<&str>) -> Result<RollbackReport> {
             }
         }
     }
+    created_dirs.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    let mut dirs_removed = 0;
+    let mut left_in_place = Vec::new();
+    for dir in created_dirs {
+        if remove_created_dir(dir)? {
+            dirs_removed += 1;
+        } else if dir.symlink_metadata().is_ok() {
+            left_in_place.push(dir.to_path_buf());
+        }
+    }
     Ok(RollbackReport {
         snapshot: chosen.name,
         restored,
         removed,
+        dirs_removed,
+        left_in_place,
     })
+}
+
+/// Whether `error` from inspecting a path means nothing is there: it is
+/// missing, or one of its parents is no longer a directory.
+fn is_gone(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
+}
+
+/// Removes a directory the sync created if it is still an empty directory.
+/// Returns whether it was removed; something else at the path, or a
+/// directory the user has put files in since, is not an error.
+fn remove_created_dir(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => match remove_dir(path) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(false),
+            Err(e) => Err(e).with_context(|| format!("Failed to remove {}", path.display())),
+        },
+        Ok(_) => Ok(false),
+        Err(e) if is_gone(&e) => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("Failed to inspect {}", path.display())),
+    }
 }
 
 /// Reads a snapshot's manifest. A final line without its newline is a write
@@ -401,7 +472,7 @@ fn delete_created(path: &Path) -> Result<bool> {
             remove_file(path).with_context(|| format!("Failed to delete {}", path.display()))?;
             Ok(true)
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) if is_gone(&e) => Ok(false),
         Err(e) => Err(e).with_context(|| format!("Failed to inspect {}", path.display())),
     }
 }
@@ -846,6 +917,91 @@ mod tests {
         let report = rollback(&root, None).unwrap();
         assert!(!created.exists());
         assert_eq!((report.restored, report.removed), (0, 1));
+    }
+
+    /// Writes `new/deeper/made.md` below `base` in a recorded sync, so the
+    /// sync creates two directories.
+    fn sync_creating_directories(base: &Path, root: &Path) -> PathBuf {
+        let made = base.join("new").join("deeper").join("made.md");
+        let session = begin_at(root, at(SAMPLE)).unwrap();
+        write_file(&made, b"fresh").unwrap();
+        drop(session);
+        made
+    }
+
+    #[test]
+    fn rollback_removes_the_directories_the_sync_created() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        sync_creating_directories(tmp.path(), &root);
+
+        let report = rollback(&root, None).unwrap();
+        assert!(!tmp.path().join("new").exists());
+        assert_eq!((report.removed, report.dirs_removed), (1, 2));
+        assert!(report.left_in_place.is_empty());
+    }
+
+    #[test]
+    fn rollback_leaves_a_created_directory_the_user_added_files_to() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        sync_creating_directories(tmp.path(), &root);
+        let new_dir = tmp.path().join("new");
+        std::fs::write(new_dir.join("mine.txt"), b"keep").unwrap();
+
+        let report = rollback(&root, None).unwrap();
+        assert_eq!(std::fs::read(new_dir.join("mine.txt")).unwrap(), b"keep");
+        assert!(!new_dir.join("deeper").exists());
+        assert_eq!(report.dirs_removed, 1);
+        assert_eq!(report.left_in_place, [new_dir]);
+    }
+
+    #[test]
+    fn rollback_skips_a_created_directory_that_is_already_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        sync_creating_directories(tmp.path(), &root);
+        std::fs::remove_dir_all(tmp.path().join("new")).unwrap();
+
+        let report = rollback(&root, None).unwrap();
+        assert_eq!(report.dirs_removed, 0);
+        assert!(report.left_in_place.is_empty());
+    }
+
+    #[test]
+    fn rollback_leaves_a_file_where_the_sync_had_created_a_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        sync_creating_directories(tmp.path(), &root);
+        let new_dir = tmp.path().join("new");
+        std::fs::remove_dir_all(&new_dir).unwrap();
+        std::fs::write(&new_dir, b"user file").unwrap();
+
+        let report = rollback(&root, None).unwrap();
+        assert_eq!(std::fs::read(&new_dir).unwrap(), b"user file");
+        assert_eq!(report.left_in_place, [new_dir]);
+    }
+
+    #[test]
+    fn rollback_keeps_a_directory_that_existed_before_the_sync() {
+        let tmp = tempfile::tempdir().unwrap();
+        let existing = tmp.path().join("existing");
+        std::fs::create_dir(&existing).unwrap();
+        let root = tmp.path().join("snaps");
+        let session = begin_at(&root, at(SAMPLE)).unwrap();
+        write_file(existing.join("made.md"), b"x").unwrap();
+        drop(session);
+
+        let report = rollback(&root, None).unwrap();
+        assert!(existing.is_dir());
+        assert_eq!(report.dirs_removed, 0);
+    }
+
+    #[test]
+    fn manifest_line_without_a_kind_reads_as_a_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = snapshot_with_manifest(tmp.path(), &absent_line("/tmp/a"));
+        assert_eq!(read_manifest(&dir).unwrap()[0].kind, Kind::File);
     }
 
     #[test]

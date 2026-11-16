@@ -494,7 +494,7 @@ impl AgentAdapter for CodexAdapter {
     fn write_commands(&self, commands: &[Command]) -> Result<WriteReport> {
         super::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         let dir = self.prompts_dir();
-        fs::create_dir_all(&dir)?;
+        crate::adapters::utils::create_dir_all(&dir)?;
 
         let mut report = WriteReport::default();
 

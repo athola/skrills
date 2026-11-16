@@ -181,7 +181,9 @@ invocation, covering every target.
 Rollback restores prior bytes and permissions, deletes files the sync
 created, and touches only paths listed in the manifest. A manifest path that
 is not absolute or contains `..` refuses the whole rollback. Directories a
-sync created are left in place, and the snapshot is kept after a rollback.
+sync created are removed after the files, deepest first, but only when they
+are empty; one you have since put files in is left and named in the output.
+The snapshot is kept after a rollback.
 
 Snapshots older than 30 days are pruned at the start of the next sync. Set
 `SKRILLS_SNAPSHOT_RETENTION_DAYS` to change the period.

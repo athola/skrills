@@ -262,7 +262,7 @@ pub(super) fn write_skills_impl(
     skills: &[Command],
 ) -> Result<WriteReport> {
     let dir = adapter.skills_dir();
-    fs::create_dir_all(&dir)?;
+    crate::adapters::utils::create_dir_all(&dir)?;
 
     let mut report = WriteReport::default();
 

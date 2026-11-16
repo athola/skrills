@@ -452,9 +452,15 @@ pub(crate) fn handle_sync_rollback_command(list: bool, snapshot: Option<String>)
     }
     let report = skrills_sync::snapshot::rollback(&root, snapshot.as_deref())?;
     println!(
-        "Rolled back {}: restored {} file(s), deleted {} the sync had created",
-        report.snapshot, report.restored, report.removed
+        "Rolled back {}: restored {} file(s), deleted {} file(s) and {} director(ies) the sync had created",
+        report.snapshot, report.restored, report.removed, report.dirs_removed
     );
+    for dir in &report.left_in_place {
+        println!(
+            "Left in place (no longer empty, or replaced): {}",
+            dir.display()
+        );
+    }
     Ok(())
 }
 
