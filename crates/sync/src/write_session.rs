@@ -93,13 +93,15 @@ impl Drop for WriteSession {
 }
 
 pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
+        std::fs::DirBuilder::new().mode(0o700).create(dir)
     }
-    builder.create(dir)
+    #[cfg(not(unix))]
+    {
+        std::fs::DirBuilder::new().create(dir)
+    }
 }
 
 fn open_manifest(path: &Path) -> std::io::Result<std::fs::File> {
