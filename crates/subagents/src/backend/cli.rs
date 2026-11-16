@@ -1468,6 +1468,16 @@ mod tests {
     mod process_tests {
         use super::*;
 
+        /// How long a polling check waits before failing. Each loop exits as
+        /// soon as its condition holds, which takes milliseconds when idle;
+        /// the slack is for the pre-commit hook, which runs every test binary
+        /// at once and starved the old 2-second loops of CPU.
+        const POLL_DEADLINE: Duration = Duration::from_secs(15);
+
+        fn poll_deadline() -> std::time::Instant {
+            std::time::Instant::now() + POLL_DEADLINE
+        }
+
         /// A run of `body` as a shell script. The adapter passes the prompt as
         /// `/bin/sh -- <prompt>`, so the prompt is the script path and the
         /// file is read by `sh` rather than exec'd, which avoids the ETXTBSY
@@ -1508,7 +1518,8 @@ mod tests {
         }
 
         async fn wait_until_gone(pid: u32) -> bool {
-            for _ in 0..100 {
+            let deadline = poll_deadline();
+            while std::time::Instant::now() < deadline {
                 if !process_alive(pid) {
                     return true;
                 }
@@ -1519,7 +1530,8 @@ mod tests {
 
         /// Polls the run's `start` event for the child pid.
         async fn child_pid(store: &Arc<dyn RunStore>, run_id: RunId) -> u32 {
-            for _ in 0..100 {
+            let deadline = poll_deadline();
+            while std::time::Instant::now() < deadline {
                 if let Some(run) = store.run(run_id).await.unwrap() {
                     if let Some(pid) = run
                         .events
@@ -1689,7 +1701,8 @@ mod tests {
                 .await
                 .unwrap();
             let mut grandchild = None;
-            for _ in 0..100 {
+            let deadline = poll_deadline();
+            while std::time::Instant::now() < deadline {
                 let run = store.run(run_id).await.unwrap().unwrap();
                 grandchild = run
                     .events
@@ -1737,7 +1750,8 @@ mod tests {
 
             assert!(adapter.stop(first, store.clone()).await.unwrap());
             let mut freed = false;
-            for _ in 0..100 {
+            let deadline = poll_deadline();
+            while std::time::Instant::now() < deadline {
                 if let Ok(run_id) = adapter.run(request_for(&script), store.clone()).await {
                     adapter.stop(run_id, store.clone()).await.unwrap();
                     freed = true;
