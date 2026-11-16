@@ -401,6 +401,36 @@ pub(crate) fn remove_tree_unrecorded(path: &Path) -> std::io::Result<()> {
     std::fs::remove_dir_all(path)
 }
 
+/// Puts a symlink to `target` at `path`, replacing a file or link there with
+/// one rename so the path is never missing in between. Rollback uses it to
+/// bring back a link exactly as it was, relative targets included.
+#[cfg(unix)]
+pub(crate) fn replace_with_symlink(path: &Path, target: &Path) -> std::io::Result<()> {
+    crate::write_session::record_before_write(path)?;
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    create_dir_all(&parent)?;
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = parent.join(format!(
+        ".{file_name}.skrills-tmp-{}-{}",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::os::unix::fs::symlink(target, &tmp)?;
+    let renamed = std::fs::rename(&tmp, path);
+    if renamed.is_err() {
+        // The rename error is the one worth reporting; a leftover temp link
+        // is hidden and harmless.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    renamed
+}
+
 /// Removes an empty directory. Nothing is recorded: a directory that holds
 /// no file has nothing a rollback needs to bring back, and the OS refuses a
 /// non-empty one.
@@ -409,8 +439,11 @@ pub(crate) fn remove_dir(path: &Path) -> std::io::Result<()> {
 }
 
 /// [`std::fs::copy`] that records the destination's prior state first.
+///
+/// `std::fs::copy` opens a destination symlink and writes into what it points
+/// to, so the resolved target is what gets recorded, as [`atomic_write`] does.
 pub(crate) fn copy(src: &Path, dest: &Path) -> std::io::Result<u64> {
-    crate::write_session::record_before_write(dest)?;
+    crate::write_session::record_before_write(&resolve_destination(dest)?)?;
     std::fs::copy(src, dest)
 }
 
@@ -962,6 +995,64 @@ mod tests {
             .map(|e| e.path.clone())
             .collect();
         assert_eq!(dirs, [tmp.path().join("one"), deep.clone()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_through_a_link_to_a_missing_link_records_the_link_it_replaces() {
+        // `first` -> `second` -> missing: the write lands on `second`, which
+        // is itself a link and is replaced by a regular file.
+        let tmp = tempfile::tempdir().unwrap();
+        let first = tmp.path().join("first");
+        let second = tmp.path().join("second");
+        std::os::unix::fs::symlink(&second, &first).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("missing"), &second).unwrap();
+        let entries = recorded_by(&tmp, || atomic_write(&first, b"new", false).unwrap());
+        assert!(std::fs::symlink_metadata(&second).unwrap().is_file());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, second);
+        assert_eq!(entries[0].kind, crate::snapshot::Kind::Symlink);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_onto_a_symlink_records_the_target_it_writes_through() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (src, real, link) = (
+            tmp.path().join("src"),
+            tmp.path().join("real"),
+            tmp.path().join("link"),
+        );
+        std::fs::write(&src, b"from source").unwrap();
+        std::fs::write(&real, b"was here").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let entries = recorded_by(&tmp, || {
+            copy(&src, &link).unwrap();
+        });
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(std::fs::read(&real).unwrap(), b"from source");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, std::fs::canonicalize(&real).unwrap());
+        assert_eq!(
+            entries[0].prior_hash.as_deref(),
+            Some(hash_content(b"was here").as_str())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_tree_of_a_symlinked_directory_records_the_link_not_its_contents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        let link = tmp.path().join("link");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("keep.md"), b"k").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let entries = recorded_by(&tmp, || remove_tree(&link).unwrap());
+        assert!(real.join("keep.md").exists());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, link);
+        assert_eq!(entries[0].kind, crate::snapshot::Kind::Symlink);
     }
 
     #[test]

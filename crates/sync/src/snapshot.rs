@@ -60,6 +60,9 @@ pub struct Entry {
     /// file.
     #[serde(default, skip_serializing_if = "Kind::is_file")]
     pub kind: Kind,
+    /// Where a [`Kind::Symlink`] pointed, exactly as the link held it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_target: Option<PathBuf>,
 }
 
 /// The sort of filesystem object an [`Entry`] describes.
@@ -71,6 +74,12 @@ pub enum Kind {
     File,
     /// A directory the sync created. Rollback removes it once it is empty.
     Dir,
+    /// A symbolic link, kept as its target in [`Entry::link_target`] and
+    /// never followed: the file it points to is not the link's own content.
+    Symlink,
+    /// A fifo, socket or device. Nothing of it can be kept, so rollback
+    /// cannot recreate it and says so.
+    Special,
 }
 
 impl Kind {
@@ -104,6 +113,9 @@ pub struct RollbackReport {
     /// Directories the sync created that were kept because something other
     /// than the sync's own files is in them now, or no longer a directory.
     pub left_in_place: Vec<PathBuf>,
+    /// Paths skipped because rollback cannot recreate what was there: a
+    /// special file, or a symlink on a platform without Unix links.
+    pub not_restorable: Vec<PathBuf>,
 }
 
 /// `~/.skrills/snapshots`, or `None` when no home directory is known.
@@ -306,10 +318,29 @@ pub fn rollback(root: &Path, name: Option<&str>) -> Result<RollbackReport> {
 
     let (mut restored, mut removed) = (0, 0);
     let mut created_dirs = Vec::new();
+    let mut not_restorable = Vec::new();
     for (entry, blob) in entries.iter().zip(&blobs).rev() {
-        if entry.kind == Kind::Dir {
-            created_dirs.push(entry.path.as_path());
-            continue;
+        match entry.kind {
+            Kind::Dir => {
+                created_dirs.push(entry.path.as_path());
+                continue;
+            }
+            Kind::Special => {
+                tracing::warn!(path = %entry.path.display(), "Cannot recreate a special file");
+                not_restorable.push(entry.path.clone());
+                continue;
+            }
+            Kind::Symlink => {
+                #[cfg(unix)]
+                {
+                    restore_link(entry)?;
+                    restored += 1;
+                }
+                #[cfg(not(unix))]
+                not_restorable.push(entry.path.clone());
+                continue;
+            }
+            Kind::File => {}
         }
         match blob {
             Some(blob) => {
@@ -339,6 +370,7 @@ pub fn rollback(root: &Path, name: Option<&str>) -> Result<RollbackReport> {
         removed,
         dirs_removed,
         left_in_place,
+        not_restorable,
     })
 }
 
@@ -412,6 +444,14 @@ fn checked_blob(dir: &Path, entry: &Entry) -> Result<Option<PathBuf>> {
     if entry.prior == Prior::Absent {
         return Ok(None);
     }
+    match entry.kind {
+        Kind::Symlink if entry.link_target.is_none() => bail!(
+            "manifest entry for {} is a symlink with no link target",
+            entry.path.display()
+        ),
+        Kind::Symlink | Kind::Special | Kind::Dir => return Ok(None),
+        Kind::File => {}
+    }
     let hash = entry
         .prior_hash
         .as_deref()
@@ -459,6 +499,30 @@ fn restore_file(entry: &Entry, blob: &Path) -> Result<()> {
             .with_context(|| format!("Failed to restore the mode of {}", entry.path.display()))?;
     }
     Ok(())
+}
+
+/// Puts back a symlink the sync removed or replaced, pointing exactly where it
+/// pointed before.
+#[cfg(unix)]
+fn restore_link(entry: &Entry) -> Result<()> {
+    let target = entry.link_target.as_deref().ok_or_else(|| {
+        anyhow!(
+            "manifest entry for {} is a symlink with no link target",
+            entry.path.display()
+        )
+    })?;
+    // As for a file: an empty directory in its place is the sync's leftover,
+    // a full one is the user's.
+    if std::fs::symlink_metadata(&entry.path).is_ok_and(|meta| meta.is_dir()) {
+        remove_dir(&entry.path).with_context(|| {
+            format!(
+                "{} is now a directory that is not empty",
+                entry.path.display()
+            )
+        })?;
+    }
+    crate::adapters::utils::replace_with_symlink(&entry.path, target)
+        .with_context(|| format!("Failed to restore the link {}", entry.path.display()))
 }
 
 /// Deletes a file the sync created. Returns whether there was one to delete.
@@ -995,6 +1059,105 @@ mod tests {
         let report = rollback(&root, None).unwrap();
         assert!(existing.is_dir());
         assert_eq!(report.dirs_removed, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_recreates_a_symlink_the_sync_removed_with_its_exact_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let link = tmp.path().join("link");
+        std::fs::write(tmp.path().join("target"), b"t").unwrap();
+        std::os::unix::fs::symlink("target", &link).unwrap();
+        let root = tmp.path().join("snaps");
+        let session = begin_at(&root, at(SAMPLE)).unwrap();
+        crate::adapters::utils::remove_file(&link).unwrap();
+        drop(session);
+
+        let report = rollback(&root, None).unwrap();
+        assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("target"));
+        assert_eq!(report.restored, 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_replaces_a_file_that_took_a_symlinks_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink("elsewhere", &link).unwrap();
+        let root = tmp.path().join("snaps");
+        let session = begin_at(&root, at(SAMPLE)).unwrap();
+        crate::adapters::utils::remove_file(&link).unwrap();
+        write_file(&link, b"plain file").unwrap();
+        drop(session);
+
+        rollback(&root, None).unwrap();
+        assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("elsewhere"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_restores_a_link_a_write_through_a_dangling_chain_replaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (first, second) = (tmp.path().join("first"), tmp.path().join("second"));
+        std::os::unix::fs::symlink("second", &first).unwrap();
+        std::os::unix::fs::symlink("missing", &second).unwrap();
+        let root = tmp.path().join("snaps");
+        let session = begin_at(&root, at(SAMPLE)).unwrap();
+        write_file(&first, b"through").unwrap();
+        drop(session);
+
+        rollback(&root, None).unwrap();
+        assert_eq!(std::fs::read_link(&first).unwrap(), Path::new("second"));
+        assert_eq!(std::fs::read_link(&second).unwrap(), Path::new("missing"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_refuses_to_replace_a_full_directory_with_a_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink("elsewhere", &link).unwrap();
+        let root = tmp.path().join("snaps");
+        let session = begin_at(&root, at(SAMPLE)).unwrap();
+        crate::adapters::utils::remove_file(&link).unwrap();
+        drop(session);
+        std::fs::create_dir(&link).unwrap();
+        std::fs::write(link.join("users-own.txt"), b"keep").unwrap();
+
+        let err = rollback(&root, None).unwrap_err();
+        assert!(format!("{err:#}").contains("not empty"), "{err:#}");
+        assert!(link.join("users-own.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_skips_a_special_file_and_reports_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("s.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let root = tmp.path().join("snaps");
+        let session = begin_at(&root, at(SAMPLE)).unwrap();
+        crate::adapters::utils::remove_file(&socket).unwrap();
+        drop(session);
+        drop(listener);
+
+        let report = rollback(&root, None).unwrap();
+        assert_eq!(report.not_restorable, std::slice::from_ref(&socket));
+        assert_eq!(report.restored, 0);
+        assert!(!socket.exists());
+    }
+
+    #[test]
+    fn rollback_refuses_a_symlink_entry_without_a_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        let line = format!(
+            "{{\"path\":{},\"prior\":\"file\",\"kind\":\"symlink\"}}\n",
+            serde_json::to_string(tmp.path().join("l").to_str().unwrap()).unwrap()
+        );
+        snapshot_with_manifest(&root, &line);
+        let err = rollback(&root, None).unwrap_err();
+        assert!(err.to_string().contains("no link target"), "{err}");
     }
 
     #[test]

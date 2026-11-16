@@ -137,7 +137,13 @@ pub(crate) fn record_tree_before_remove(path: &Path) -> std::io::Result<()> {
     if !is_active() {
         return Ok(());
     }
-    for entry in WalkDir::new(path).follow_links(false).sort_by_file_name() {
+    // A root that is a symlink is recorded as the link: removing the tree
+    // unlinks it and leaves what it points to alone.
+    for entry in WalkDir::new(path)
+        .follow_links(false)
+        .follow_root_links(false)
+        .sort_by_file_name()
+    {
         let entry = match entry {
             Ok(entry) => entry,
             Err(e)
@@ -177,6 +183,7 @@ pub(crate) fn record_dirs_before_create(dir: &Path) -> std::io::Result<()> {
                     prior_hash: None,
                     mode: None,
                     kind: Kind::Dir,
+                    link_target: None,
                 };
                 recorder.append(entry, None)?;
             }
@@ -238,9 +245,12 @@ impl Recorder {
     }
 }
 
-/// The manifest entry for `path` and the bytes to keep, or `None` for a path
-/// a snapshot cannot hold: a directory, or a symlink or special file whose
-/// content is not its own.
+/// The manifest entry for `path` and the bytes to keep, or `None` for an
+/// existing directory, which holds nothing of its own to restore.
+///
+/// The kind comes from `symlink_metadata` before anything is read: a symlink
+/// is kept as its target and never followed, and a fifo or device is never
+/// opened, since reading one can block or consume someone else's data.
 fn capture(path: &Path) -> std::io::Result<Option<(Entry, Option<Vec<u8>>)>> {
     let meta = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
@@ -251,6 +261,7 @@ fn capture(path: &Path) -> std::io::Result<Option<(Entry, Option<Vec<u8>>)>> {
                 prior_hash: None,
                 mode: None,
                 kind: Kind::File,
+                link_target: None,
             };
             return Ok(Some((absent, None)));
         }
@@ -259,9 +270,28 @@ fn capture(path: &Path) -> std::io::Result<Option<(Entry, Option<Vec<u8>>)>> {
     if meta.is_dir() {
         return Ok(None);
     }
+    if meta.file_type().is_symlink() {
+        let link = Entry {
+            path: path.to_path_buf(),
+            prior: Prior::File,
+            prior_hash: None,
+            mode: None,
+            kind: Kind::Symlink,
+            link_target: Some(std::fs::read_link(path)?),
+        };
+        return Ok(Some((link, None)));
+    }
     if !meta.is_file() {
-        tracing::warn!(path = %path.display(), "Not snapshotting a symlink or special file; rollback cannot restore it");
-        return Ok(None);
+        tracing::warn!(path = %path.display(), "Recording a special file; rollback cannot recreate it");
+        let special = Entry {
+            path: path.to_path_buf(),
+            prior: Prior::File,
+            prior_hash: None,
+            mode: None,
+            kind: Kind::Special,
+            link_target: None,
+        };
+        return Ok(Some((special, None)));
     }
     let bytes = std::fs::read(path)?;
     let entry = Entry {
@@ -270,6 +300,7 @@ fn capture(path: &Path) -> std::io::Result<Option<(Entry, Option<Vec<u8>>)>> {
         prior_hash: Some(hash_content(&bytes)),
         mode: file_mode(&meta),
         kind: Kind::File,
+        link_target: None,
     };
     Ok(Some((entry, Some(bytes))))
 }
@@ -406,16 +437,53 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_symlink_is_not_recorded_because_its_bytes_are_not_its_own() {
+    fn a_symlink_is_recorded_as_a_link_with_its_target_and_no_bytes() {
         let tmp = tempfile::tempdir().unwrap();
-        let target = tmp.path().join("target");
         let link = tmp.path().join("link");
-        std::fs::write(&target, b"t").unwrap();
-        std::os::unix::fs::symlink(&target, &link).unwrap();
+        std::fs::write(tmp.path().join("target"), b"t").unwrap();
+        std::os::unix::fs::symlink("target", &link).unwrap();
         let (session, dir) = session_in(tmp.path());
         record_before_write(&link).unwrap();
         drop(session);
-        assert!(!dir.exists());
+
+        let entries = read_manifest(&dir).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, Kind::Symlink);
+        assert_eq!(entries[0].prior, Prior::File);
+        assert_eq!(entries[0].link_target.as_deref(), Some(Path::new("target")));
+        assert_eq!(entries[0].prior_hash, None);
+        assert!(
+            !dir.join(BLOB_DIR).exists(),
+            "a link's target is not copied"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_is_recorded_as_a_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink("nowhere", &link).unwrap();
+        let (session, dir) = session_in(tmp.path());
+        record_before_write(&link).unwrap();
+        drop(session);
+        assert_eq!(read_manifest(&dir).unwrap()[0].kind, Kind::Symlink);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_special_file_is_recorded_as_special_without_reading_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("s.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let (session, dir) = session_in(tmp.path());
+        record_before_write(&socket).unwrap();
+        drop(session);
+
+        let entries = read_manifest(&dir).unwrap();
+        assert_eq!(entries[0].kind, Kind::Special);
+        assert_eq!(entries[0].prior_hash, None);
+        assert_eq!(entries[0].link_target, None);
     }
 
     #[test]

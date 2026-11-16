@@ -179,7 +179,11 @@ changes nothing leaves none. `sync-all` takes one snapshot for the whole
 invocation, covering every target.
 
 Rollback restores prior bytes and permissions, deletes files the sync
-created, and touches only paths listed in the manifest. A manifest path that
+created, and touches only paths listed in the manifest. A symlink is kept as
+its link target, never followed: a write through a link records the file it
+points to, and a link the sync removed or replaced is recreated exactly.
+A fifo, socket or device file cannot be kept; rollback skips it and names it
+in the output. A manifest path that
 is not absolute or contains `..` refuses the whole rollback. Directories a
 sync created are removed after the files, deepest first, but only when they
 are empty; one you have since put files in is left and named in the output.

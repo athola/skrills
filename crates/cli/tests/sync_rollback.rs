@@ -133,6 +133,29 @@ fn sync_rollback_names_a_created_directory_it_left_because_it_is_not_empty() {
 }
 
 #[test]
+fn sync_rollback_names_a_special_file_it_cannot_recreate() {
+    let home = tempfile::tempdir().unwrap();
+    let snapshot = home.path().join(".skrills/snapshots/20260101T000000Z");
+    fs::create_dir_all(&snapshot).unwrap();
+    let socket = home.path().join("agent.sock");
+    fs::write(
+        snapshot.join("manifest.jsonl"),
+        format!(
+            "{{\"path\":{},\"prior\":\"file\",\"kind\":\"special\"}}\n",
+            serde_json::to_string(socket.to_str().unwrap()).unwrap()
+        ),
+    )
+    .unwrap();
+
+    let output = skrills(home.path(), &["sync-rollback"]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let printed = stdout(&output);
+    assert!(printed.contains("Not restored"), "{printed}");
+    assert!(printed.contains("agent.sock"), "{printed}");
+}
+
+#[test]
 fn sync_rollback_restores_a_file_the_sync_overwrote() {
     let home = tempfile::tempdir().unwrap();
     seed_codex_skill(home.path());

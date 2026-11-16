@@ -455,6 +455,12 @@ pub(crate) fn handle_sync_rollback_command(list: bool, snapshot: Option<String>)
         "Rolled back {}: restored {} file(s), deleted {} file(s) and {} director(ies) the sync had created",
         report.snapshot, report.restored, report.removed, report.dirs_removed
     );
+    for path in &report.not_restorable {
+        println!(
+            "Not restored (a special file or link this platform cannot recreate): {}",
+            path.display()
+        );
+    }
     for dir in &report.left_in_place {
         println!(
             "Left in place (no longer empty, or replaced): {}",
