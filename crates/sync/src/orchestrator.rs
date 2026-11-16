@@ -451,15 +451,15 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         }
     }
 
-    /// Keeps the conflict baseline and resolution log under `root`; see
-    /// [`crate::conflict`]. `None` keeps none.
+    /// Keeps the conflict baseline and resolution log under `root`. `None`
+    /// keeps none.
     #[must_use]
     pub fn with_state_root(mut self, root: Option<std::path::PathBuf>) -> Self {
         self.state_root = root;
         self
     }
 
-    /// [`Self::with_state_root`] at [`crate::conflict::default_root`].
+    /// [`Self::with_state_root`] at the per-user `~/.skrills/sync-state`.
     #[must_use]
     pub fn with_default_sync_state(self) -> Self {
         self.with_state_root(crate::conflict::default_root())
@@ -503,7 +503,7 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
     /// prompts, Codex converts agents to skills).
     ///
     /// With `params.interactive`, every question is asked before the first
-    /// write (see [`crate::interactive`]), so cancelling writes nothing.
+    /// write, so cancelling writes nothing.
     pub fn sync(&self, params: &SyncParams) -> Result<SyncReport> {
         // A dry run writes nothing, so there is nothing to confirm.
         let decider = if params.interactive && !params.dry_run {
