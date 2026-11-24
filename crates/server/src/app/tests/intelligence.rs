@@ -1343,14 +1343,17 @@ fn usage_events_are_parsed_once_per_ttl_and_capped() {
         loads.set(loads.get() + 1);
         (0..(MAX_USAGE_EVENTS as u64 + 10)).map(event).collect()
     };
-    let first = cached_usage_events(&home, load);
-    let second = cached_usage_events(&home, load);
+    // A private slot: the process-wide one is replaced whenever a parallel
+    // test calls the tool with its own home, which made this test flaky.
+    let cache = std::sync::Mutex::new(UsageCache::None);
+    let first = usage_events_cached_in(&cache, &home, load);
+    let second = usage_events_cached_in(&cache, &home, load);
     assert_eq!(loads.get(), 1, "the second call re-parsed sessions");
     assert_eq!(first.len(), MAX_USAGE_EVENTS);
     assert_eq!(second.len(), MAX_USAGE_EVENTS);
 
     let other = temp.path().join("other-home");
-    cached_usage_events(&other, load);
+    usage_events_cached_in(&cache, &other, load);
     assert_eq!(loads.get(), 2, "another home must not reuse the cache");
 }
 

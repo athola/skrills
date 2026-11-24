@@ -1007,7 +1007,7 @@ const USAGE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 /// Most usage events kept from session history.
 pub(crate) const MAX_USAGE_EVENTS: usize = 200_000;
 
-type UsageCache = Option<(
+pub(crate) type UsageCache = Option<(
     PathBuf,
     std::time::Instant,
     Vec<skrills_intelligence::usage::SkillUsageEvent>,
@@ -1021,7 +1021,17 @@ pub(crate) fn cached_usage_events(
     load: impl FnOnce() -> Vec<skrills_intelligence::usage::SkillUsageEvent>,
 ) -> Vec<skrills_intelligence::usage::SkillUsageEvent> {
     static CACHE: std::sync::Mutex<UsageCache> = std::sync::Mutex::new(None);
-    let mut cache = CACHE
+    usage_events_cached_in(&CACHE, home, load)
+}
+
+/// [`cached_usage_events`] against a given cache slot, so a test can use a
+/// slot that parallel tests calling the tool with another home cannot evict.
+pub(crate) fn usage_events_cached_in(
+    cache: &std::sync::Mutex<UsageCache>,
+    home: &Path,
+    load: impl FnOnce() -> Vec<skrills_intelligence::usage::SkillUsageEvent>,
+) -> Vec<skrills_intelligence::usage::SkillUsageEvent> {
+    let mut cache = cache
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((cached_home, at, events)) = cache.as_ref() {
