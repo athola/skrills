@@ -277,6 +277,9 @@ fn is_converted_agent(skill_dir: &Path) -> bool {
 }
 
 impl AgentAdapter for CodexAdapter {
+    /// Only commands and MCP servers give their bytes back. The rest are
+    /// rewritten on write (agents become `agent-*` skills, a skill's `name`
+    /// is set to its folder), so each is one question per category.
     fn decision_scope(&self, kind: crate::decision::ItemKind) -> crate::decision::DecisionScope {
         use crate::decision::{DecisionScope, ItemKind};
         match kind {

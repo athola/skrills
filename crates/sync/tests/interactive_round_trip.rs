@@ -67,10 +67,15 @@ fn seed(kind: ItemKind, name: &str) -> Command {
             name,
             &format!("---\nname: {name}\ndescription: R\n---\nBody\n"),
         ),
-        ItemKind::Instruction => item("CLAUDE", "# Rules\n\nbe nice\n"),
+        ItemKind::Instruction => item(name, "# Rules\n\nbe nice\n"),
         ItemKind::Hook => {
+            let event = if name == "alpha" {
+                "PreToolUse"
+            } else {
+                "PostToolUse"
+            };
             let mut hook = item(
-                "PreToolUse",
+                event,
                 r#"[{"matcher":"Bash","hooks":[{"type":"command","command":"echo hi"}]}]"#,
             );
             hook.content_format = skrills_sync::ContentFormat::Json;
@@ -173,7 +178,7 @@ fn every_per_item_category_gives_the_targets_bytes_back() {
 #[test]
 fn every_per_item_category_keeps_what_a_smaller_batch_leaves_out() {
     for name in ADAPTERS {
-        for kind in [ItemKind::Command, ItemKind::Skill, ItemKind::Agent] {
+        for kind in FILE_KINDS {
             let root = tempfile::tempdir().unwrap();
             let target = adapter(name, &root.path().join(name));
             if target.decision_scope(kind) != DecisionScope::PerItem {

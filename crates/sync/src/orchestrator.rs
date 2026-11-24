@@ -28,10 +28,11 @@ pub struct SyncParams {
     pub from: Option<String>,
     /// Perform dry run (preview only)
     pub dry_run: bool,
-    /// Skip confirmation prompts and override `skip_existing_*` flags.
+    /// Override the `skip_existing_*` flags.
     ///
     /// When `force` is true, `skip_existing_commands` and `skip_existing_instructions`
-    /// are ignored, all items are written regardless.
+    /// are ignored and existing items are overwritten. It does not affect
+    /// `interactive`: an interactive sync still asks about every change.
     pub force: bool,
     /// Sync skills
     #[serde(default = "default_true")]
@@ -232,12 +233,15 @@ fn preview_items_keyed(
     read_target: impl FnOnce() -> Result<Vec<Command>>,
     key: impl Fn(&Command) -> String,
 ) -> WriteReport {
+    let mut report = WriteReport::default();
     let target = read_target().unwrap_or_else(|e| {
-        tracing::debug!(error = %format!("{e:#}"), "Dry run could not read the target; counting every item");
+        tracing::warn!(error = %format!("{e:#}"), "Dry run could not read the target; counting every item");
+        report.warnings.push(format!(
+            "The preview could not read the target, so every item counts as a write: {e:#}"
+        ));
         Vec::new()
     });
     let by_key: HashMap<String, &Command> = target.iter().map(|c| (key(c), c)).collect();
-    let mut report = WriteReport::default();
     for item in items {
         let unchanged = by_key
             .get(&key(item))
@@ -331,17 +335,20 @@ fn target_writes(
     supported
 }
 
-/// Runs one sync phase into its slot of the report.
+/// Runs the phase for `kind` into its slot of the report.
 ///
 /// A failure is written into the slot as a warning and marks the run failed,
-/// and the remaining phases still run. The kill switch is the exception: once
+/// and the remaining phases still run. The conflicts it found are forgotten,
+/// since its write did not happen. The kill switch is the exception: once
 /// it is engaged no phase may write, so its error ends the sync.
 fn run_phase(
-    name: &str,
+    kind: ItemKind,
+    ledger: &Ledger,
     slot: &mut WriteReport,
     failed: &mut bool,
     phase: impl FnOnce(&mut WriteReport) -> Result<()>,
 ) -> Result<()> {
+    let name = kind.plural();
     let Err(e) = phase(slot) else {
         return Ok(());
     };
@@ -357,6 +364,7 @@ fn run_phase(
     }
     tracing::error!(phase = name, error = %format!("{e:#}"), "Sync phase failed");
     slot.warnings.push(format!("{name} sync failed: {e:#}"));
+    ledger.forget_found(kind);
     *failed = true;
     Ok(())
 }
@@ -397,6 +405,15 @@ pub(crate) fn existing_key(name: &str) -> String {
     }
 }
 
+/// The warning for a target that could not be read to look for conflicts.
+fn unchecked_conflicts(kind: ItemKind, error: &anyhow::Error) -> String {
+    tracing::warn!(error = %format!("{error:#}"), "Could not read the target to look for conflicts");
+    format!(
+        "Conflicts were not checked for {}: could not read the target: {error:#}",
+        kind.plural()
+    )
+}
+
 /// Lock file in a target's config root that serializes syncs into it.
 const SYNC_LOCK_FILE: &str = ".skrills-sync.lock";
 
@@ -428,15 +445,17 @@ pub struct SyncOrchestrator<S: AgentAdapter, T: AgentAdapter> {
     /// Where a `skrills cold-window` process in another process records an
     /// engaged kill switch; see [`crate::kill_switch_marker`].
     kill_switch_marker: Option<std::path::PathBuf>,
-    /// Where each sync's pre-write snapshot goes; `None` takes none. Library
-    /// callers start without one so embedding the orchestrator never writes
-    /// outside the target; the CLI and MCP entry points opt in.
+    /// Where each sync's pre-write snapshot goes; `None` takes none.
+    /// [`SyncOrchestrator::new`] starts without one, so an orchestrator built
+    /// by hand writes nothing outside the target unless asked; the
+    /// [`sync_between`] family opts in to `~/.skrills/snapshots`.
     snapshot_root: Option<std::path::PathBuf>,
     /// Answers the per-item questions of an interactive sync.
     decider: Option<Arc<dyn ItemDecider>>,
     /// Where the per-target baselines and the resolution log live; `None`
-    /// detects no conflicts and records nothing. Library callers start
-    /// without one, for the reason `snapshot_root` does.
+    /// detects no conflicts and records nothing. [`SyncOrchestrator::new`]
+    /// starts without one, for the reason `snapshot_root` does; the
+    /// [`sync_between`] family opts in to `~/.skrills/sync-state`.
     state_root: Option<std::path::PathBuf>,
 }
 
@@ -507,7 +526,8 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
     /// prompts, Codex converts agents to skills).
     ///
     /// With `params.interactive`, every question is asked before the first
-    /// write, so cancelling writes nothing.
+    /// write, so cancelling writes none of the target's items. The target's
+    /// config root and its lock file may already have been created.
     pub fn sync(&self, params: &SyncParams) -> Result<SyncReport> {
         // A dry run writes nothing, so there is nothing to confirm.
         let decider = if params.interactive && !params.dry_run {
@@ -542,6 +562,15 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             (Some(root), false) => crate::snapshot::begin_unless_active(root),
             _ => None,
         };
+        // No session now means none was running and none could be started.
+        let unsnapshotted = match (&self.snapshot_root, params.dry_run) {
+            (Some(root), false) if !crate::write_session::is_active() => Some(format!(
+                "This sync was not snapshotted (no snapshot could be started under {}), so \
+                 `skrills sync-rollback` cannot undo it",
+                root.display()
+            )),
+            _ => None,
+        };
 
         // Read once, before any phase writes, so every pass compares against
         // the state the last sync left.
@@ -549,18 +578,30 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             self.state_root.as_deref(),
             crate::conflict::target_key(self.target.name(), &self.target.config_root()),
         );
+        let notes: Vec<&str> = unsnapshotted
+            .as_deref()
+            .into_iter()
+            .chain(ledger.warning())
+            .collect();
         let Some(decider) = decider else {
-            return self.run_phases(params, &Gate::off(), &ledger);
+            return self.run_phases(params, &Gate::off(), &ledger, &notes);
         };
         let book = DecisionBook::default();
-        drop(self.run_phases(params, &Gate::collect(decider, &book), &ledger)?);
-        self.run_phases(params, &Gate::apply(&book), &ledger)
+        drop(self.run_phases(params, &Gate::collect(decider, &book), &ledger, &notes)?);
+        self.run_phases(params, &Gate::apply(&book), &ledger, &notes)
     }
 
     /// Runs every phase once. `gate` decides what each writer is given: all of
     /// it when off, nothing (the questions are only asked) when collecting,
-    /// the accepted items when applying.
-    fn run_phases(&self, params: &SyncParams, gate: &Gate, ledger: &Ledger) -> Result<SyncReport> {
+    /// the accepted items when applying. `notes` are warnings about the run
+    /// as a whole, such as a snapshot that could not be started.
+    fn run_phases(
+        &self,
+        params: &SyncParams,
+        gate: &Gate,
+        ledger: &Ledger,
+        notes: &[&str],
+    ) -> Result<SyncReport> {
         let mut report = SyncReport::new();
         let target_support = self.target.write_support();
         let source_support = self.source.read_support();
@@ -590,48 +631,58 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 &mut report.commands,
             )
         {
-            run_phase("commands", &mut report.commands, &mut failed, |slot| {
-                let commands = self.source.read_commands(params.include_marketplace)?;
-                let commands = without_excluded_plugins(commands, params);
-                let (commands, cmd_dups) = dedup_by_name(
-                    commands,
-                    "command",
-                    |c| c.name.clone(),
-                    |c| c.source_path.display().to_string(),
-                );
-                // Only the writer's own directory: plugin-cache and
-                // marketplace commands are never overwritten, so they
-                // cannot make a command "already exist".
-                let read_existing = || -> Result<Vec<Command>> {
-                    let mut existing = self.target.read_commands(false)?;
-                    existing.retain(|c| c.plugin_origin.is_none());
-                    Ok(existing)
-                };
-                // A skipped existing command is never overwritten, so it
-                // cannot be a conflict either.
-                if params.dry_run && (params.force || !params.skip_existing_commands) {
-                    self.scan_files(ledger, ItemKind::Command, &commands, read_existing);
-                }
-                *slot = sync_items(
-                    commands,
-                    params.force,
-                    params.dry_run,
-                    params.skip_existing_commands,
-                    read_existing,
-                    |items| {
-                        self.write_files_gated(
-                            gate,
-                            ledger,
-                            ItemKind::Command,
-                            items.to_vec(),
-                            read_existing,
-                            |kept| self.target.write_commands(kept),
-                        )
-                    },
-                )?;
-                slot.duplicates = cmd_dups;
-                Ok(())
-            })?;
+            run_phase(
+                ItemKind::Command,
+                ledger,
+                &mut report.commands,
+                &mut failed,
+                |slot| {
+                    let commands = self.source.read_commands(params.include_marketplace)?;
+                    let commands = without_excluded_plugins(commands, params);
+                    let (commands, cmd_dups) = dedup_by_name(
+                        commands,
+                        "command",
+                        |c| c.name.clone(),
+                        |c| c.source_path.display().to_string(),
+                    );
+                    // Only the writer's own directory: plugin-cache and
+                    // marketplace commands are never overwritten, so they
+                    // cannot make a command "already exist".
+                    let read_existing = || -> Result<Vec<Command>> {
+                        let mut existing = self.target.read_commands(false)?;
+                        existing.retain(|c| c.plugin_origin.is_none());
+                        Ok(existing)
+                    };
+                    // A skipped existing command is never overwritten, so it
+                    // cannot be a conflict either.
+                    let unchecked = (params.dry_run
+                        && (params.force || !params.skip_existing_commands))
+                        .then(|| {
+                            self.scan_files(ledger, ItemKind::Command, &commands, read_existing)
+                        })
+                        .flatten();
+                    *slot = sync_items(
+                        commands,
+                        params.force,
+                        params.dry_run,
+                        params.skip_existing_commands,
+                        read_existing,
+                        |items| {
+                            self.write_files_gated(
+                                gate,
+                                ledger,
+                                ItemKind::Command,
+                                items.to_vec(),
+                                read_existing,
+                                |kept| self.target.write_commands(kept),
+                            )
+                        },
+                    )?;
+                    slot.warnings.extend(unchecked);
+                    slot.duplicates = cmd_dups;
+                    Ok(())
+                },
+            )?;
         }
 
         // Sync skills
@@ -644,77 +695,83 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 &mut report.skills,
             )
         {
-            run_phase("skills", &mut report.skills, &mut failed, |slot| {
-                let mut skills = self.source.read_skills()?;
-                let mut in_mirror_names = Vec::new();
-                if mirror_carries_plugin_skills {
-                    let before = skills.len();
-                    in_mirror_names = skills
-                        .iter()
-                        .filter(|s| {
-                            s.plugin_origin
-                                .as_ref()
-                                .is_some_and(|o| !params.is_plugin_excluded(&o.plugin_name))
-                        })
-                        .map(crate::adapters::utils::skill_folder_name)
-                        .collect();
-                    skills.retain(|s| s.plugin_origin.is_none());
-                    let in_mirror = before - skills.len();
-                    if in_mirror > 0 {
-                        tracing::debug!(
+            run_phase(
+                ItemKind::Skill,
+                ledger,
+                &mut report.skills,
+                &mut failed,
+                |slot| {
+                    let mut skills = self.source.read_skills()?;
+                    let mut in_mirror_names = Vec::new();
+                    if mirror_carries_plugin_skills {
+                        let before = skills.len();
+                        in_mirror_names = skills
+                            .iter()
+                            .filter(|s| {
+                                s.plugin_origin
+                                    .as_ref()
+                                    .is_some_and(|o| !params.is_plugin_excluded(&o.plugin_name))
+                            })
+                            .map(crate::adapters::utils::skill_folder_name)
+                            .collect();
+                        skills.retain(|s| s.plugin_origin.is_none());
+                        let in_mirror = before - skills.len();
+                        if in_mirror > 0 {
+                            tracing::debug!(
                             in_mirror,
                             "Plugin skills ride the plugin mirror; not copying them flat as well"
                         );
+                        }
                     }
-                }
-                let before = skills.len();
-                let skills = without_excluded_plugins(skills, params);
-                let excluded_count = before - skills.len();
-                if excluded_count > 0 {
-                    tracing::info!(
-                        excluded = excluded_count,
-                        "Excluded skills from filtered plugins"
-                    );
-                }
-                let (skills, skill_dups) = dedup_by_name(
-                    skills,
-                    "skill",
-                    |s| s.name.clone(),
-                    |s| s.source_path.display().to_string(),
-                );
-                if !params.dry_run {
-                    *slot = self.write_files_gated(
-                        gate,
-                        ledger,
-                        ItemKind::Skill,
+                    let before = skills.len();
+                    let skills = without_excluded_plugins(skills, params);
+                    let excluded_count = before - skills.len();
+                    if excluded_count > 0 {
+                        tracing::info!(
+                            excluded = excluded_count,
+                            "Excluded skills from filtered plugins"
+                        );
+                    }
+                    let (skills, skill_dups) = dedup_by_name(
                         skills,
-                        || self.target.read_skills(),
-                        |kept| self.target.write_skills(kept),
-                    )?;
-                } else {
-                    self.scan_files(ledger, ItemKind::Skill, &skills, || {
-                        self.target.read_skills()
-                    });
-                    *slot = self.target.preview_skills(&skills)?;
-                }
-                // The flat copies go only because the plugin mirror carries
-                // those skills; a rejected mirror leaves them as the only copy.
-                let mirror_rejected =
-                    gate.rejected(ItemKind::PluginAssets, ItemKind::PluginAssets.plural());
-                if !params.keep_versions && !in_mirror_names.is_empty() && !mirror_rejected {
-                    let removed = self.target.remove_flat_skill_copies(
-                        &in_mirror_names,
-                        params.dry_run || gate.is_collecting(),
-                    )?;
-                    slot.warnings.extend(removed.warnings);
-                }
-                slot.duplicates = skill_dups;
-                // Report excluded plugins as skipped
-                for _ in 0..excluded_count {
-                    slot.skipped.push(SkipReason::PluginExcluded);
-                }
-                Ok(())
-            })?;
+                        "skill",
+                        |s| s.name.clone(),
+                        |s| s.source_path.display().to_string(),
+                    );
+                    if !params.dry_run {
+                        *slot = self.write_files_gated(
+                            gate,
+                            ledger,
+                            ItemKind::Skill,
+                            skills,
+                            || self.target.read_skills(),
+                            |kept| self.target.write_skills(kept),
+                        )?;
+                    } else {
+                        let unchecked = self.scan_files(ledger, ItemKind::Skill, &skills, || {
+                            self.target.read_skills()
+                        });
+                        *slot = self.target.preview_skills(&skills)?;
+                        slot.warnings.extend(unchecked);
+                    }
+                    // The flat copies go only because the plugin mirror carries
+                    // those skills; a rejected mirror leaves them as the only copy.
+                    let mirror_rejected = gate.category_rejected(ItemKind::PluginAssets);
+                    if !params.keep_versions && !in_mirror_names.is_empty() && !mirror_rejected {
+                        let removed = self.target.remove_flat_skill_copies(
+                            &in_mirror_names,
+                            params.dry_run || gate.is_collecting(),
+                        )?;
+                        slot.warnings.extend(removed.warnings);
+                    }
+                    slot.duplicates = skill_dups;
+                    // Report excluded plugins as skipped
+                    for _ in 0..excluded_count {
+                        slot.skipped.push(SkipReason::PluginExcluded);
+                    }
+                    Ok(())
+                },
+            )?;
         }
 
         // Sync MCP servers
@@ -728,7 +785,8 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             )
         {
             run_phase(
-                "MCP servers",
+                ItemKind::McpServer,
+                ledger,
                 &mut report.mcp_servers,
                 &mut failed,
                 |slot| {
@@ -759,7 +817,8 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             )
         {
             run_phase(
-                "preferences",
+                ItemKind::Preferences,
+                ledger,
                 &mut report.preferences,
                 &mut failed,
                 |slot| {
@@ -789,21 +848,24 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                     }
 
                     if !params.dry_run {
-                        let accepted = match prefs.model.as_deref() {
+                        let decision = match prefs.model.as_deref() {
                             Some(model) if !gate.is_off() => {
                                 let current = self.target.read_preferences()?.model;
-                                gate.accept_model(current.as_deref(), model)?
+                                gate.decide_model(current.as_deref(), model)?
                             }
-                            _ => true,
+                            _ => Some(crate::decision::Decision::Accept),
                         };
-                        if gate.is_collecting() {
+                        let item = "model".to_string();
+                        match decision {
                             // Asked above; the applying pass writes.
-                        } else if accepted {
-                            *slot = self.target.write_preferences(&prefs)?;
-                        } else {
-                            slot.skipped.push(SkipReason::Declined {
-                                item: "model".to_string(),
-                            });
+                            _ if gate.is_collecting() => {}
+                            Some(crate::decision::Decision::Accept) => {
+                                *slot = self.target.write_preferences(&prefs)?;
+                            }
+                            Some(crate::decision::Decision::Reject) => {
+                                slot.skipped.push(SkipReason::Declined { item });
+                            }
+                            None => slot.skipped.push(SkipReason::Unconfirmed { item }),
                         }
                     } else if let Some(model) = &prefs.model {
                         let current = self.target.read_preferences().ok().and_then(|p| p.model);
@@ -831,25 +893,32 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 &mut report.agents,
             )
         {
-            run_phase("agents", &mut report.agents, &mut failed, |slot| {
-                let agents = without_excluded_plugins(self.source.read_agents()?, params);
-                if !params.dry_run {
-                    *slot = self.write_files_gated(
-                        gate,
-                        ledger,
-                        ItemKind::Agent,
-                        agents,
-                        || self.target.read_agents(),
-                        |kept| self.target.write_agents(kept),
-                    )?;
-                } else {
-                    self.scan_files(ledger, ItemKind::Agent, &agents, || {
-                        self.target.read_agents()
-                    });
-                    *slot = preview_items(&agents, || self.target.read_agents());
-                }
-                Ok(())
-            })?;
+            run_phase(
+                ItemKind::Agent,
+                ledger,
+                &mut report.agents,
+                &mut failed,
+                |slot| {
+                    let agents = without_excluded_plugins(self.source.read_agents()?, params);
+                    if !params.dry_run {
+                        *slot = self.write_files_gated(
+                            gate,
+                            ledger,
+                            ItemKind::Agent,
+                            agents,
+                            || self.target.read_agents(),
+                            |kept| self.target.write_agents(kept),
+                        )?;
+                    } else {
+                        let unchecked = self.scan_files(ledger, ItemKind::Agent, &agents, || {
+                            self.target.read_agents()
+                        });
+                        *slot = preview_items(&agents, || self.target.read_agents());
+                        slot.warnings.extend(unchecked);
+                    }
+                    Ok(())
+                },
+            )?;
         }
 
         // Sync hooks (lifecycle events). Cursor reads Claude's own hooks from
@@ -873,23 +942,32 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 &mut report.hooks,
             )
         {
-            run_phase("hooks", &mut report.hooks, &mut failed, |slot| {
-                let hooks = without_excluded_plugins(self.source.read_hooks()?, params);
-                if !params.dry_run {
-                    *slot = self.write_files_gated(
-                        gate,
-                        ledger,
-                        ItemKind::Hook,
-                        hooks,
-                        || self.target.read_hooks(),
-                        |kept| self.target.write_hooks(kept),
-                    )?;
-                } else {
-                    self.scan_files(ledger, ItemKind::Hook, &hooks, || self.target.read_hooks());
-                    *slot = preview_items(&hooks, || self.target.read_hooks());
-                }
-                Ok(())
-            })?;
+            run_phase(
+                ItemKind::Hook,
+                ledger,
+                &mut report.hooks,
+                &mut failed,
+                |slot| {
+                    let hooks = without_excluded_plugins(self.source.read_hooks()?, params);
+                    if !params.dry_run {
+                        *slot = self.write_files_gated(
+                            gate,
+                            ledger,
+                            ItemKind::Hook,
+                            hooks,
+                            || self.target.read_hooks(),
+                            |kept| self.target.write_hooks(kept),
+                        )?;
+                    } else {
+                        let unchecked = self.scan_files(ledger, ItemKind::Hook, &hooks, || {
+                            self.target.read_hooks()
+                        });
+                        *slot = preview_items(&hooks, || self.target.read_hooks());
+                        slot.warnings.extend(unchecked);
+                    }
+                    Ok(())
+                },
+            )?;
         }
 
         // Sync instructions (CLAUDE.md → *.instructions.md / .cursor/rules/*.mdc)
@@ -903,20 +981,24 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             )
         {
             run_phase(
-                "instructions",
+                ItemKind::Instruction,
+                ledger,
                 &mut report.instructions,
                 &mut failed,
                 |slot| {
                     let instructions = self.source.read_instructions()?;
                     let read_existing = || self.target.read_instructions();
-                    if params.dry_run && (params.force || !params.skip_existing_instructions) {
-                        self.scan_files(
-                            ledger,
-                            ItemKind::Instruction,
-                            &instructions,
-                            read_existing,
-                        );
-                    }
+                    let unchecked = (params.dry_run
+                        && (params.force || !params.skip_existing_instructions))
+                        .then(|| {
+                            self.scan_files(
+                                ledger,
+                                ItemKind::Instruction,
+                                &instructions,
+                                read_existing,
+                            )
+                        })
+                        .flatten();
                     *slot = sync_items(
                         instructions,
                         params.force,
@@ -934,6 +1016,7 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                             )
                         },
                     )?;
+                    slot.warnings.extend(unchecked);
                     Ok(())
                 },
             )?;
@@ -977,7 +1060,8 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 report.plugin_assets.skipped.push(reason);
             } else {
                 run_phase(
-                    "plugin assets",
+                    ItemKind::PluginAssets,
+                    ledger,
                     &mut report.plugin_assets,
                     &mut failed,
                     |slot| {
@@ -994,28 +1078,39 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                                 keep_versions: params.keep_versions,
                             };
                             // The mirror prunes as well as writes and has no
-                            // per-file round trip, so it is one question.
-                            let accepted = if gate.is_off() {
-                                true
+                            // per-file round trip, so it is one question. It
+                            // shows only a count, so its answer carries no
+                            // fingerprint: the skills phase has already acted
+                            // on it when this phase runs again.
+                            let decision = if gate.is_off() {
+                                Some(crate::decision::Decision::Accept)
                             } else {
                                 let pending = self.target.preview_plugin_assets(&assets)?.written;
-                                pending == 0
-                                    || gate.accept_category(
+                                if pending == 0 {
+                                    Some(crate::decision::Decision::Accept)
+                                } else {
+                                    gate.decide_category(
                                         ItemKind::PluginAssets,
                                         &[format!(
                                             "{pending} plugin asset file(s) to write or prune"
                                         )],
                                         0,
+                                        String::new(),
                                     )?
+                                }
                             };
-                            if gate.is_collecting() {
+                            let item = ItemKind::PluginAssets.plural().to_string();
+                            match decision {
                                 // Asked above; the applying pass writes.
-                            } else if accepted {
-                                *slot = self.target.write_plugin_assets_with(&assets, &options)?;
-                            } else {
-                                slot.skipped.push(SkipReason::Declined {
-                                    item: ItemKind::PluginAssets.plural().to_string(),
-                                });
+                                _ if gate.is_collecting() => {}
+                                Some(crate::decision::Decision::Accept) => {
+                                    *slot =
+                                        self.target.write_plugin_assets_with(&assets, &options)?;
+                                }
+                                Some(crate::decision::Decision::Reject) => {
+                                    slot.skipped.push(SkipReason::Declined { item });
+                                }
+                                None => slot.skipped.push(SkipReason::Unconfirmed { item }),
                             }
                         } else {
                             // The writer also deletes, so the preview has to come from
@@ -1037,7 +1132,9 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         if gate.is_off() {
             self.warn_of_conflicts(params, ledger, &mut report);
         }
-        if !params.dry_run && !gate.is_collecting() && !failed {
+        // Saved after a failed phase too: only phases that wrote noted their
+        // items, and a phase that failed forgot its conflicts.
+        if !params.dry_run && !gate.is_collecting() {
             let saved = ledger.persist(std::time::SystemTime::now(), |kind, name| {
                 gate.answered(kind, name)
             });
@@ -1046,9 +1143,15 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 // The report has no list of its own, so this rides on the
                 // first phase.
                 report.commands.warnings.push(format!(
-                    "The sync worked, but its conflict baseline could not be saved: {e:#}"
+                    "The sync wrote, but its conflict baseline could not be saved: {e:#}"
                 ));
             }
+        }
+        if !gate.is_collecting() {
+            report
+                .commands
+                .warnings
+                .extend(notes.iter().map(|note| note.to_string()));
         }
         report.summary = report.format_summary(self.source.name(), self.target.name());
 
@@ -1102,23 +1205,22 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
 
     /// Finds the items the source and the target both changed, for a run that
     /// asks nobody (a plain sync or a dry run). A target that cannot be read
-    /// reports none: the write reports the real failure.
+    /// reports no conflicts, and the returned warning says they were not
+    /// checked.
+    #[must_use]
     fn scan_files(
         &self,
         ledger: &Ledger,
         kind: ItemKind,
         items: &[Command],
         read_target: impl FnOnce() -> Result<Vec<Command>>,
-    ) {
+    ) -> Option<String> {
         if !ledger.has_baseline() {
-            return;
+            return None;
         }
         let held = match read_target() {
             Ok(held) => held,
-            Err(e) => {
-                tracing::debug!(error = %format!("{e:#}"), "Could not read the target to look for conflicts");
-                return;
-            }
+            Err(e) => return Some(unchecked_conflicts(kind, &e)),
         };
         let by_key: HashMap<String, &Command> = held
             .iter()
@@ -1128,6 +1230,7 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         for item in items {
             ledger.file_conflict(kind, item, by_key.get(&file_key(kind, item)).copied());
         }
+        None
     }
 
     /// Notes what each item of `items` hashed to on both sides after the
@@ -1147,7 +1250,7 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         let held = match read_target() {
             Ok(held) => held,
             Err(e) => {
-                tracing::debug!(error = %format!("{e:#}"), "Could not read the target to record a baseline");
+                tracing::warn!(error = %format!("{e:#}"), "Could not read the target to record a baseline");
                 return;
             }
         };
@@ -1164,7 +1267,7 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
     }
 
     /// Hands `write` what `gate` allows: everything when off, nothing when
-    /// collecting (the questions are asked and the target untouched), and the
+    /// collecting (the questions are asked and no item is written), and the
     /// accepted items when applying.
     ///
     /// A category the target's writer does not give back byte for byte
@@ -1180,9 +1283,25 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         write: impl FnOnce(&[Command]) -> Result<WriteReport>,
     ) -> Result<WriteReport> {
         if gate.is_off() {
-            self.scan_files(ledger, kind, &items, &read_target);
-            let report = write(&items)?;
-            self.record_files(ledger, kind, &items, &read_target, |_| false);
+            let unchecked = self.scan_files(ledger, kind, &items, &read_target);
+            let mut report = write(&items)?;
+            report.warnings.extend(unchecked);
+            // A file the writer refused still holds the target's edits, so
+            // it is neither reported as overwritten nor recorded.
+            let refused: Vec<&String> = report
+                .skipped
+                .iter()
+                .filter_map(|reason| match reason {
+                    SkipReason::Refused { item, .. } => Some(item),
+                    _ => None,
+                })
+                .collect();
+            for item in &refused {
+                ledger.forget(kind, item);
+            }
+            self.record_files(ledger, kind, &items, &read_target, |item| {
+                refused.contains(&&item.name)
+            });
             return Ok(report);
         }
         // An unreadable target cannot be classified, so it is not written.
@@ -1208,18 +1327,29 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                         ledger.file_conflict(kind, item, held)
                     })
                     .count();
-                if anything && !gate.accept_category(kind, &pending, conflicting)? {
-                    Resolved {
-                        items: Vec::new(),
-                        declined: vec![kind.plural().to_string()],
-                        skip_write: true,
-                    }
+                let decision = if anything {
+                    let seen =
+                        crate::interactive::files_seen(&items, &target, |c| file_key(kind, c));
+                    gate.decide_category(kind, &pending, conflicting, seen)?
                 } else {
-                    Resolved {
-                        items: items.clone(),
-                        declined: Vec::new(),
-                        skip_write: false,
-                    }
+                    Some(crate::decision::Decision::Accept)
+                };
+                let category = vec![kind.plural().to_string()];
+                let (declined, unconfirmed) = match decision {
+                    Some(crate::decision::Decision::Accept) => (Vec::new(), Vec::new()),
+                    Some(crate::decision::Decision::Reject) => (category, Vec::new()),
+                    None => (Vec::new(), category),
+                };
+                let skip_write = !declined.is_empty() || !unconfirmed.is_empty();
+                Resolved {
+                    items: if skip_write {
+                        Vec::new()
+                    } else {
+                        items.clone()
+                    },
+                    declined,
+                    unconfirmed,
+                    skip_write,
                 }
             }
         };
@@ -1233,16 +1363,16 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         };
         // A rejected change leaves its baseline where it was, except a
         // rejected conflict: that was resolved, and asking again every sync
-        // would be noise.
-        let declined = |item: &Command| {
-            resolved
-                .declined
-                .iter()
-                .any(|name| name == &item.name || name == kind.plural())
-                && !ledger.is_found(kind, &item.name)
+        // would be noise. An unconfirmed one was never decided, so its
+        // baseline stays too.
+        let whole = |names: &[String]| resolved.skip_write && !names.is_empty();
+        let keeps_baseline = |item: &Command| {
+            let named = |names: &[String]| whole(names) || names.contains(&item.name);
+            named(&resolved.unconfirmed)
+                || (named(&resolved.declined) && !ledger.is_found(kind, &item.name))
         };
-        self.record_files(ledger, kind, &items, &read_target, declined);
-        Ok(gate.annotate(report, &resolved.declined))
+        self.record_files(ledger, kind, &items, &read_target, keeps_baseline);
+        Ok(gate.annotate(report, &resolved.declined, &resolved.unconfirmed))
     }
 
     /// [`Self::write_files_gated`] for MCP servers, which are keyed by name
@@ -1254,6 +1384,7 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         servers: HashMap<String, crate::common::McpServer>,
     ) -> Result<WriteReport> {
         if gate.is_off() {
+            let mut unchecked = None;
             if ledger.has_baseline() {
                 match self.target.read_mcp_servers() {
                     Ok(held) => {
@@ -1261,39 +1392,38 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                             ledger.server_conflict(name, server, held.get(name));
                         }
                     }
-                    Err(e) => tracing::debug!(
-                        error = %format!("{e:#}"),
-                        "Could not read the target to look for conflicts"
-                    ),
+                    Err(e) => unchecked = Some(unchecked_conflicts(ItemKind::McpServer, &e)),
                 }
             }
-            let report = self.target.write_mcp_servers(&servers)?;
-            self.record_servers(ledger, &servers, &[]);
+            let mut report = self.target.write_mcp_servers(&servers)?;
+            report.warnings.extend(unchecked);
+            self.record_servers(ledger, &servers, &[], &[]);
             return Ok(report);
         }
         let held = self.target.read_mcp_servers()?;
         let scope = self.target.decision_scope(ItemKind::McpServer);
         let source = servers.clone();
-        let (kept, declined) = gate.resolve_servers(scope, servers, &held, ledger)?;
+        let (kept, declined, unconfirmed) = gate.resolve_servers(scope, servers, &held, ledger)?;
         if gate.is_collecting() {
             return Ok(WriteReport::default());
         }
-        let report = if kept.is_empty() && !declined.is_empty() {
+        let report = if kept.is_empty() && (!declined.is_empty() || !unconfirmed.is_empty()) {
             WriteReport::default()
         } else {
             self.target.write_mcp_servers(&kept)?
         };
-        self.record_servers(ledger, &source, &declined);
-        Ok(gate.annotate(report, &declined))
+        self.record_servers(ledger, &source, &declined, &unconfirmed);
+        Ok(gate.annotate(report, &declined, &unconfirmed))
     }
 
     /// [`Self::record_files`] for MCP servers; `declined` names keep their
-    /// baseline unless they were a conflict.
+    /// baseline unless they were a conflict, and `unconfirmed` ones always.
     fn record_servers(
         &self,
         ledger: &Ledger,
         servers: &HashMap<String, crate::common::McpServer>,
         declined: &[String],
+        unconfirmed: &[String],
     ) {
         if !ledger.is_enabled() {
             return;
@@ -1301,12 +1431,13 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         let held = match self.target.read_mcp_servers() {
             Ok(held) => held,
             Err(e) => {
-                tracing::debug!(error = %format!("{e:#}"), "Could not read the target to record a baseline");
+                tracing::warn!(error = %format!("{e:#}"), "Could not read the target to record a baseline");
                 return;
             }
         };
         for (name, server) in servers {
-            let moved = !declined.contains(name) || ledger.is_found(ItemKind::McpServer, name);
+            let moved = !unconfirmed.contains(name)
+                && (!declined.contains(name) || ledger.is_found(ItemKind::McpServer, name));
             if let (true, Some(after)) = (moved, held.get(name)) {
                 ledger.record_server(name, server, after);
             }
@@ -3073,7 +3204,11 @@ mod tests {
             ..Default::default()
         });
 
-        assert!(outcome.is_err());
+        let error = outcome.unwrap_err();
+        assert!(
+            format!("{error:#}").contains("needs an item decider"),
+            "{error:#}"
+        );
         assert!(!root.exists());
     }
 
@@ -3216,6 +3351,422 @@ mod tests {
         assert_eq!(
             orchestrator.snapshot_root,
             Some(home.path().join(".skrills").join("snapshots"))
+        );
+    }
+
+    /// A Claude source and target, commands only, with a state root and
+    /// optionally a snapshot root, for the baseline and warning tests.
+    struct Ledgered {
+        source: tempfile::TempDir,
+        target: tempfile::TempDir,
+        state: tempfile::TempDir,
+    }
+
+    impl Ledgered {
+        fn new() -> Self {
+            Self {
+                source: tempdir().unwrap(),
+                target: tempdir().unwrap(),
+                state: tempdir().unwrap(),
+            }
+        }
+
+        fn put(root: &std::path::Path, relative: &str, body: &str) {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, body).unwrap();
+        }
+
+        fn sync(&self, snapshots: Option<std::path::PathBuf>) -> SyncReport {
+            SyncOrchestrator::new(
+                ClaudeAdapter::with_root(self.source.path().to_path_buf()),
+                ClaudeAdapter::with_root(self.target.path().to_path_buf()),
+            )
+            .with_kill_switch_marker(None)
+            .with_state_root(Some(self.state.path().to_path_buf()))
+            .with_snapshot_root(snapshots)
+            .sync(&commands_only())
+            .unwrap()
+        }
+
+        fn baseline_path(&self) -> std::path::PathBuf {
+            let key = crate::conflict::target_key("claude", self.target.path());
+            self.state.path().join(format!("{key}.json"))
+        }
+
+        /// `names` synced once at "v1", then edited on both sides.
+        fn in_conflict(names: &[&str]) -> Self {
+            let rig = Self::new();
+            for name in names {
+                Self::put(rig.source.path(), &format!("commands/{name}.md"), "# v1\n");
+            }
+            assert!(rig.sync(None).success);
+            for name in names {
+                Self::put(rig.source.path(), &format!("commands/{name}.md"), "# v2\n");
+                Self::put(
+                    rig.target.path(),
+                    &format!("commands/{name}.md"),
+                    "# mine\n",
+                );
+            }
+            rig
+        }
+    }
+
+    fn commands_only() -> SyncParams {
+        SyncParams {
+            sync_skills: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_agents: false,
+            sync_hooks: false,
+            sync_instructions: false,
+            sync_plugin_assets: false,
+            ..Default::default()
+        }
+    }
+
+    fn all_warnings(report: &SyncReport) -> Vec<String> {
+        [
+            &report.commands,
+            &report.skills,
+            &report.mcp_servers,
+            &report.preferences,
+            &report.agents,
+            &report.hooks,
+            &report.instructions,
+            &report.plugin_assets,
+        ]
+        .iter()
+        .flat_map(|slot| slot.warnings.clone())
+        .collect()
+    }
+
+    /// Restores a mode changed for a test, so the tempdir can be removed
+    /// even when an assertion fails first.
+    #[cfg(unix)]
+    struct ModeGuard(std::path::PathBuf, u32);
+
+    #[cfg(unix)]
+    impl ModeGuard {
+        fn set(path: &std::path::Path, mode: u32) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let old = fs::metadata(path).unwrap().permissions().mode();
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+            Self(path.to_path_buf(), old)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ModeGuard {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _restored = fs::set_permissions(&self.0, fs::Permissions::from_mode(self.1));
+        }
+    }
+
+    #[test]
+    fn rollback_undoes_the_phases_that_wrote_when_another_phase_failed() {
+        let snaps = tempdir().unwrap();
+        let state = tempdir().unwrap();
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("commands")).unwrap();
+        fs::write(src_dir.path().join("commands/hello.md"), "# New Hello").unwrap();
+        fs::write(
+            src_dir.path().join(".claude.json"),
+            r#"{"mcpServers": {"s": {"command": "/bin/s"}}}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(tgt_dir.path().join("prompts")).unwrap();
+        fs::write(tgt_dir.path().join("prompts/hello.md"), "# Old Hello").unwrap();
+        // A malformed config.toml makes the MCP phase fail.
+        fs::write(tgt_dir.path().join("config.toml"), "[unclosed\n").unwrap();
+
+        let report = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .with_kill_switch_marker(None)
+        .with_snapshot_root(Some(snaps.path().to_path_buf()))
+        .with_state_root(Some(state.path().to_path_buf()))
+        .sync(&SyncParams {
+            sync_commands: true,
+            sync_mcp_servers: true,
+            ..commands_only()
+        })
+        .unwrap();
+
+        assert!(!report.success, "{report:?}");
+        assert_eq!(report.commands.written, 1, "{report:?}");
+        let key = crate::conflict::target_key("codex", tgt_dir.path());
+        let baseline = fs::read_to_string(state.path().join(format!("{key}.json")))
+            .expect("the commands phase wrote, so its baseline is saved");
+        assert!(baseline.contains("command:hello"), "{baseline}");
+        assert!(!baseline.contains("MCP server:"), "{baseline}");
+
+        crate::snapshot::rollback(snaps.path(), None).unwrap();
+        assert_eq!(
+            fs::read_to_string(tgt_dir.path().join("prompts/hello.md")).unwrap(),
+            "# Old Hello"
+        );
+    }
+
+    /// The commands directory is made read-only, so the conflict is found but
+    /// the writer refuses the file.
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_write_does_not_claim_it_overwrote_the_targets_edits() {
+        let rig = Ledgered::in_conflict(&["foo"]);
+        let _guard = ModeGuard::set(&rig.target.path().join("commands"), 0o555);
+
+        let before = fs::read_to_string(rig.baseline_path()).unwrap();
+
+        let report = rig.sync(None);
+
+        assert_eq!(report.commands.written, 0, "{report:?}");
+        let warnings = all_warnings(&report);
+        assert!(
+            !warnings.iter().any(|w| w.contains("changed on both")),
+            "{warnings:?}"
+        );
+        // Recording it would make the next sync overwrite the edit unwarned.
+        assert_eq!(fs::read_to_string(rig.baseline_path()).unwrap(), before);
+    }
+
+    /// A Claude source and a Codex target holding MCP server `srv`, synced
+    /// once and then edited on both sides.
+    fn mcp_in_conflict() -> (Ledgered, impl Fn(&Ledgered) -> SyncReport) {
+        let rig = Ledgered::new();
+        let sync = |rig: &Ledgered| {
+            SyncOrchestrator::new(
+                ClaudeAdapter::with_root(rig.source.path().to_path_buf()),
+                CodexAdapter::with_root(rig.target.path().to_path_buf()),
+            )
+            .with_kill_switch_marker(None)
+            .with_state_root(Some(rig.state.path().to_path_buf()))
+            .sync(&SyncParams {
+                sync_commands: false,
+                sync_mcp_servers: true,
+                ..commands_only()
+            })
+            .unwrap()
+        };
+        let source = |arg: &str| {
+            format!(r#"{{"mcpServers": {{"srv": {{"command": "/bin/srv", "args": ["{arg}"]}}}}}}"#)
+        };
+        Ledgered::put(rig.source.path(), ".claude.json", &source("v1"));
+        assert!(sync(&rig).success);
+        Ledgered::put(rig.source.path(), ".claude.json", &source("v2"));
+        let config = rig.target.path().join("config.toml");
+        let edited = fs::read_to_string(&config).unwrap().replace("v1", "mine");
+        fs::write(&config, edited).unwrap();
+        (rig, sync)
+    }
+
+    /// The target root is made read-only, so the conflict is found but the
+    /// MCP phase fails.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_phase_does_not_claim_it_overwrote_the_targets_edits() {
+        let (rig, sync) = mcp_in_conflict();
+        let _guard = ModeGuard::set(rig.target.path(), 0o555);
+
+        let report = sync(&rig);
+
+        assert!(!report.success, "{report:?}");
+        let warnings = all_warnings(&report);
+        assert!(
+            !warnings.iter().any(|w| w.contains("changed on both")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn a_target_read_failure_neither_warns_nor_erases_the_items_baseline() {
+        let (rig, sync) = mcp_in_conflict();
+        let key = crate::conflict::target_key("codex", rig.target.path());
+        let baseline = rig.state.path().join(format!("{key}.json"));
+        let before = fs::read_to_string(&baseline).unwrap();
+        fs::write(rig.target.path().join("config.toml"), "[unclosed\n").unwrap();
+
+        let report = sync(&rig);
+
+        assert!(!report.success, "{report:?}");
+        let warnings = all_warnings(&report);
+        assert!(
+            !warnings.iter().any(|w| w.contains("changed on both")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("MCP servers sync failed")),
+            "{warnings:?}"
+        );
+        assert_eq!(fs::read_to_string(&baseline).unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sync_whose_conflict_baseline_cannot_be_saved_still_succeeds_and_says_so() {
+        let rig = Ledgered::new();
+        Ledgered::put(rig.source.path(), "commands/foo.md", "# v1\n");
+        let _guard = ModeGuard::set(rig.state.path(), 0o555);
+
+        let report = rig.sync(None);
+
+        assert!(report.success, "{report:?}");
+        assert!(rig.target.path().join("commands/foo.md").exists());
+        assert!(
+            all_warnings(&report)
+                .iter()
+                .any(|w| w.contains("conflict baseline could not be saved")),
+            "{report:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_version_baseline_is_left_alone_and_the_report_says_so() {
+        let rig = Ledgered::new();
+        Ledgered::put(rig.source.path(), "commands/foo.md", "# v1\n");
+        let newer = r#"{"version": 99, "items": {}}"#;
+        fs::write(rig.baseline_path(), newer).unwrap();
+
+        let report = rig.sync(None);
+
+        assert!(report.success, "{report:?}");
+        assert_eq!(fs::read_to_string(rig.baseline_path()).unwrap(), newer);
+        assert!(
+            all_warnings(&report)
+                .iter()
+                .any(|w| w.contains("version 99") && w.contains("left as it is")),
+            "{report:?}"
+        );
+        assert!(report.summary.contains("version 99"), "{}", report.summary);
+    }
+
+    #[test]
+    fn a_sync_whose_snapshot_cannot_start_says_so_in_the_report() {
+        let tmp = tempdir().unwrap();
+        // A regular file where `~/.skrills` belongs.
+        let skrills_home = tmp.path().join(".skrills");
+        fs::write(&skrills_home, "not a directory").unwrap();
+        let rig = Ledgered::new();
+        Ledgered::put(rig.source.path(), "commands/foo.md", "# v1\n");
+
+        let report = rig.sync(Some(skrills_home.join("snapshots")));
+
+        assert!(report.success, "{report:?}");
+        assert!(rig.target.path().join("commands/foo.md").exists());
+        let warnings = all_warnings(&report);
+        assert!(
+            warnings.iter().any(|w| w.contains("not snapshotted")
+                && w.contains("`skrills sync-rollback` cannot undo")),
+            "{warnings:?}"
+        );
+        assert!(
+            report.summary.contains("not snapshotted"),
+            "{}",
+            report.summary
+        );
+    }
+
+    #[test]
+    fn a_conflict_warning_names_one_item_by_kind_and_more_by_count() {
+        let one = Ledgered::in_conflict(&["foo"]).sync(None);
+        let two = Ledgered::in_conflict(&["bar", "foo"]).sync(None);
+
+        assert!(
+            one.commands
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("command changed on both") && w.ends_with(": foo")),
+            "{:?}",
+            one.commands.warnings
+        );
+        assert!(
+            two.commands
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("2 commands changed on both") && w.ends_with(": bar, foo")),
+            "{:?}",
+            two.commands.warnings
+        );
+    }
+
+    /// A target whose commands cannot be read, with a baseline for `foo`.
+    fn unreadable_commands_target(
+        root: &std::path::Path,
+        state: &std::path::Path,
+    ) -> crate::adapters::traits::MockAgentAdapter {
+        use crate::adapters::traits::{FieldSupport, MockAgentAdapter};
+        let key = crate::conflict::target_key("mock", root);
+        let baseline =
+            r#"{"version": 1, "items": {"command:foo": {"source": "s", "target": "t"}}}"#;
+        fs::write(state.join(format!("{key}.json")), baseline).unwrap();
+        let mut target = MockAgentAdapter::new();
+        target.expect_name().return_const("mock".to_string());
+        let root = root.to_path_buf();
+        target.expect_config_root().returning(move || root.clone());
+        target.expect_write_support().returning(|| FieldSupport {
+            commands: true,
+            ..FieldSupport::default()
+        });
+        target
+            .expect_read_commands()
+            .returning(|_| Err(anyhow::anyhow!("permission denied")));
+        target.expect_write_commands().returning(|items| {
+            Ok(WriteReport {
+                written: items.len(),
+                ..WriteReport::default()
+            })
+        });
+        target
+    }
+
+    #[test]
+    fn an_unreadable_target_says_conflicts_were_not_checked_and_the_preview_counts_every_item() {
+        let rig = Ledgered::new();
+        Ledgered::put(rig.source.path(), "commands/foo.md", "# v1\n");
+        let sync = |dry_run: bool| {
+            SyncOrchestrator::new(
+                ClaudeAdapter::with_root(rig.source.path().to_path_buf()),
+                unreadable_commands_target(rig.target.path(), rig.state.path()),
+            )
+            .with_kill_switch_marker(None)
+            .with_state_root(Some(rig.state.path().to_path_buf()))
+            .sync(&SyncParams {
+                dry_run,
+                ..commands_only()
+            })
+            .unwrap()
+        };
+
+        let preview = sync(true);
+        let plain = sync(false);
+
+        assert_eq!(preview.commands.written, 1, "{preview:?}");
+        let unchecked = "Conflicts were not checked for commands: could not read the target";
+        for report in [&preview, &plain] {
+            assert!(
+                report
+                    .commands
+                    .warnings
+                    .iter()
+                    .any(|w| w.starts_with(unchecked)),
+                "{:?}",
+                report.commands.warnings
+            );
+        }
+        assert!(
+            preview
+                .commands
+                .warnings
+                .iter()
+                .any(|w| w.contains("so every item counts as a write")),
+            "{:?}",
+            preview.commands.warnings
         );
     }
 }

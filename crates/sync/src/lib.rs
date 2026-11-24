@@ -1,8 +1,9 @@
 //! Cross-agent configuration sync for skrills.
 //!
 //! Syncs commands, skills, MCP servers, preferences, hooks, agents,
-//! and instructions between Claude Code, Codex, Copilot, and Cursor
-//! using a pluggable adapter architecture.
+//! and instructions between Claude Code, Codex, Copilot, Cursor, and any
+//! tool described by a custom adapter file (`~/.skrills/adapters/<name>.toml`,
+//! see [`SyncEndpoint`]) using a pluggable adapter architecture.
 //!
 //! Includes validation to ensure skills are compatible with their
 //! target CLI before syncing.

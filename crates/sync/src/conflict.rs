@@ -28,7 +28,7 @@ use std::time::SystemTime;
 pub const RESOLUTIONS_FILE: &str = "resolutions.jsonl";
 
 /// Bumped when the baseline's layout changes; a file of another version is
-/// ignored rather than misread.
+/// neither read nor overwritten.
 const FORMAT_VERSION: u32 = 1;
 
 /// `~/.skrills/sync-state`, resolved as [`crate::snapshot::default_root`] is.
@@ -120,7 +120,20 @@ pub(crate) fn is_conflict(baseline: Option<&Entry>, source: &str, target: &str) 
 }
 
 fn entry_key(kind: ItemKind, name: &str) -> String {
-    format!("{kind}:{name}")
+    format!("{}:{name}", kind.key())
+}
+
+/// What was found at a target's baseline path when a sync started.
+enum Baseline {
+    Loaded(BTreeMap<String, Entry>),
+    /// No file yet: a first sync.
+    Missing,
+    /// A file this build cannot use: unreadable, corrupt, or of another
+    /// version (a newer skrills wrote it). It is left alone, never replaced,
+    /// and `warning` says so.
+    Foreign {
+        warning: String,
+    },
 }
 
 /// A conflict found during a sync, with both hashes for the resolution log.
@@ -144,20 +157,20 @@ pub(crate) enum Scope {
 pub(crate) struct Ledger {
     root: Option<PathBuf>,
     key: String,
-    baseline: BTreeMap<String, Entry>,
+    baseline: Baseline,
     found: RefCell<BTreeMap<String, Detected>>,
     updates: RefCell<BTreeMap<String, Entry>>,
 }
 
 impl Ledger {
     /// Loads the baseline for `key` from `root`. A missing, unreadable or
-    /// unrecognised file is an empty baseline: no conflicts are reported
-    /// rather than guessed at.
+    /// unrecognised file reports no conflicts rather than guess at them; an
+    /// unreadable or unrecognised one is also never overwritten (see
+    /// [`Self::warning`]).
     pub fn load(root: Option<&Path>, key: String) -> Self {
         let baseline = root
             .map(|root| root.join(format!("{key}.json")))
-            .map(|path| read_baseline(&path))
-            .unwrap_or_default();
+            .map_or(Baseline::Missing, |path| read_baseline(&path));
         Self {
             root: root.map(Path::to_path_buf),
             key,
@@ -173,7 +186,23 @@ impl Ledger {
 
     /// Whether a baseline exists to compare against.
     pub fn has_baseline(&self) -> bool {
-        !self.baseline.is_empty()
+        matches!(&self.baseline, Baseline::Loaded(items) if !items.is_empty())
+    }
+
+    /// Why conflicts are not being checked and the baseline is not being
+    /// saved, when the file on disk could not be used.
+    pub fn warning(&self) -> Option<&str> {
+        match &self.baseline {
+            Baseline::Foreign { warning } => Some(warning),
+            Baseline::Loaded(_) | Baseline::Missing => None,
+        }
+    }
+
+    fn recorded(&self, key: &str) -> Option<&Entry> {
+        match &self.baseline {
+            Baseline::Loaded(items) => items.get(key),
+            Baseline::Missing | Baseline::Foreign { .. } => None,
+        }
     }
 
     /// Whether `source` and the target's copy `held` both changed since the
@@ -208,7 +237,7 @@ impl Ledger {
 
     fn remember(&self, kind: ItemKind, name: &str, source: String, target: String) -> bool {
         let key = entry_key(kind, name);
-        if !is_conflict(self.baseline.get(&key), &source, &target) {
+        if !is_conflict(self.recorded(&key), &source, &target) {
             return false;
         }
         self.found.borrow_mut().insert(
@@ -226,6 +255,22 @@ impl Ledger {
     /// Whether `name` was found in conflict during this sync.
     pub fn is_found(&self, kind: ItemKind, name: &str) -> bool {
         self.found.borrow().contains_key(&entry_key(kind, name))
+    }
+
+    /// Forgets the conflicts found for `kind`, for a phase that failed: its
+    /// write did not happen, so neither the warning that the source
+    /// overwrote them nor a resolution line would be true. What was already
+    /// noted for the baseline stays, since it is only noted after a write.
+    pub fn forget_found(&self, kind: ItemKind) {
+        self.found
+            .borrow_mut()
+            .retain(|_, found| found.kind != kind);
+    }
+
+    /// Forgets that `name` was found in conflict, for an item its writer
+    /// refused: the target still holds its edits.
+    pub fn forget(&self, kind: ItemKind, name: &str) {
+        self.found.borrow_mut().remove(&entry_key(kind, name));
     }
 
     /// Names found in conflict for `kind`, sorted.
@@ -275,8 +320,14 @@ impl Ledger {
             return Ok(());
         };
         let updates = self.updates.borrow();
-        if !updates.is_empty() {
-            let mut items = self.baseline.clone();
+        let kept = match &self.baseline {
+            Baseline::Loaded(items) => Some(items.clone()),
+            Baseline::Missing => Some(BTreeMap::new()),
+            // Replacing it would destroy what a newer skrills recorded, or
+            // every entry a damaged file still holds.
+            Baseline::Foreign { .. } => None,
+        };
+        if let (Some(mut items), false) = (kept, updates.is_empty()) {
             items.extend(updates.iter().map(|(k, v)| (k.clone(), v.clone())));
             let file = BaselineFile {
                 version: FORMAT_VERSION,
@@ -328,7 +379,7 @@ impl Ledger {
                 "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z"
             ),
             "target": self.key,
-            "kind": found.kind.to_string(),
+            "kind": found.kind.key(),
             "name": found.name,
             "choice": match decision {
                 Decision::Accept => "keep_source",
@@ -345,25 +396,29 @@ impl Ledger {
     }
 }
 
-fn read_baseline(path: &Path) -> BTreeMap<String, Entry> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return BTreeMap::new(),
-        Err(e) => {
-            tracing::warn!(path = %path.display(), error = %e, "Sync baseline unreadable; skipping conflict detection");
-            return BTreeMap::new();
+fn read_baseline(path: &Path) -> Baseline {
+    let foreign = |why: String| {
+        tracing::warn!(path = %path.display(), "{why}");
+        Baseline::Foreign {
+            warning: format!(
+                "The conflict baseline {} {why}, so conflicts were not checked and it was left \
+                 as it is; move it aside to start a new one",
+                path.display()
+            ),
         }
     };
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Baseline::Missing,
+        Err(e) => return foreign(format!("could not be read ({e})")),
+    };
     match serde_json::from_str::<BaselineFile>(&text) {
-        Ok(file) if file.version == FORMAT_VERSION => file.items,
-        Ok(file) => {
-            tracing::warn!(path = %path.display(), version = file.version, "Sync baseline has an unknown version; skipping conflict detection");
-            BTreeMap::new()
-        }
-        Err(e) => {
-            tracing::warn!(path = %path.display(), error = %e, "Sync baseline is corrupt; skipping conflict detection");
-            BTreeMap::new()
-        }
+        Ok(file) if file.version == FORMAT_VERSION => Baseline::Loaded(file.items),
+        Ok(file) => foreign(format!(
+            "has version {}, which this skrills does not know (it reads version {FORMAT_VERSION})",
+            file.version
+        )),
+        Err(e) => foreign(format!("is corrupt ({e})")),
     }
 }
 
@@ -495,6 +550,107 @@ mod tests {
         let ledger = Ledger::load(Some(root.path()), "claude-k".to_string());
 
         assert!(!ledger.has_baseline());
+    }
+
+    #[test]
+    fn an_unknown_version_baseline_is_not_overwritten() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("k.json");
+        let newer = r#"{"version": 99, "items": {"command:c": {"source": "s", "target": "t"}}}"#;
+        std::fs::write(&path, newer).unwrap();
+        let ledger = Ledger::load(Some(root.path()), "k".to_string());
+        ledger.record_file(ItemKind::Command, &command("a", "1"), &command("a", "1"));
+
+        ledger.persist(SystemTime::UNIX_EPOCH, |_, _| None).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
+        assert!(!ledger.has_baseline());
+        let warning = ledger
+            .warning()
+            .expect("a warning for the foreign baseline");
+        assert!(warning.contains("version 99"), "{warning}");
+        assert!(warning.contains(&path.display().to_string()), "{warning}");
+    }
+
+    #[test]
+    fn a_corrupt_baseline_is_not_overwritten() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("k.json");
+        std::fs::write(&path, "{not json").unwrap();
+        let ledger = Ledger::load(Some(root.path()), "k".to_string());
+        ledger.record_file(ItemKind::Command, &command("a", "1"), &command("a", "1"));
+
+        ledger.persist(SystemTime::UNIX_EPOCH, |_, _| None).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json");
+        assert!(ledger.warning().is_some_and(|w| w.contains("corrupt")));
+    }
+
+    #[test]
+    fn a_missing_baseline_is_no_warning() {
+        let root = tempfile::tempdir().unwrap();
+
+        let ledger = Ledger::load(Some(root.path()), "k".to_string());
+
+        assert!(ledger.warning().is_none());
+    }
+
+    #[test]
+    fn a_baseline_written_with_the_first_release_keys_is_still_read() {
+        let root = tempfile::tempdir().unwrap();
+        let srv = server(&[]);
+        let (src, tgt) = (command("c", "src1"), command("c", "tgt1"));
+        // The layout 90fbe64 wrote, by hand: keys are `<kind label>:<name>`.
+        let fixture = serde_json::json!({
+            "version": 1,
+            "items": {
+                "MCP server:srv": {"source": server_hash(&srv), "target": server_hash(&srv)},
+                "command:c": {"source": item_hash(&src), "target": item_hash(&tgt)},
+            }
+        });
+        std::fs::write(root.path().join("k.json"), fixture.to_string()).unwrap();
+
+        let ledger = Ledger::load(Some(root.path()), "k".to_string());
+
+        let edited = server(&[("A", "1")]);
+        let moved = server(&[("B", "2")]);
+        assert!(ledger.server_conflict("srv", &edited, Some(&moved)));
+        assert!(ledger.file_conflict(
+            ItemKind::Command,
+            &command("c", "src2"),
+            Some(&command("c", "tgt2"))
+        ));
+    }
+
+    #[test]
+    fn baseline_keys_do_not_follow_the_display_labels() {
+        let keys: Vec<&str> = [
+            ItemKind::Command,
+            ItemKind::Skill,
+            ItemKind::Agent,
+            ItemKind::Hook,
+            ItemKind::Instruction,
+            ItemKind::McpServer,
+            ItemKind::Preferences,
+            ItemKind::PluginAssets,
+        ]
+        .into_iter()
+        .map(ItemKind::key)
+        .collect();
+
+        assert_eq!(
+            keys,
+            [
+                "command",
+                "skill",
+                "agent",
+                "hook",
+                "instruction",
+                "MCP server",
+                "preference",
+                "plugin assets"
+            ]
+        );
     }
 
     #[test]

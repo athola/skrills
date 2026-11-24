@@ -336,7 +336,7 @@ fn a_failed_sync_leaves_the_baseline_as_it_was() {
 }
 
 #[test]
-fn a_run_with_a_failed_phase_does_not_advance_the_baseline_of_the_other_phases() {
+fn a_run_with_a_failed_phase_still_advances_the_baseline_of_the_phases_that_wrote() {
     let rig = Rig::new();
     put(rig.source.path(), "commands/foo.md", "# v1\n");
     put(
@@ -353,7 +353,11 @@ fn a_run_with_a_failed_phase_does_not_advance_the_baseline_of_the_other_phases()
     let report = rig.sync(&params);
 
     assert!(!report.success, "{report:?}");
-    assert!(rig.baseline_files().is_empty());
+    // The commands were written; without a baseline the next sync would
+    // read every later target edit to them as unrecorded.
+    let baseline = rig.baseline_text();
+    assert!(baseline.contains("command:foo"), "{baseline}");
+    assert!(!baseline.contains("agent:rev"), "{baseline}");
 }
 
 #[test]

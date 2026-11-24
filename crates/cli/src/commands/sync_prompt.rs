@@ -30,7 +30,7 @@ impl fmt::Display for Choice {
             Self::Reject => "Reject: keep the target as it is",
             Self::KeepSource => "Keep source: overwrite the target's copy",
             Self::KeepTarget => "Keep target: leave the target's copy as it is",
-            Self::Abort => "Abort: stop with nothing written",
+            Self::Abort => "Abort: stop before this target is written",
         })
     }
 }
@@ -62,7 +62,7 @@ fn render(change: &ItemChange, width: usize) -> String {
             "{} {}: changed on both sides since the last sync\n{}",
             change.kind,
             change.name,
-            side_by_side(&sides.target, &sides.source, width).trim_end()
+            side_by_side(sides, width).trim_end()
         );
     }
     let heading = match (change.scope, change.change) {
@@ -96,8 +96,9 @@ fn question(change: &ItemChange) -> String {
     }
 }
 
-/// Esc and Ctrl-C cancel the whole run, which has written nothing yet; they
-/// do not mean "reject this one".
+/// Esc and Ctrl-C cancel the whole run before this target is written (targets
+/// synced earlier in the run keep their changes); they do not mean "reject
+/// this one".
 fn interpret(answer: std::result::Result<Choice, InquireError>) -> skrills_sync::Result<Decision> {
     match answer {
         Ok(Choice::Accept | Choice::KeepSource) => Ok(Decision::Accept),

@@ -36,6 +36,23 @@ impl fmt::Display for ItemKind {
 }
 
 impl ItemKind {
+    /// The name this kind is stored under in the conflict baseline and the
+    /// resolution log. Kept apart from the [`fmt::Display`] label so a
+    /// reworded prompt cannot reset every stored baseline; the strings match
+    /// the labels the first baselines were written with.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Command => "command",
+            Self::Skill => "skill",
+            Self::Agent => "agent",
+            Self::Hook => "hook",
+            Self::Instruction => "instruction",
+            Self::McpServer => "MCP server",
+            Self::Preferences => "preference",
+            Self::PluginAssets => "plugin assets",
+        }
+    }
+
     /// The label for a prompt that covers every item of this kind.
     pub fn plural(self) -> &'static str {
         match self {
@@ -134,8 +151,8 @@ pub enum Decision {
 
 /// Answers whether one change may be written.
 ///
-/// Return `Err(SyncError::InteractiveAborted)` to stop the run with nothing
-/// written; any other error also stops it.
+/// Return `Err(SyncError::InteractiveAborted)` to stop the run before any of
+/// the current target's items are written; any other error also stops it.
 pub trait ItemDecider: Send + Sync {
     fn decide(&self, change: &ItemChange) -> Result<Decision>;
 }

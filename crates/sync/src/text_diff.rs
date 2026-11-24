@@ -1,6 +1,8 @@
 //! Line-based unified diff shared by `skill-diff` and the interactive sync
 //! prompts, so both show changes the same way without a diff dependency.
 
+use crate::decision::ConflictSides;
+
 /// One line of an edit script.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Op<'a> {
@@ -9,13 +11,33 @@ enum Op<'a> {
     Insert(&'a str),
 }
 
-/// Above this many table cells (lines of `a` times lines of `b`), the diff
-/// is "delete all, insert all" rather than an LCS table that size.
+/// Above this many table cells (lines of `a` times lines of `b`, once their
+/// common first and last lines are set aside), the changed middle is
+/// "delete all, insert all" rather than an LCS table that size.
 const MAX_LCS_CELLS: usize = 16_000_000;
 
-/// The shortest edit script from `a` to `b`, from a longest common
-/// subsequence of their lines.
+/// An edit script from `a` to `b`. The lines both start and end with are
+/// kept, and the middle comes from a longest common subsequence, so the
+/// script is the shortest unless that middle is over [`MAX_LCS_CELLS`].
 fn diff_ops<'a>(a: &[&'a str], b: &[&'a str]) -> Vec<Op<'a>> {
+    let prefix = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let suffix = a[prefix..]
+        .iter()
+        .rev()
+        .zip(b[prefix..].iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let mut ops: Vec<Op> = a[..prefix].iter().map(|l| Op::Keep(l)).collect();
+    ops.extend(middle_ops(
+        &a[prefix..a.len() - suffix],
+        &b[prefix..b.len() - suffix],
+    ));
+    ops.extend(a[a.len() - suffix..].iter().map(|l| Op::Keep(l)));
+    ops
+}
+
+/// The edit script between the differing middles of two texts.
+fn middle_ops<'a>(a: &[&'a str], b: &[&'a str]) -> Vec<Op<'a>> {
     if a.len().saturating_mul(b.len()) > MAX_LCS_CELLS {
         let mut ops: Vec<Op> = a.iter().map(|l| Op::Delete(l)).collect();
         ops.extend(b.iter().map(|l| Op::Insert(l)));
@@ -126,14 +148,14 @@ struct Row<'a> {
     mark: char,
 }
 
-/// Two columns, `target` on the left and `source` on the right, in `width`
-/// characters. Each column gets half of what the gutter leaves, and longer
-/// lines are cut with `…`. Below three characters of width the gutter alone
-/// overflows; callers pass a usable width.
-pub fn side_by_side(target: &str, source: &str, width: usize) -> String {
+/// Two columns, the target's text on the left and the source's on the
+/// right, in `width` characters. Each column gets half of what the gutter
+/// leaves, and longer lines are cut with `…`. Below three characters of
+/// width the gutter alone overflows; callers pass a usable width.
+pub fn side_by_side(sides: &ConflictSides, width: usize) -> String {
     let column = width.saturating_sub(GUTTER) / 2;
-    let target_lines: Vec<&str> = target.lines().collect();
-    let source_lines: Vec<&str> = source.lines().collect();
+    let target_lines: Vec<&str> = sides.target.lines().collect();
+    let source_lines: Vec<&str> = sides.source.lines().collect();
 
     let mut rows: Vec<Row> = Vec::new();
     let (mut removed, mut added): (Vec<&str>, Vec<&str>) = (Vec::new(), Vec::new());
@@ -225,6 +247,16 @@ mod tests {
 
     const OLD: &str = "keep\nmodel = old\nend\n";
     const NEW: &str = "keep\nmodel = new\nend\n";
+
+    fn side_by_side(target: &str, source: &str, width: usize) -> String {
+        super::side_by_side(
+            &ConflictSides {
+                target: target.to_string(),
+                source: source.to_string(),
+            },
+            width,
+        )
+    }
 
     #[test]
     fn side_by_side_labels_target_left_and_source_right() {
@@ -341,14 +373,33 @@ mod tests {
 
     #[test]
     fn diff_ops_falls_back_to_delete_all_insert_all_above_the_cell_limit() {
-        let a = vec!["x"; 4000];
-        let b = vec!["x"; 4001];
+        // No common first or last line, so nothing is set aside.
+        let a: Vec<String> = (0..4000).map(|i| format!("a{i}")).collect();
+        let b: Vec<String> = (0..4001).map(|i| format!("b{i}")).collect();
+        let (a, b): (Vec<&str>, Vec<&str>) = (
+            a.iter().map(String::as_str).collect(),
+            b.iter().map(String::as_str).collect(),
+        );
 
         let ops = diff_ops(&a, &b);
 
         assert_eq!(ops.len(), 8001);
-        assert!(ops[..4000].iter().all(|op| *op == Op::Delete("x")));
-        assert!(ops[4000..].iter().all(|op| *op == Op::Insert("x")));
+        assert!(ops[..4000].iter().all(|op| matches!(op, Op::Delete(_))));
+        assert!(ops[4000..].iter().all(|op| matches!(op, Op::Insert(_))));
+    }
+
+    #[test]
+    fn a_one_line_edit_to_a_file_past_the_cell_limit_shows_only_that_line() {
+        let lines: Vec<String> = (0..5000).map(|i| format!("line {i}")).collect();
+        let before = lines.join("\n");
+        let after = before.replace("line 2500\n", "line 2500 edited\n");
+
+        let diff = unified_diff(&before, &after, 1);
+
+        assert_eq!(
+            diff,
+            "@@ -2500,3 +2500,3 @@\n line 2499\n-line 2500\n+line 2500 edited\n line 2501\n"
+        );
     }
 
     #[test]

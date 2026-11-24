@@ -409,7 +409,8 @@ fn a_default_sync_never_consults_the_decider() {
         .unwrap();
 
     assert!(decider.asked().is_empty());
-    assert!(report.commands.written >= 2);
+    // cmd-a changed and fresh is new; cmd-same is unchanged.
+    assert_eq!(report.commands.written, 2, "{report:?}");
     assert_eq!(
         fs::read_to_string(target_dir.path().join("commands/cmd-a.md")).unwrap(),
         "# A v2\n"
@@ -430,7 +431,7 @@ fn a_dry_run_previews_and_never_asks_even_when_interactive() {
         .unwrap();
 
     assert!(decider.asked().is_empty());
-    assert!(report.commands.written >= 2, "{report:?}");
+    assert_eq!(report.commands.written, 2, "{report:?}");
     assert_eq!(tree(target_dir.path()), synced);
 }
 
@@ -489,5 +490,302 @@ fn a_decider_failure_stops_the_run_with_nothing_written() {
         .unwrap_err();
 
     assert!(format!("{error:#}").contains("stdin closed"), "{error:#}");
+    assert!(
+        matches!(
+            error.downcast_ref::<SyncError>(),
+            Some(SyncError::InteractiveAborted)
+        ),
+        "{error:#}"
+    );
     assert_eq!(tree(target_dir.path()), synced);
+}
+
+fn unconfirmed(report: &SyncReport) -> Vec<String> {
+    [
+        &report.commands,
+        &report.skills,
+        &report.agents,
+        &report.instructions,
+        &report.mcp_servers,
+        &report.preferences,
+    ]
+    .iter()
+    .flat_map(|phase| phase.skipped.iter())
+    .filter_map(|reason| match reason {
+        SkipReason::Unconfirmed { item } => Some(item.clone()),
+        _ => None,
+    })
+    .collect()
+}
+
+#[test]
+fn an_item_that_appears_between_passes_is_not_written() {
+    let (source, target_dir, _) = advanced_pair("claude");
+    let source_root = source.path().to_path_buf();
+    // Accepts everything, and adds a command to the source while the
+    // questions are being answered.
+    let decider = Recorder::new(move |_| {
+        put(&source_root, "commands/late.md", "# Late\n");
+        Decision::Accept
+    });
+
+    let report = orchestrator("claude", source.path(), target_dir.path())
+        .with_decider(decider.clone())
+        .sync(&interactive())
+        .unwrap();
+
+    assert!(!target_dir.path().join("commands/late.md").exists());
+    assert!(!decider.asked().iter().any(|c| c.name == "late"));
+    assert_eq!(unconfirmed(&report), vec!["late".to_string()], "{report:?}");
+    assert!(!declined(&report).contains(&"late".to_string()));
+}
+
+#[test]
+fn an_item_edited_between_passes_keeps_the_targets_copy() {
+    let (source, target_dir, _) = advanced_pair("claude");
+    let source_root = source.path().to_path_buf();
+    let decider = Recorder::new(move |change| {
+        if change.name == "cmd-a" {
+            put(&source_root, "commands/cmd-a.md", "# A unseen\n");
+        }
+        Decision::Accept
+    });
+
+    let report = orchestrator("claude", source.path(), target_dir.path())
+        .with_decider(decider)
+        .sync(&interactive())
+        .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(target_dir.path().join("commands/cmd-a.md")).unwrap(),
+        "# A v1\n"
+    );
+    assert_eq!(
+        fs::read_to_string(target_dir.path().join("commands/fresh.md")).unwrap(),
+        "# Fresh\n"
+    );
+    assert_eq!(
+        unconfirmed(&report),
+        vec!["cmd-a".to_string()],
+        "{report:?}"
+    );
+}
+
+#[test]
+fn a_skill_named_skills_does_not_collide_with_the_category_answer() {
+    let source = tempfile::tempdir().unwrap();
+    let target_dir = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let skill = |body: &str| format!("---\nname: skills\ndescription: S\n---\n\n{body}\n");
+    put(source.path(), "skills/skills/SKILL.md", &skill("v1"));
+    let only_skills = SyncParams {
+        sync_commands: false,
+        sync_mcp_servers: false,
+        sync_preferences: false,
+        sync_agents: false,
+        sync_instructions: false,
+        ..params()
+    };
+    let sync = |params: &SyncParams, decider: Option<Arc<Recorder>>| {
+        let orchestrator = orchestrator("claude", source.path(), target_dir.path())
+            .with_state_root(Some(state.path().to_path_buf()));
+        match decider {
+            Some(decider) => orchestrator.with_decider(decider),
+            None => orchestrator,
+        }
+        .sync(params)
+        .unwrap()
+    };
+    assert!(sync(&only_skills, None).success);
+    put(
+        source.path(),
+        "skills/skills/SKILL.md",
+        &skill("source edit"),
+    );
+    put(
+        target_dir.path(),
+        "skills/skills/SKILL.md",
+        &skill("target edit"),
+    );
+
+    let decider = Recorder::new(|_| Decision::Reject);
+    let report = sync(
+        &SyncParams {
+            interactive: true,
+            ..only_skills
+        },
+        Some(decider.clone()),
+    );
+
+    assert_eq!(declined(&report), vec!["skills".to_string()], "{report:?}");
+    let asked = decider.asked();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].scope, DecisionScope::WholeCategory);
+    let log = fs::read_to_string(state.path().join("resolutions.jsonl")).unwrap();
+    let lines: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 1, "{log}");
+    assert_eq!(lines[0]["kind"], "skill");
+    assert_eq!(lines[0]["name"], "skills");
+    assert_eq!(lines[0]["scope"], "category", "{log}");
+}
+
+/// An interactive run with every category off, for a test to turn one on.
+fn nothing_but() -> SyncParams {
+    SyncParams {
+        sync_commands: false,
+        sync_skills: false,
+        sync_mcp_servers: false,
+        sync_preferences: false,
+        sync_agents: false,
+        sync_instructions: false,
+        ..interactive()
+    }
+}
+
+/// A custom adapter has no per-item round trip, so its MCP servers are one
+/// question, and rejecting it keeps the config file as the person left it.
+#[test]
+fn rejecting_mcp_servers_on_a_custom_target_leaves_its_config_byte_identical() {
+    let _guard = skrills_test_utils::env_guard();
+    let home = tempfile::tempdir().unwrap();
+    let _home = skrills_test_utils::set_env_var("HOME", Some(home.path().to_str().unwrap()));
+    put(
+        home.path(),
+        ".skrills/adapters/windsurf.toml",
+        "name = \"windsurf\"\nroot = \"~/.windsurf\"\n\n[mcp]\npath = \"mcp_config.json\"\nservers_key = \"mcpServers\"\n",
+    );
+    put(
+        home.path(),
+        ".claude.json",
+        r#"{"mcpServers": {"srv": {"command": "/bin/srv", "args": ["v2"]}, "fresh": {"command": "/bin/fresh"}}}"#,
+    );
+    let config = "{\n  \"mine\": true,\n  \"mcpServers\": {\"srv\": {\"command\": \"/bin/srv\", \"args\": [\"v1\"]}}\n}\n";
+    put(home.path(), ".windsurf/mcp_config.json", config);
+    let decider = Recorder::new(|_| Decision::Reject);
+
+    let report = skrills_sync::sync_between_endpoints_with_decider(
+        &skrills_sync::SyncEndpoint::Builtin(skrills_sync::Platform::Claude),
+        &skrills_sync::SyncEndpoint::Custom("windsurf".to_string()),
+        &SyncParams {
+            sync_mcp_servers: true,
+            ..nothing_but()
+        },
+        decider.clone(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(home.path().join(".windsurf/mcp_config.json")).unwrap(),
+        config
+    );
+    let asked = decider.asked();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].kind, ItemKind::McpServer);
+    assert_eq!(asked[0].scope, DecisionScope::WholeCategory);
+    assert_eq!(asked[0].diff, "fresh\nsrv");
+    assert_eq!(
+        declined(&report),
+        vec!["fresh".to_string(), "srv".to_string()]
+    );
+    assert_eq!(report.mcp_servers.written, 0);
+}
+
+#[test]
+fn an_http_server_prompt_masks_header_values_in_the_diff() {
+    let source = tempfile::tempdir().unwrap();
+    let target_dir = tempfile::tempdir().unwrap();
+    put(
+        source.path(),
+        ".claude.json",
+        r#"{"mcpServers": {"web": {"type": "http", "url": "https://mcp.example", "headers": {"Authorization": "Bearer HEADER-SECRET"}}, "local": {"command": "/bin/l", "env": {"API_KEY": "ENV-SECRET"}}}}"#,
+    );
+    let decider = Recorder::new(|_| Decision::Reject);
+
+    let _report = orchestrator("claude", source.path(), target_dir.path())
+        .with_decider(decider.clone())
+        .sync(&SyncParams {
+            sync_mcp_servers: true,
+            ..nothing_but()
+        })
+        .unwrap();
+
+    let asked = decider.asked();
+    let web = asked
+        .iter()
+        .find(|c| c.name == "web")
+        .expect("the http server was asked about");
+    assert!(web.diff.contains("Authorization"), "{}", web.diff);
+    assert!(web.diff.contains("sha256:"), "{}", web.diff);
+    assert!(web.diff.contains("https://mcp.example"), "{}", web.diff);
+    for change in &asked {
+        assert!(!change.diff.contains("HEADER-SECRET"), "{}", change.diff);
+        assert!(!change.diff.contains("ENV-SECRET"), "{}", change.diff);
+    }
+}
+
+/// A plugin-cache command is not where the writer puts a flat one, so it is
+/// not the target's copy: rejecting the source's command creates nothing.
+#[test]
+fn rejecting_a_command_held_only_in_the_plugin_cache_creates_no_flat_file() {
+    let source = tempfile::tempdir().unwrap();
+    let target_dir = tempfile::tempdir().unwrap();
+    put(source.path(), "commands/deploy.md", "# Deploy\n");
+    put(
+        target_dir.path(),
+        "plugins/cache/market/plug/1.0.0/commands/deploy.md",
+        "# Plugin deploy\n",
+    );
+    let synced = tree(target_dir.path());
+    let decider = Recorder::new(|_| Decision::Reject);
+
+    let report = orchestrator("claude", source.path(), target_dir.path())
+        .with_decider(decider.clone())
+        .sync(&SyncParams {
+            sync_commands: true,
+            ..nothing_but()
+        })
+        .unwrap();
+
+    assert!(!target_dir.path().join("commands/deploy.md").exists());
+    assert_eq!(tree(target_dir.path()), synced);
+    let asked = decider.asked();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].change, ChangeKind::New);
+    assert_eq!(declined(&report), vec!["deploy".to_string()]);
+}
+
+/// A real `sync-all --interactive` also syncs hooks. Writing the earlier
+/// phases in the applying pass must not change what the hook phase reads
+/// back, or its answer would no longer match and the hooks would be skipped.
+#[test]
+fn accepting_everything_with_hooks_on_leaves_nothing_unconfirmed() {
+    for target in TARGETS {
+        let (source, target_dir, _) = advanced_pair(target);
+        put(
+            source.path(),
+            "settings.json",
+            r#"{"model": "opus", "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo hi"}]}]}}"#,
+        );
+        let decider = Recorder::new(|_| Decision::Accept);
+
+        let report = orchestrator(target, source.path(), target_dir.path())
+            .with_decider(decider)
+            .sync(&SyncParams {
+                sync_hooks: true,
+                ..interactive()
+            })
+            .unwrap();
+
+        assert!(report.success, "{target}: {report:?}");
+        let hooks_unasked = report
+            .hooks
+            .skipped
+            .iter()
+            .any(|reason| matches!(reason, SkipReason::Unconfirmed { .. }));
+        assert!(!hooks_unasked, "{target}: {:?}", report.hooks);
+        assert!(unconfirmed(&report).is_empty(), "{target}: {report:?}");
+    }
 }

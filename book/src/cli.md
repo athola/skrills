@@ -107,26 +107,36 @@ skrills sync-all --from claude --autofix --dry-run    # Check what autofix would
 | `--autofix` | Add missing frontmatter to the source skills, then validate as `--validate` does |
 | `--interactive` | Show a diff for each new or changed item and ask Accept or Reject; only accepted items are written. Needs a terminal |
 
-With `--interactive`, every question is asked before the first write, so
-Esc or Ctrl-C leaves the target untouched. Items already in sync are not
-asked about. Rejecting a changed item keeps the target's copy; rejecting a
-new item skips it. These categories are asked per item: commands, agents,
-MCP servers, the model preference, and Copilot instructions. Skills, hooks,
-Claude and Cursor instructions, Codex agents, the plugin mirror rewrite
-files when written (frontmatter, marker files, merged blocks), so each is
-one question for the whole category, and rejecting it skips its writer.
+With `--interactive`, every question for a target is asked before that
+target's first write, so Esc or Ctrl-C writes none of its items. Targets
+are synced one after another, so when `--to` is omitted the targets synced
+before the cancelled one keep their changes; the error lists each target
+as `ok` or failed, and `skrills sync-rollback` undoes the whole run. Items
+already in sync are not asked about. Rejecting a changed item keeps the
+target's copy; rejecting a new item skips it. An item that appears or
+changes in the source while you answer is not written and is reported as
+not confirmed. These categories are asked per item: commands and MCP
+servers on every built-in target, agents on Claude, Copilot and Cursor,
+the model preference, and Copilot instructions. Skills, hooks, Claude and
+Cursor instructions, Codex agents and the plugin mirror rewrite files when
+written (frontmatter, marker files, merged blocks), so each is one
+question for the whole category, and rejecting it skips its writer.
 Rejecting the plugin mirror also keeps the flat skill copies it would
 replace. Without a terminal `--interactive` fails before anything is
 written. With `--dry-run` it only previews and asks nothing.
 
 ### Conflicts
 
-After each successful, non-dry sync, skrills records per item (kind and
-name) the hash of the source copy and of the target copy it wrote, in
+After each non-dry sync, skrills records per item (kind and name) the
+hash of the source copy and of the target copy it wrote, in
 `~/.skrills/sync-state/<platform>-<root hash>.json`. Only hashes are kept.
 A later sync reports a conflict when the source and the target copy both
 differ from those hashes and from each other. A target with no record
-(a first sync) never has conflicts. Commands, skills, agents, hooks,
+(a first sync) never has conflicts. A record skrills cannot use (corrupt,
+unreadable, or written by a newer version) is left as it is, conflicts are
+not checked, and the report says so. When one phase fails, the phases that
+wrote still update their records, and the failed phase's conflicts are
+not reported as overwritten. Commands, skills, agents, hooks,
 instructions and MCP servers are covered; the model preference and plugin
 assets are not.
 
@@ -137,8 +147,8 @@ assets are not.
 - **`--interactive`:** a conflicting item is shown as two columns, target
   left and source right, fitted to the terminal width (100 columns when
   the size is unknown). Choose Keep source (overwrite), Keep target (leave
-  the target's copy) or Abort (nothing written). A whole-category prompt
-  says how many of its items conflict.
+  the target's copy) or Abort (stop before this target is written). A
+  whole-category prompt says how many of its items conflict.
 - **Resolution log:** each choice you make is appended to
   `~/.skrills/sync-state/resolutions.jsonl` as one JSON line (timestamp,
   target key, kind, name, choice `keep_source` or `keep_target`, scope
