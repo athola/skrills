@@ -15,6 +15,7 @@ so the team replicates what worked and avoids what did not.
 |----|--------|-------|------|
 | LL-001 | open | Status bar content was invisible in the live TUI (Borders::TOP at height 1) | 2026-06-10 |
 | LL-002 | open | Spec FR-7.1 asserted 'repaints only on events' without reading the event loop | 2026-06-10 |
+| LL-005 | open | Parallel fix agents started from master, and a stacked patch landed in the wrong commit | 2026-11-24 |
 
 ## Lessons
 
@@ -129,6 +130,36 @@ The guard checked that a function was defined after sourcing, which is true whet
 
 - Action: assert both markers exist and reject a slice that still contains a download call, before sourcing. -- Owner: - -- Due: done in d9b1f9b -- Status: done
 - Action: any test that sources generated shell sets `HOME` and every install path to a temp dir first. -- Owner: - -- Due: - -- Status: open
+
+## LL-005: Parallel fix agents started from master, and a stacked patch landed in the wrong commit
+
+- Status: open
+- Date: 2026-11-24
+- Phase: review
+- Category: process
+- Owner: -
+- Links: PR #244; commits 982df62, 32bc17a, 8544e53, 1223536
+<!-- key: 2c1e5fe66081 -->
+
+### What happened
+
+Fixing the #244 review ran four agents in isolated worktrees, one per file group, then applied their patches to the branch and committed one group at a time. All four worktrees were created at master (fa7f724) instead of the branch head (90fbe64). The commit loop staged each patch with `git apply --cached`. Group C failed on `docs/CHANGELOG.md` lines that group B had changed; the loop carried on, and `git add -A` folded C into commit D.
+
+### What went well / where we got lucky
+
+Each agent noticed the wrong base and reset to 90fbe64 before editing. Applying the patches to the working tree with `--3way` caught the one real conflict. The misfiled commit was found before push, so D was undone and recommitted as C then D.
+
+### What did not work
+
+The briefs named the branch but not the base SHA. In the commit loop, a failed `git apply` did not stop the chain, and plain `--cached` has no three-way fallback. The split cost a second pair of 15-minute hook runs.
+
+### Root cause
+
+Worktree isolation creates worktrees from the default branch, not the session HEAD. Patches harvested against one base were stacked in the index without the three-way merge used for the working tree.
+
+### Recommendation / action item
+
+Put the expected base SHA and a reset instruction in every worktree-agent brief. Stage stacked patches with `git apply --cached --3way`, stop the loop when an apply fails, and check each commit's `--stat` against its patch before pushing.
 
 ## Archive
 

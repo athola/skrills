@@ -57,7 +57,7 @@ To contribute, add your new skills to your directory (`~/.claude/skills/` or `~/
 
 ### Does the system work offline?
 
-Yes. As long as you have the `skrills` binary and your skills stored locally, both the MCP server and CLI will function without an internet connection.
+Yes. Discovery, validation, analysis, sync, `prune` and `sync-rollback` need no network. The research and GitHub search tools serve their newest cached answer when offline; LLM skill generation is refused. Set `SKRILLS_OFFLINE=1` (or pass `--offline`) to force this, or `SKRILLS_OFFLINE=0` when the connectivity probe is wrong. See [Offline Mode](runtime-tuning.md#offline-mode).
 
 ### Why doesn't Copilot have slash commands like Claude or Codex?
 

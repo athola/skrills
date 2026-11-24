@@ -1,6 +1,6 @@
 //! Platform-routing helpers for sync operations.
 
-use crate::Platform;
+use crate::{Platform, SyncEndpoint};
 
 /// How one sync run delivers skills to its target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,10 +34,17 @@ pub struct SkillDelivery {
 /// assert!(!codex.full_plugin_mirror);
 /// ```
 #[must_use]
-pub fn skill_delivery(_from: Platform, to: Platform) -> SkillDelivery {
+pub fn skill_delivery(from: Platform, to: Platform) -> SkillDelivery {
+    skill_delivery_for(&from.into(), &to.into())
+}
+
+/// [`skill_delivery`] for endpoints. A configured adapter reads no plugin
+/// tree, so it takes the flat skill sync like every non-Cursor target.
+#[must_use]
+pub fn skill_delivery_for(_from: &SyncEndpoint, to: &SyncEndpoint) -> SkillDelivery {
     SkillDelivery {
         sync_skills: true,
-        full_plugin_mirror: to == Platform::Cursor,
+        full_plugin_mirror: *to == SyncEndpoint::Builtin(Platform::Cursor),
     }
 }
 

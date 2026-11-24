@@ -6,7 +6,6 @@ use crate::common::{Command, ContentFormat};
 use crate::report::WriteReport;
 use crate::Result;
 use anyhow::Context;
-use std::fs;
 use std::path::Path;
 use tracing::warn;
 use walkdir::WalkDir;
@@ -89,7 +88,7 @@ pub fn read_skills(root: &Path) -> Result<Vec<Command>> {
 /// Writes skills to the skills directory.
 pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
     let dir = skills_dir(root);
-    fs::create_dir_all(&dir)
+    crate::adapters::utils::create_dir_all(&dir)
         .with_context(|| format!("Failed to create skills directory: {}", dir.display()))?;
 
     let mut report = WriteReport::default();

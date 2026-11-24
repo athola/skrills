@@ -367,8 +367,9 @@ mod tests {
             .any(|r| r.path.starts_with(&good) && r.codex_valid));
     }
 
-    /// Nothing in the workspace calls `watch::run_watch_loop`, so its notify
-    /// and libc dependencies (and its process-wide SIGINT handler) stay opt-in.
+    /// Only the CLI's `watch` feature runs `watch::run_watch_loop`, so its
+    /// notify and libc dependencies (and its process-wide SIGINT handler) stay
+    /// opt-in for every other consumer of this crate.
     #[test]
     fn watch_feature_is_not_enabled_by_default() {
         let manifest = include_str!("../Cargo.toml");

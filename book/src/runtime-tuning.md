@@ -10,6 +10,7 @@ Customize skrills behavior through environment variables and configuration files
 | `SKRILLS_CACHE_TTL_MS` | How long to cache skill discovery | `60000` (1 min) |
 | `SKRILLS_MIRROR_SOURCE` | Where to copy skills from | `~/.claude` |
 | `SKRILLS_INCLUDE_CLAUDE` | Discover skills in `~/.claude/skills` and the Claude plugin cache (MCP server, dashboard, `/api/skills` and CLI alike) | Off |
+| `SKRILLS_OFFLINE` | `1`/`true`/`yes`/`on` turns on offline mode (see [Offline Mode](#offline-mode) for what it covers); `0`/`false`/`no`/`off` skips the connectivity probe | Probed when a network feature runs |
 
 ## Environment Variables
 
@@ -59,6 +60,25 @@ skrills sync-all
 ```
 
 The installer syncs no skills unless `SKRILLS_UNIVERSAL=1` is set; see [Installation](installation.md#customizing-installation) for its variables.
+
+### Offline Mode
+
+**`SKRILLS_OFFLINE`**
+
+`validate`, `analyze` and `sync` never touch the network, so they work offline with no setting. Features that do need it (GitHub skill search in `search-skills-github` and `create-skill`, and the `search-papers`, `search-discussions`, `resolve-doi` and `fetch-pdf` MCP tools) check connectivity when they run, and reuse the answer for 30 seconds. Offline, they make no request and serve the newest stored answer:
+
+```text
+offline — using cached data (cached 2 hours ago): Found 3 papers
+```
+
+With nothing stored for that query they fail with `offline mode (<reason>): no cached data for ...`, where the reason names `SKRILLS_OFFLINE`/`--offline` or the connectivity probe. `fetch-pdf` serves a PDF already on disk and otherwise refuses to download. When a live request fails while online, the same tools serve the stored answer with a `live request failed (...)` notice, or return the error when nothing is stored.
+
+Offline mode also covers requests that have nothing to replay. `create-skill --method llm` (and the LLM half of `both`) is refused with an offline error. The subagent HTTP backends refuse a run only when `SKRILLS_OFFLINE` or `--offline` is set, not on the probe's word, since their base URL may be a local server. The subagent CLI backends start `claude` or `codex`, which make their own requests.
+
+- Truthy values (`1`, `true`, `yes`, `on`) force offline mode without probing. `skrills --offline <command>` does the same.
+- Falsy values (`0`, `false`, `no`, `off`) assert the network is reachable and skip the probe, for hosts that block the probe targets (`1.1.1.1:443`, `8.8.8.8:443`). Any other value is ignored with a warning.
+- With `HTTPS_PROXY`, `https_proxy`, `ALL_PROXY` or `all_proxy` set, the probe is skipped and requests are tried, since a direct connect says nothing about a proxied one.
+- Answers are stored in the research cache (`research.db` under the user cache directory, in `skrills-tome`) each time an online call fully succeeds. A `resolve-doi` answer whose Unpaywall lookup failed is returned but not stored, and a `search-papers` answer with a failed source is stored only when no complete answer is. Entries keep their store time, and offline mode serves them past their expiry, so the age in the notice is the one to judge by.
 
 ### Client Settings
 

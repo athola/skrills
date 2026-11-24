@@ -58,7 +58,10 @@ skrills sync-all                            # mirror everything to all four CLIs
 ```
 
 **Keep two environments in sync.** Edit in one, mirror to another.
-File hashing preserves manual edits on both sides:
+The source wins; a sync warns when both sides changed an item since the
+last one, `--interactive` lets you keep either side, and
+`skrills sync-rollback` undoes a sync
+([Conflicts](book/src/cli.md#conflicts)):
 
 ```bash
 skrills sync-all --from cursor --to claude

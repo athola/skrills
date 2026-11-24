@@ -4,8 +4,12 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Reasons why an item was skipped during sync.
+///
+/// Non-exhaustive: new reasons are added as sync learns to report them, so
+/// a match needs a `_` arm.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[non_exhaustive]
 pub enum SkipReason {
     /// Field exists in source but not supported by target agent
     UnsupportedField {
@@ -41,6 +45,14 @@ pub enum SkipReason {
     /// sanitizes to nothing, it collides with another item after sanitizing,
     /// or a symlink sits on the path.
     Refused { item: String, reason: String },
+    /// The person running an interactive sync rejected this change, so the
+    /// target keeps what it has.
+    Declined { item: String },
+    /// An interactive sync found this item new, or different from what the
+    /// person was shown, when it came to write it: it appeared or changed
+    /// while the questions were being answered. Nobody agreed to it, so the
+    /// target keeps what it has.
+    Unconfirmed { item: String },
 }
 
 impl SkipReason {
@@ -83,6 +95,10 @@ impl SkipReason {
             }
             Self::PluginExcluded => "excluded by --exclude-plugins filter".to_string(),
             Self::Refused { item, reason } => format!("{item} not written: {reason}"),
+            Self::Declined { item } => format!("{item} not written: rejected in interactive sync"),
+            Self::Unconfirmed { item } => format!(
+                "{item} not written: it appeared or changed after the interactive questions were asked"
+            ),
         }
     }
 
@@ -105,6 +121,10 @@ impl SkipReason {
             }
             Self::PluginExcluded => None,
             Self::Refused { .. } => Some("Rename the item or fix the destination path"),
+            Self::Declined { .. } => {
+                Some("Rerun `sync-all --interactive` and accept it to write it")
+            }
+            Self::Unconfirmed { .. } => Some("Rerun `sync-all --interactive` to be asked about it"),
         }
     }
 }

@@ -9,7 +9,6 @@ use anyhow::Result;
 use skrills_discovery::{AgentMeta, SkillMeta};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
 use std::io::{BufReader, Read};
@@ -38,11 +37,11 @@ fn is_hidden_rel_path(rel: &Path) -> bool {
 fn mirror_path_if_changed(src: &Path, dest_root: &Path, rel: &Path) -> Result<bool> {
     let dest = dest_root.join(rel);
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
+        crate::adapters::utils::create_dir_all(parent)?;
     }
     let should_copy = should_copy_by_content(src, &dest)?;
     if should_copy {
-        fs::copy(src, &dest)?;
+        crate::adapters::utils::copy(src, &dest)?;
     }
     Ok(should_copy)
 }
@@ -100,20 +99,19 @@ pub fn mirror_source_root(home: &Path) -> PathBuf {
 /// this generates a compact reference pointing users to CLI commands for
 /// dynamic skill discovery. Skills are discovered at runtime and recorded in
 /// `~/.codex/skills-cache.json` (or enumerated directly from `~/.codex/skills/`).
+///
+/// There is no sync time in it: a time made every run rewrite the file, which
+/// churned a checked-in AGENTS.md and left a snapshot for a sync that
+/// changed nothing.
 pub(crate) fn render_skills_reference(skills: &[SkillMeta]) -> String {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
     format!(
-        r"<!-- Skills discovered dynamically. Last sync: {} UTC. Total: {} skills. -->
+        r"<!-- Skills discovered dynamically. Total: {} skills. -->
 <!-- Use CLI commands for current skill inventory:
      jq -r '.skills[].path' ~/.codex/skills-cache.json
      find ~/.codex/skills -name SKILL.md -type f
      skrills analyze           - Analyze skills (tokens/deps) to spot issues
      skrills doctor            - View discovery diagnostics
 -->",
-        ts,
         skills.len()
     )
 }
@@ -179,20 +177,22 @@ pub(crate) fn sync_agents_with_assets(
         )
     };
 
-    let content = if path.exists() {
-        let existing = fs::read_to_string(path)?;
-        match replace_marked_section(
-            &existing,
-            AGENTS_SECTION_START,
-            AGENTS_SECTION_END,
-            &section,
-            path,
-        )? {
-            Some(updated) => updated,
-            None => format!("{existing}\n\n{section}"),
-        }
+    // The default text carries its own skills section, which is replaced
+    // like a user's rather than followed by a second one.
+    let existing = if path.exists() {
+        fs::read_to_string(path)?
     } else {
-        format!("{AGENTS_TEXT}\n\n{section}")
+        AGENTS_TEXT.to_string()
+    };
+    let content = match replace_marked_section(
+        &existing,
+        AGENTS_SECTION_START,
+        AGENTS_SECTION_END,
+        &section,
+        path,
+    )? {
+        Some(updated) => updated,
+        None => format!("{existing}\n\n{section}"),
     };
 
     let final_content = match replace_marked_section(
@@ -207,7 +207,7 @@ pub(crate) fn sync_agents_with_assets(
         None => format!("{content}\n{agents_section}"),
     };
 
-    fs::write(path, final_content)?;
+    crate::adapters::utils::write_file(path, final_content)?;
     Ok(())
 }
 
@@ -575,6 +575,32 @@ mod tests {
         assert!(!text.contains("\nold\n"), "{text}");
         assert_eq!(text.matches(AGENTS_SECTION_START).count(), 1);
         assert!(text.ends_with("# Tail\n"), "{text}");
+        Ok(())
+    }
+
+    /// Each run stamped the time into the file and so rewrote it, leaving a
+    /// snapshot that a plain rollback then undid instead of the real change.
+    #[test]
+    fn a_second_identical_sync_agents_leaves_no_snapshot() -> Result<()> {
+        let tmp = tempdir()?;
+        let (path, snaps) = (tmp.path().join("AGENTS.md"), tmp.path().join("snapshots"));
+        for _ in 0..2 {
+            let _session = crate::snapshot::begin(&snaps)?;
+            sync_agents_with_assets(&path, &[], &[])?;
+        }
+        assert_eq!(crate::snapshot::list(&snaps)?.len(), 1);
+        Ok(())
+    }
+
+    /// The default file already holds a skills section; a second one was
+    /// appended under it on creation, and the next run rewrote the first.
+    #[test]
+    fn a_new_agents_file_has_one_skills_section() -> Result<()> {
+        let tmp = tempdir()?;
+        let path = tmp.path().join("AGENTS.md");
+        sync_agents_with_assets(&path, &[], &[])?;
+        let text = fs::read_to_string(&path)?;
+        assert_eq!(text.matches(AGENTS_SECTION_START).count(), 1, "{text}");
         Ok(())
     }
 }

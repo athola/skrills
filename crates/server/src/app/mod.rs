@@ -14,6 +14,7 @@
 
 mod intelligence;
 mod mcp_registry;
+mod offline;
 mod research;
 mod skill_metrics;
 mod skill_recommendations;
@@ -27,7 +28,8 @@ use mcp_registry::build_mcp_registry;
 
 #[cfg(test)]
 pub(crate) use intelligence::{
-    cached_usage_events, resolve_project_dir, select_default_skill_root, MAX_USAGE_EVENTS,
+    resolve_project_dir, select_default_skill_root, usage_events_cached_in, UsageCache,
+    MAX_USAGE_EVENTS,
 };
 
 use crate::agents_doc::{AGENTS_DESCRIPTION, AGENTS_NAME, AGENTS_URI, ENV_EXPOSE_AGENTS};

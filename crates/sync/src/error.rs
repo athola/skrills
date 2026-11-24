@@ -11,7 +11,11 @@
 use thiserror::Error;
 
 /// Typed sync-layer errors. Convertible into `anyhow::Error` via `?`.
+///
+/// Non-exhaustive: a match needs a `_` arm, so a new failure mode is not a
+/// breaking change.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SyncError {
     /// The cold-window kill-switch is engaged: a previous tick observed
     /// cumulative token usage at or above the configured ceiling and
@@ -38,6 +42,16 @@ pub enum SyncError {
         "cold-window kill-switch engaged; sync writes refuse until the operator releases the switch"
     )]
     KillSwitchEngaged,
+    /// The person answering an interactive sync cancelled the prompts. Every
+    /// decision for a target is asked before its first write, so none of
+    /// this target's items were written. A run over several targets (such
+    /// as `sync-all --interactive`) has already written the earlier ones;
+    /// `skrills sync-rollback` undoes them.
+    #[error(
+        "interactive sync cancelled before any item was written to this target; targets synced \
+         earlier in the run keep their changes (`skrills sync-rollback` undoes them)"
+    )]
+    InteractiveAborted,
 }
 
 #[cfg(test)]
@@ -54,6 +68,17 @@ mod tests {
         assert!(msg.contains("150000"));
         assert!(msg.contains("100000"));
         assert!(msg.contains("kill-switch"));
+    }
+
+    /// `sync-all --interactive` writes targets one after another, so a cancel
+    /// at the second target cannot promise that nothing was written.
+    #[test]
+    fn a_cancel_claims_only_the_current_target_and_names_rollback() {
+        let msg = SyncError::InteractiveAborted.to_string();
+
+        assert!(msg.contains("this target"), "{msg}");
+        assert!(msg.contains("skrills sync-rollback"), "{msg}");
+        assert!(!msg.contains("nothing was written"), "{msg}");
     }
 
     #[test]

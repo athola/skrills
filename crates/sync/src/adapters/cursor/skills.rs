@@ -132,7 +132,7 @@ fn claude_cache_manifest_path(
 /// whether it was written.
 fn write_manifest_file(path: &std::path::Path, content: &str, plugin_name: &str) -> bool {
     if let Some(parent) = path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
+        if let Err(e) = crate::adapters::utils::create_dir_all(parent) {
             tracing::warn!(
                 plugin = %plugin_name,
                 path = %parent.display(),
@@ -283,7 +283,7 @@ pub(super) fn remove_flat_copies(root: &Path, folders: &[String], dry_run: bool)
             removed.push(folder.as_str());
             continue;
         }
-        match fs::remove_dir_all(&dir) {
+        match crate::adapters::utils::remove_tree(&dir) {
             Ok(()) => removed.push(folder.as_str()),
             Err(e) => report.warnings.push(format!(
                 "Could not remove the flat copy {} of a plugin skill: {e}",
@@ -316,7 +316,7 @@ pub fn write_skills(root: &Path, skills: &[Command]) -> Result<WriteReport> {
         return Ok(report);
     }
 
-    fs::create_dir_all(&flat_dir)?;
+    crate::adapters::utils::create_dir_all(&flat_dir)?;
 
     // Track which plugins we've written so we can create their manifests once
     let mut seen_plugins: std::collections::HashSet<String> = std::collections::HashSet::new();

@@ -109,7 +109,7 @@ pub fn read_commands(root: &Path, _include_marketplace: bool) -> Result<Vec<Comm
 pub fn write_commands(root: &Path, commands: &[Command]) -> Result<WriteReport> {
     // Copilot uses prompts (*.prompt.md) as the equivalent of slash commands
     let dir = prompts_dir(root);
-    fs::create_dir_all(&dir)
+    crate::adapters::utils::create_dir_all(&dir)
         .with_context(|| format!("Failed to create prompts directory: {}", dir.display()))?;
 
     let mut report = WriteReport::default();

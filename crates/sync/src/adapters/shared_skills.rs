@@ -85,7 +85,7 @@ pub(crate) fn write_shared_skills(dir: &Path, skills: &[Command]) -> Result<Writ
     if skills.is_empty() {
         return Ok(report);
     }
-    std::fs::create_dir_all(dir)?;
+    crate::adapters::utils::create_dir_all(dir)?;
 
     let mut writer = BatchWriter::new(dir);
     for skill in skills {

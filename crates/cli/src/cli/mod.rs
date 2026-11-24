@@ -5,7 +5,7 @@ mod enums;
 
 pub use enums::{
     AgentBackend, CertAction, CreateSkillMethod, DependencyDirection, OutputFormat, Platform,
-    ValidationTarget,
+    SyncEndpoint, ValidationTarget,
 };
 
 /// Command-line interface for the `skrills` application.
@@ -16,6 +16,11 @@ pub use enums::{
     version
 )]
 pub struct Cli {
+    /// Offline mode: research and GitHub search serve cached results, and
+    /// LLM skill generation and subagent HTTP backends are refused. Same as
+    /// setting `SKRILLS_OFFLINE=1`.
+    #[arg(long, global = true)]
+    pub offline: bool,
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -195,12 +200,14 @@ pub enum Commands {
     },
     /// Syncs slash commands between AI CLI tools (Claude, Codex, Copilot, Cursor).
     SyncCommands {
-        /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = Platform::Claude)]
-        from: Platform,
-        /// Target CLI: claude, codex, copilot, or cursor. If not specified, defaults to codex (for claude source) or claude (for others).
-        #[arg(long, value_enum)]
-        to: Option<Platform>,
+        /// Source CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`.
+        #[arg(long, default_value_t = SyncEndpoint::Builtin(Platform::Claude))]
+        from: SyncEndpoint,
+        /// Target CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`. If not specified, defaults to codex (for claude source) or claude (for others).
+        #[arg(long)]
+        to: Option<SyncEndpoint>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
@@ -213,36 +220,43 @@ pub enum Commands {
     },
     /// Syncs MCP server configurations between AI CLI tools.
     SyncMcpServers {
-        /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = Platform::Claude)]
-        from: Platform,
-        /// Target CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum)]
-        to: Option<Platform>,
+        /// Source CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`.
+        #[arg(long, default_value_t = SyncEndpoint::Builtin(Platform::Claude))]
+        from: SyncEndpoint,
+        /// Target CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`.
+        #[arg(long)]
+        to: Option<SyncEndpoint>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
     },
     /// Syncs preferences between AI CLI tools.
     SyncPreferences {
-        /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = Platform::Claude)]
-        from: Platform,
-        /// Target CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum)]
-        to: Option<Platform>,
+        /// Source CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`.
+        #[arg(long, default_value_t = SyncEndpoint::Builtin(Platform::Claude))]
+        from: SyncEndpoint,
+        /// Target CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`.
+        #[arg(long)]
+        to: Option<SyncEndpoint>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
     },
     /// Syncs all configurations (commands, MCP servers, preferences, skills).
     SyncAll {
-        /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = Platform::Claude)]
-        from: Platform,
-        /// Target CLI: claude, codex, copilot, or cursor. If omitted, syncs to ALL other CLIs.
-        #[arg(long, value_enum)]
-        to: Option<Platform>,
+        /// Source CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`.
+        #[arg(long, default_value_t = SyncEndpoint::Builtin(Platform::Claude))]
+        from: SyncEndpoint,
+        /// Target CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`. If omitted, syncs to every other built-in
+        /// CLI; configured adapters are synced only when named here.
+        #[arg(long)]
+        to: Option<SyncEndpoint>,
         /// Preview changes without writing.
         #[arg(long)]
         dry_run: bool,
@@ -269,17 +283,39 @@ pub enum Commands {
         /// version and removes what that version no longer ships.
         #[arg(long)]
         keep_versions: bool,
+        /// Show a diff for each new or changed item and ask whether to write
+        /// it; only accepted items are written, and a rejected change leaves
+        /// the target's copy alone. Needs a terminal. With --dry-run nothing
+        /// is written, so nothing is asked.
+        #[arg(long)]
+        interactive: bool,
     },
     /// Shows sync status and configuration differences.
     SyncStatus {
-        /// Source CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum, default_value_t = Platform::Claude)]
-        from: Platform,
-        /// Target CLI: claude, codex, copilot, or cursor.
-        #[arg(long, value_enum)]
-        to: Option<Platform>,
+        /// Source CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`.
+        #[arg(long, default_value_t = SyncEndpoint::Builtin(Platform::Claude))]
+        from: SyncEndpoint,
+        /// Target CLI: claude, codex, copilot, cursor, or an adapter name from
+        /// `~/.skrills/adapters`.
+        #[arg(long)]
+        to: Option<SyncEndpoint>,
     },
-    /// Diagnoses Codex MCP configuration for this server.
+    /// Restores the files a sync or `prune --apply` changed from its
+    /// snapshot in `~/.skrills/snapshots` (default: the most recent one).
+    SyncRollback {
+        /// List snapshots, newest first, instead of restoring one.
+        #[arg(long, conflicts_with = "snapshot")]
+        list: bool,
+        /// Snapshot name from `--list` (default: the most recent).
+        snapshot: Option<String>,
+        /// Also restore files changed since the sync, discarding those
+        /// changes. Without it they are kept and listed.
+        #[arg(long, conflicts_with = "list")]
+        force: bool,
+    },
+    /// Diagnoses the Codex MCP registration of this server and the custom
+    /// adapter files in `~/.skrills/adapters`; exits non-zero on a problem.
     Doctor,
     /// Validates skills for Claude Code and/or Codex CLI compatibility.
     Validate {
@@ -438,19 +474,27 @@ pub enum Commands {
     /// Create a new skill via GitHub search, LLM generation, empirical patterns, or both.
     CreateSkill {
         /// Name or topic for the skill.
-        #[arg(required = true)]
-        name: String,
-        /// Detailed description of what the skill should do.
-        #[arg(long)]
-        description: String,
+        #[arg(required_unless_present = "template")]
+        name: Option<String>,
+        /// Detailed description of what the skill should do (optional with --template).
+        #[arg(long, required_unless_present = "template")]
+        description: Option<String>,
         /// Creation method: github, llm, both, or empirical.
-        #[arg(long, default_value = "both", value_enum)]
+        #[arg(long, default_value = "both", value_enum, conflicts_with = "template")]
         method: CreateSkillMethod,
-        /// Directory to create skill in (defaults to installed client, Claude preferred).
+        /// Scaffold from a built-in template without network or LLM access; `list` prints them.
+        #[arg(long, value_name = "NAME")]
+        template: Option<String>,
+        /// CLI the skill is written and validated for (with --template).
+        #[arg(long, value_enum, default_value_t = Platform::Claude, requires = "template")]
+        target: Platform,
+        /// Directory to create the skill in. Defaults to the --target CLI's
+        /// skill root with --template, otherwise to the installed client's
+        /// (Claude preferred).
         #[arg(long)]
         target_dir: Option<PathBuf>,
         /// Project directory for context analysis.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "template")]
         project_dir: Option<PathBuf>,
         /// Preview without creating files.
         #[arg(long)]
@@ -696,6 +740,42 @@ pub enum Commands {
         /// Skills directory to include (default: all discovered skills).
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
+    },
+    /// Find skills that session history shows unused: --suggest lists them,
+    /// --apply deletes them inside a snapshot that `sync-rollback` restores.
+    #[command(group(clap::ArgGroup::new("mode").required(true).args(["suggest", "apply"])))]
+    Prune {
+        /// List stale skills and when each was last used; changes nothing.
+        #[arg(long)]
+        suggest: bool,
+        /// Delete the stale skills after confirmation, after taking a snapshot
+        /// that `sync-rollback` restores.
+        #[arg(long)]
+        apply: bool,
+        /// A skill is stale when last used more than this many days ago, or never.
+        #[arg(
+            long,
+            value_name = "DAYS",
+            default_value_t = 90,
+            value_parser = clap::value_parser!(u32).range(1..)
+        )]
+        older_than_days: u32,
+        /// With --apply, skip the confirmation prompt (required without a terminal).
+        // `conflicts_with = "suggest"` and not `requires = "apply"`, which let
+        // `--suggest --yes` through; the mode group makes the two equivalent.
+        #[arg(long, conflicts_with = "suggest")]
+        yes: bool,
+        /// With --apply, delete even when session history starts later than
+        /// the --older-than-days cutoff, so "never used" may only mean
+        /// "older than the history".
+        #[arg(long, conflicts_with = "suggest")]
+        ignore_short_history: bool,
+        /// Skills directory to search (default: all discovered skills).
+        #[arg(long = "skill-dir", value_name = "DIR")]
+        skill_dirs: Vec<PathBuf>,
+        /// Output format for --suggest: text or json.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text, conflicts_with = "apply")]
+        format: OutputFormat,
     },
     /// Calculate quality scores for skills based on validation, completeness, and metrics.
     SkillScore {
@@ -962,6 +1042,19 @@ mod tests {
     }
 
     #[test]
+    fn offline_flag_parses_before_and_after_the_subcommand() {
+        for argv in [
+            ["skrills", "--offline", "validate"],
+            ["skrills", "validate", "--offline"],
+        ] {
+            let cli = Cli::try_parse_from(argv).expect("--offline is global");
+            assert!(cli.offline, "{argv:?}");
+        }
+        let cli = Cli::try_parse_from(["skrills", "validate"]).unwrap();
+        assert!(!cli.offline);
+    }
+
+    #[test]
     fn sync_from_claude_alias_parses() {
         let _guard = env_guard();
         // Ensure env var is cleared so default is used
@@ -1182,13 +1275,15 @@ mod tests {
                 name,
                 description,
                 method,
+                template: _,
+                target: _,
                 target_dir,
                 project_dir,
                 dry_run,
                 format,
             }) => {
-                assert_eq!(name, "audit-skill");
-                assert_eq!(description, "Audit build outputs");
+                assert_eq!(name.as_deref(), Some("audit-skill"));
+                assert_eq!(description.as_deref(), Some("Audit build outputs"));
                 assert!(matches!(method, CreateSkillMethod::Github));
                 assert_eq!(target_dir, Some(PathBuf::from("/tmp/skills")));
                 assert_eq!(project_dir, Some(PathBuf::from("/tmp/project")));
@@ -1196,6 +1291,43 @@ mod tests {
                 assert_eq!(format, OutputFormat::Json);
             }
             _ => unreachable!("expected CreateSkill command"),
+        }
+    }
+
+    #[test]
+    fn create_skill_template_needs_no_description_and_takes_a_target() {
+        let cli = Cli::try_parse_from([
+            "skrills",
+            "create-skill",
+            "audit-skill",
+            "--template",
+            "testing",
+            "--target",
+            "cursor",
+        ])
+        .expect("template parses without --description");
+
+        match cli.command {
+            Some(Commands::CreateSkill {
+                template,
+                target,
+                description,
+                ..
+            }) => {
+                assert_eq!(template.as_deref(), Some("testing"));
+                assert_eq!(target, Platform::Cursor);
+                assert_eq!(description, None);
+            }
+            _ => unreachable!("expected CreateSkill command"),
+        }
+    }
+
+    #[test]
+    fn create_skill_template_conflicts_with_method_and_project_dir() {
+        for conflicting in [["--method", "llm"], ["--project-dir", "/tmp/project"]] {
+            let mut args = vec!["skrills", "create-skill", "x", "--template", "testing"];
+            args.extend(conflicting);
+            assert!(Cli::try_parse_from(args).is_err(), "{conflicting:?}");
         }
     }
 
@@ -1349,9 +1481,11 @@ mod tests {
                 validate,
                 autofix,
                 keep_versions,
+                interactive,
             }) => {
-                assert!(matches!(from, Platform::Codex));
-                assert_eq!(to, Some(Platform::Copilot));
+                assert!(!interactive);
+                assert_eq!(from, SyncEndpoint::Builtin(Platform::Codex));
+                assert_eq!(to, Some(SyncEndpoint::Builtin(Platform::Copilot)));
                 assert!(dry_run);
                 assert!(skip_existing_commands);
                 assert!(!include_marketplace);
@@ -1383,7 +1517,7 @@ mod tests {
             Some(Commands::SyncCommands {
                 from, to, dry_run, ..
             }) => {
-                assert!(matches!(from, Platform::Claude));
+                assert_eq!(from, SyncEndpoint::Builtin(Platform::Claude));
                 assert!(to.is_none());
                 assert!(!dry_run);
             }
@@ -2010,8 +2144,8 @@ mod tests {
             Some(Commands::SyncAll {
                 from, to, dry_run, ..
             }) => {
-                assert!(matches!(from, Platform::Claude));
-                assert_eq!(to, Some(Platform::Cursor));
+                assert_eq!(from, SyncEndpoint::Builtin(Platform::Claude));
+                assert_eq!(to, Some(SyncEndpoint::Builtin(Platform::Cursor)));
                 assert!(dry_run);
             }
             _ => unreachable!("expected SyncAll command"),
@@ -2033,11 +2167,23 @@ mod tests {
             let cli = Cli::try_parse_from(["skrills", "sync-all", "--from", name, "--to", other])
                 .unwrap_or_else(|e| panic!("--from {name}: {e}"));
             match cli.command {
-                Some(Commands::SyncAll { from, .. }) => assert_eq!(from, platform),
+                Some(Commands::SyncAll { from, .. }) => {
+                    assert_eq!(from, SyncEndpoint::Builtin(platform))
+                }
                 _ => unreachable!("expected SyncAll command"),
             }
         }
-        assert!(Cli::try_parse_from(["skrills", "sync-all", "--from", "vscode"]).is_err());
+        // An unknown name is a custom adapter's: it is rejected when sync
+        // looks it up, with the built-ins and configured names listed.
+        match Cli::try_parse_from(["skrills", "sync-all", "--from", "vscode"])
+            .unwrap()
+            .command
+        {
+            Some(Commands::SyncAll { from, .. }) => {
+                assert_eq!(from, SyncEndpoint::Custom("vscode".to_string()))
+            }
+            _ => unreachable!("expected SyncAll command"),
+        }
 
         for (name, expected) in [
             ("claude", ValidationTarget::Claude),
@@ -2065,7 +2211,9 @@ mod tests {
             .unwrap()
             .command
         {
-            Some(Commands::SyncAll { from, .. }) => assert_eq!(from, Platform::Claude),
+            Some(Commands::SyncAll { from, .. }) => {
+                assert_eq!(from, SyncEndpoint::Builtin(Platform::Claude))
+            }
             _ => unreachable!("expected SyncAll command"),
         }
     }
@@ -2139,5 +2287,32 @@ mod tests {
     #[test]
     fn agent_backend_default_is_auto() {
         assert_eq!(AgentBackend::default(), AgentBackend::Auto);
+    }
+
+    /// `--from`/`--to` of the sync commands take a configured adapter's name.
+    #[test]
+    fn sync_commands_accept_a_custom_adapter_name_for_from_and_to() {
+        let custom = SyncEndpoint::Custom("windsurf".to_string());
+        for command in [
+            "sync-commands",
+            "sync-mcp-servers",
+            "sync-preferences",
+            "sync-all",
+            "sync-status",
+        ] {
+            let cli =
+                Cli::try_parse_from(["skrills", command, "--from", "windsurf", "--to", "Windsurf"])
+                    .unwrap_or_else(|e| panic!("{command}: {e}"));
+            let (from, to) = match cli.command {
+                Some(Commands::SyncCommands { from, to, .. })
+                | Some(Commands::SyncMcpServers { from, to, .. })
+                | Some(Commands::SyncPreferences { from, to, .. })
+                | Some(Commands::SyncAll { from, to, .. })
+                | Some(Commands::SyncStatus { from, to, .. }) => (from, to),
+                _ => unreachable!("{command} parsed to another command"),
+            };
+            assert_eq!(from, custom, "{command}");
+            assert_eq!(to, Some(custom.clone()), "{command}");
+        }
     }
 }

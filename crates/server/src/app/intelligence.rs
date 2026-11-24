@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::offline::{cache_and_offline_source, fetch_or_replay, query_key, Fresh, Outcome};
 use super::SkillService;
 
 impl SkillService {
@@ -487,8 +488,7 @@ impl SkillService {
         policy: TargetDirPolicy,
     ) -> Result<CallToolResult> {
         use skrills_intelligence::{
-            analyze_project, generate_skill_with_llm, search_github_skills, CreateSkillRequest,
-            CreationMethod,
+            analyze_project, generate_skill_with_llm, CreateSkillRequest, CreationMethod,
         };
 
         let name = args
@@ -566,15 +566,17 @@ impl SkillService {
         }
 
         let mut github_results = Vec::new();
+        let mut github_notice: Option<String> = None;
         let mut llm_content: Option<String> = None;
         let mut errors = Vec::new();
 
         // GitHub search
         if method == CreationMethod::GitHubSearch || method == CreationMethod::Both {
             let query = format!("{} {}", name, description);
-            match search_github_skills(&query, 5).await {
-                Ok(results) => {
+            match search_github_cached(&query, 5).await {
+                Ok((results, notice)) => {
                     github_results = results;
+                    github_notice = notice;
                 }
                 Err(e) => {
                     errors.push(format!("GitHub search failed: {}", e));
@@ -583,7 +585,18 @@ impl SkillService {
         }
 
         // LLM generation
-        if method == CreationMethod::LLMGenerate || method == CreationMethod::Both {
+        let llm_offline = if method == CreationMethod::LLMGenerate || method == CreationMethod::Both
+        {
+            run_blocking(skrills_state::offline_source)
+        } else {
+            None
+        };
+        if let Some(source) = llm_offline {
+            // The LLM CLIs call a remote API, and nothing is cached to replay.
+            errors.push(format!(
+                "LLM generation skipped: offline mode ({source}), and it needs the network"
+            ));
+        } else if method == CreationMethod::LLMGenerate || method == CreationMethod::Both {
             match generate_skill_with_llm(&request).await {
                 Ok(result) => {
                     if result.success {
@@ -703,6 +716,7 @@ impl SkillService {
             let mut parts = Vec::new();
             if has_github {
                 parts.push(format!("Found {} GitHub results", github_results.len()));
+                parts.extend(github_notice.clone());
             }
             if has_llm {
                 parts.push("Generated skill via LLM".to_string());
@@ -731,6 +745,7 @@ impl SkillService {
             "name": name,
             "dry_run": dry_run,
             "github_results": github_results,
+            "github_cache_notice": github_notice,
             "llm_content": llm_content,
             "written_path": written_path,
             "errors": errors,
@@ -747,15 +762,13 @@ impl SkillService {
         &self,
         args: JsonMap<String, Value>,
     ) -> Result<CallToolResult> {
-        use skrills_intelligence::search_github_skills;
-
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
             .ok_or_else(|| invalid_params("Missing required parameter: query"))?;
         let limit = clamp_limit(args.get("limit").and_then(|v| v.as_u64()), 10);
 
-        let results = search_github_skills(query, limit).await?;
+        let (results, notice) = search_github_cached(query, limit).await?;
 
         let text = if results.is_empty() {
             "No SKILL.md files found on GitHub matching the query".to_string()
@@ -771,6 +784,10 @@ impl SkillService {
                     .join("\n")
             )
         };
+        let text = match &notice {
+            Some(notice) => format!("{notice}: {text}"),
+            None => text,
+        };
 
         Ok(tool_ok(
             vec![ContentBlock::text(text)],
@@ -778,6 +795,7 @@ impl SkillService {
                 "query": query,
                 "total_found": results.len(),
                 "results": results,
+                "cache_notice": notice,
             })),
         ))
     }
@@ -989,7 +1007,7 @@ const USAGE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 /// Most usage events kept from session history.
 pub(crate) const MAX_USAGE_EVENTS: usize = 200_000;
 
-type UsageCache = Option<(
+pub(crate) type UsageCache = Option<(
     PathBuf,
     std::time::Instant,
     Vec<skrills_intelligence::usage::SkillUsageEvent>,
@@ -1003,7 +1021,17 @@ pub(crate) fn cached_usage_events(
     load: impl FnOnce() -> Vec<skrills_intelligence::usage::SkillUsageEvent>,
 ) -> Vec<skrills_intelligence::usage::SkillUsageEvent> {
     static CACHE: std::sync::Mutex<UsageCache> = std::sync::Mutex::new(None);
-    let mut cache = CACHE
+    usage_events_cached_in(&CACHE, home, load)
+}
+
+/// [`cached_usage_events`] against a given cache slot, so a test can use a
+/// slot that parallel tests calling the tool with another home cannot evict.
+pub(crate) fn usage_events_cached_in(
+    cache: &std::sync::Mutex<UsageCache>,
+    home: &Path,
+    load: impl FnOnce() -> Vec<skrills_intelligence::usage::SkillUsageEvent>,
+) -> Vec<skrills_intelligence::usage::SkillUsageEvent> {
+    let mut cache = cache
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((cached_home, at, events)) = cache.as_ref() {
@@ -1272,4 +1300,32 @@ pub(crate) fn resolve_project_dir(project_dir: Option<&str>, context: &str) -> O
             None
         }
     }
+}
+
+/// GitHub skill search that replays the last stored answer when offline.
+/// The notice is `Some` only when the results came from cache.
+async fn search_github_cached(
+    query: &str,
+    limit: usize,
+) -> Result<(Vec<skrills_intelligence::GitHubSkillResult>, Option<String>)> {
+    let (cache, offline) = cache_and_offline_source();
+    let outcome = fetch_or_replay(
+        cache.as_ref(),
+        offline,
+        "search-skills-github",
+        &query_key(query, limit),
+        query,
+        || async {
+            let found = skrills_intelligence::search_github_skills(query, limit).await?;
+            Ok(Fresh::Complete(serde_json::to_value(found)?))
+        },
+    )
+    .await?;
+    Ok(match outcome {
+        Outcome::Live(value) => (serde_json::from_value(value)?, None),
+        Outcome::Cached(hit) => {
+            let notice = hit.notice();
+            (serde_json::from_value(hit.value)?, Some(notice))
+        }
+    })
 }

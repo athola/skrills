@@ -898,8 +898,10 @@ impl SkillService {
         };
 
         let to = check_sync_peer("to", to, &[Platform::Claude, Platform::Codex])?;
-        let report =
-            SyncOrchestrator::new(CopilotAdapter::new()?, create_adapter(to)?).sync(&params)?;
+        let report = SyncOrchestrator::new(CopilotAdapter::new()?, create_adapter(to)?)
+            .with_default_snapshots()
+            .with_default_sync_state()
+            .sync(&params)?;
 
         let succeeded = report.success;
         let content = vec![ContentBlock::text(report.summary.clone())];
@@ -965,6 +967,8 @@ impl SkillService {
             create_source_adapter(from, &params)?,
             CopilotAdapter::new()?,
         )
+        .with_default_snapshots()
+        .with_default_sync_state()
         .sync(&params)?;
 
         let succeeded = report.success;
@@ -1012,8 +1016,10 @@ impl SkillService {
             to,
             &[Platform::Claude, Platform::Codex, Platform::Copilot],
         )?;
-        let report =
-            SyncOrchestrator::new(CursorAdapter::new()?, create_adapter(to)?).sync(&params)?;
+        let report = SyncOrchestrator::new(CursorAdapter::new()?, create_adapter(to)?)
+            .with_default_snapshots()
+            .with_default_sync_state()
+            .sync(&params)?;
 
         let succeeded = report.success;
         let content = vec![ContentBlock::text(report.summary.clone())];
@@ -1069,6 +1075,8 @@ impl SkillService {
 
         let report =
             SyncOrchestrator::new(create_source_adapter(from, &params)?, CursorAdapter::new()?)
+                .with_default_snapshots()
+                .with_default_sync_state()
                 .sync(&params)?;
 
         let succeeded = report.success;
@@ -1336,4 +1344,45 @@ pub(crate) fn unified_diff(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// The MCP sync tools build their orchestrator by hand, so each one has to
+    /// opt in to snapshots itself; this one does, and rollback undoes it.
+    #[test]
+    fn mcp_sync_from_copilot_takes_a_snapshot_that_rollback_restores() {
+        let _guard = crate::test_support::env_guard();
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_support::set_env_var("HOME", home.path().to_str());
+        let copilot = home.path().join(".copilot");
+        let _copilot = crate::test_support::set_env_var("COPILOT_HOME", copilot.to_str());
+        let _xdg = crate::test_support::set_env_var("XDG_CONFIG_HOME", None);
+        let prompt = copilot.join("prompts/hello.prompt.md");
+        fs::create_dir_all(prompt.parent().unwrap()).unwrap();
+        fs::write(&prompt, "# New Hello\n").unwrap();
+        let existing = home.path().join(".claude/commands/hello.md");
+        fs::create_dir_all(existing.parent().unwrap()).unwrap();
+        fs::write(&existing, "# Old Hello\n").unwrap();
+        let service = SkillService::new_with_ttl(vec![], Duration::from_secs(1)).unwrap();
+
+        let result = service
+            .sync_from_copilot_tool(
+                json!({"to": "claude", "dry_run": false})
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        assert_ne!(fs::read_to_string(&existing).unwrap(), "# Old Hello\n");
+        let snapshots = home.path().join(".skrills/snapshots");
+        assert_eq!(skrills_sync::snapshot::list(&snapshots).unwrap().len(), 1);
+        skrills_sync::snapshot::rollback(&snapshots, None).unwrap();
+        assert_eq!(fs::read_to_string(&existing).unwrap(), "# Old Hello\n");
+    }
 }

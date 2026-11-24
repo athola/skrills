@@ -145,7 +145,48 @@ fn doctor_report_with_paths(
     Ok(lines)
 }
 
-/// Runs diagnostics on Codex MCP configuration files.
+/// The report section for `~/.skrills/adapters/*.toml`: for each file its
+/// path and name, the categories it supports, `!` lines for what stops it
+/// from loading, and `w` lines for what does not. Empty when there are no
+/// adapter files. A directory that cannot be read is one `!` line, so the
+/// rest of the report still prints.
+fn adapter_report_lines(home: &Path) -> Result<Vec<String>> {
+    let mut lines = vec![format!(
+        "== custom adapters ({}) ==",
+        skrills_sync::adapters_dir(home).display()
+    )];
+    let files = match skrills_sync::load_adapter_files(home) {
+        Ok(files) => files,
+        Err(e) => {
+            lines.push(format!("  ! {e}"));
+            return Ok(lines);
+        }
+    };
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    for file in files {
+        match file.outcome {
+            Ok(config) => {
+                lines.push(format!("{} ({})", config.name(), file.path.display()));
+                let categories = config.categories();
+                lines.push(if categories.is_empty() {
+                    "  i supports: nothing (no category is configured)".to_string()
+                } else {
+                    format!("  i supports: {}", categories.join(", "))
+                });
+                lines.extend(config.warnings().into_iter().map(|w| format!("  w {w}")));
+            }
+            Err(problems) => {
+                lines.push(format!("{}: not usable", file.path.display()));
+                lines.extend(problems.iter().map(|p| format!("  ! {p}")));
+            }
+        }
+    }
+    Ok(lines)
+}
+
+/// Runs diagnostics on Codex MCP configuration files and custom adapters.
 ///
 /// Inspects `~/.codex/config.toml`, where `skrills setup` registers the
 /// server, and a legacy `~/.codex/mcp_servers.json` when one exists.
@@ -154,7 +195,8 @@ pub fn doctor_report() -> Result<()> {
     let mcp_path = home.join(".codex/mcp_servers.json");
     let cfg_path = home.join(".codex/config.toml");
     let expected_cmd = home.join(".codex/bin/skrills");
-    let lines = doctor_report_with_paths(&mcp_path, &cfg_path, &expected_cmd)?;
+    let mut lines = doctor_report_with_paths(&mcp_path, &cfg_path, &expected_cmd)?;
+    lines.extend(adapter_report_lines(&home)?);
     for line in &lines {
         println!("{line}");
     }
@@ -358,5 +400,168 @@ args = ["--flag"]
         let _home = skrills_test_utils::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
 
         doctor_report().expect("a missing config.toml is reported, not a problem");
+    }
+
+    fn adapter_file(home: &Path, file: &str, body: &str) -> std::path::PathBuf {
+        let path = skrills_sync::adapters_dir(home).join(file);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    fn adapter_lines(home: &Path) -> String {
+        adapter_report_lines(home).unwrap().join("\n")
+    }
+
+    #[test]
+    fn no_adapter_files_adds_nothing_to_the_report() {
+        let temp = tempdir().unwrap();
+
+        assert!(adapter_report_lines(temp.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_good_adapter_file_lists_its_supported_categories_and_no_problem() {
+        let temp = tempdir().unwrap();
+        fs::create_dir_all(temp.path().join(".windsurf")).unwrap();
+        let path = adapter_file(
+            temp.path(),
+            "windsurf.toml",
+            "name = \"windsurf\"\nroot = \"~/.windsurf\"\nskills_dir = \"skills\"\ncommands_dir = \"workflows\"\n",
+        );
+
+        let lines = adapter_report_lines(temp.path()).unwrap();
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("windsurf"), "{joined}");
+        assert!(joined.contains(&path.display().to_string()), "{joined}");
+        assert!(joined.contains("supports: skills, commands"), "{joined}");
+        assert_eq!(problem_count(&lines), 0, "{joined}");
+    }
+
+    #[test]
+    fn an_adapter_file_that_does_not_parse_is_a_problem_naming_the_file() {
+        let temp = tempdir().unwrap();
+        let path = adapter_file(temp.path(), "broken.toml", "name = ");
+
+        let lines = adapter_report_lines(temp.path()).unwrap();
+        let joined = lines.join("\n");
+
+        assert!(joined.contains(&path.display().to_string()), "{joined}");
+        assert!(joined.contains("invalid config"), "{joined}");
+        assert_eq!(problem_count(&lines), 1, "{joined}");
+    }
+
+    #[test]
+    fn missing_required_keys_are_each_a_problem() {
+        let temp = tempdir().unwrap();
+        adapter_file(temp.path(), "empty.toml", "skills_dir = \"skills\"\n");
+
+        let lines = adapter_report_lines(temp.path()).unwrap();
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("missing required key `name`"), "{joined}");
+        assert!(joined.contains("missing required key `root`"), "{joined}");
+        assert_eq!(problem_count(&lines), 2, "{joined}");
+    }
+
+    #[test]
+    fn a_built_in_name_and_a_shared_name_are_problems() {
+        let temp = tempdir().unwrap();
+        adapter_file(
+            temp.path(),
+            "codex.toml",
+            "name = \"codex\"\nroot = \"/tmp/c\"\n",
+        );
+        adapter_file(
+            temp.path(),
+            "a.toml",
+            "name = \"twin\"\nroot = \"/tmp/t\"\n",
+        );
+        adapter_file(
+            temp.path(),
+            "b.toml",
+            "name = \"twin\"\nroot = \"/tmp/t\"\n",
+        );
+
+        let lines = adapter_report_lines(temp.path()).unwrap();
+        let joined = lines.join("\n");
+
+        assert!(
+            joined.contains("`codex` is a built-in platform"),
+            "{joined}"
+        );
+        assert!(joined.contains("also declared by"), "{joined}");
+        assert_eq!(problem_count(&lines), 3, "{joined}");
+    }
+
+    #[test]
+    fn a_root_that_does_not_exist_is_a_warning_not_a_problem() {
+        let temp = tempdir().unwrap();
+        adapter_file(
+            temp.path(),
+            "ghost.toml",
+            "name = \"ghost\"\nroot = \"~/.ghost\"\nskills_dir = \"skills\"\n",
+        );
+
+        let lines = adapter_report_lines(temp.path()).unwrap();
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("w root"), "{joined}");
+        assert!(joined.contains("does not exist"), "{joined}");
+        assert_eq!(problem_count(&lines), 0, "{joined}");
+    }
+
+    #[test]
+    fn a_path_that_escapes_the_root_is_a_problem() {
+        let temp = tempdir().unwrap();
+        adapter_file(
+            temp.path(),
+            "leaky.toml",
+            "name = \"leaky\"\nroot = \"~/.leaky\"\nskills_dir = \"../elsewhere\"\ncommands_dir = \"/etc\"\n",
+        );
+
+        let lines = adapter_report_lines(temp.path()).unwrap();
+        let joined = lines.join("\n");
+
+        assert!(
+            joined.contains("`skills_dir` = `../elsewhere` leaves root"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("`commands_dir` = `/etc` leaves root"),
+            "{joined}"
+        );
+        assert_eq!(problem_count(&lines), 2, "{joined}");
+    }
+
+    #[test]
+    fn doctor_fails_when_an_adapter_file_has_a_problem() {
+        let _guard = skrills_test_utils::env_guard();
+        let temp = tempdir().expect("tempdir");
+        let _home = skrills_test_utils::set_env_var("HOME", Some(temp.path().to_str().unwrap()));
+        adapter_file(temp.path(), "broken.toml", "name = ");
+
+        let err = doctor_report().unwrap_err();
+
+        assert_eq!(err.to_string(), "doctor found 1 problem(s)");
+        assert!(adapter_lines(temp.path()).contains("broken.toml"));
+    }
+
+    /// An adapters directory that could not be read aborted the whole report,
+    /// so the Codex checks above it were never printed.
+    #[test]
+    fn an_unreadable_adapters_directory_is_a_problem_line_not_an_abort() {
+        let temp = tempdir().unwrap();
+        let dir = skrills_sync::adapters_dir(temp.path());
+        fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        // A file where the directory should be fails `read_dir` for certain.
+        fs::write(&dir, "not a directory").unwrap();
+
+        let lines = adapter_report_lines(temp.path()).unwrap();
+
+        let joined = lines.join("\n");
+        assert_eq!(problem_count(&lines), 1, "{joined}");
+        assert!(joined.contains(&dir.display().to_string()), "{joined}");
     }
 }

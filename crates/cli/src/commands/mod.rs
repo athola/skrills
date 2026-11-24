@@ -12,8 +12,10 @@ mod resolve;
 mod serve;
 mod setup;
 mod skill;
+mod skill_templates;
 mod skill_uri;
 mod sync;
+mod sync_prompt;
 mod validate;
 
 pub(crate) use agent::handle_agent_command;
@@ -38,15 +40,16 @@ pub(crate) use resolve::handle_resolve_dependencies_command;
 pub(crate) use serve::{handle_serve_command, ServeOptions};
 pub(crate) use setup::{handle_setup_command, SetupOptions};
 pub(crate) use skill::{
-    handle_pre_commit_validate_command, handle_skill_catalog_command,
+    handle_pre_commit_validate_command, handle_prune_command, handle_skill_catalog_command,
     handle_skill_deprecate_command, handle_skill_import_command, handle_skill_profile_command,
     handle_skill_rollback_command, handle_skill_score_command, handle_skill_usage_report_command,
     handle_sync_pull_command,
 };
+pub(crate) use skill_templates::handle_create_skill_template_command;
 pub(crate) use sync::{
     handle_mirror_command, handle_sync_agents_command, handle_sync_all_command,
-    handle_sync_command, handle_sync_status_command, print_skill_warnings, run_sync_with_adapters,
-    skipped_commands_note, SyncAllArgs,
+    handle_sync_command, handle_sync_rollback_command, handle_sync_status_command,
+    print_skill_warnings, run_sync_with_adapters, skipped_commands_note, SyncAllArgs,
 };
 pub(crate) use validate::handle_validate_command;
 

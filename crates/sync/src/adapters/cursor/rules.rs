@@ -24,7 +24,6 @@ use crate::adapters::utils::{hash_content, is_hidden_path};
 use crate::common::{Command, ContentFormat};
 use crate::report::WriteReport;
 use crate::Result;
-use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
 
@@ -115,7 +114,7 @@ pub fn write_rules(root: &Path, instructions: &[Command]) -> Result<WriteReport>
         return Ok(report);
     }
 
-    fs::create_dir_all(&dir)?;
+    crate::adapters::utils::create_dir_all(&dir)?;
 
     let mut writer = crate::adapters::utils::BatchWriter::new(&dir);
     for instruction in instructions {

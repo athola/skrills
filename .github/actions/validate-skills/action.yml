@@ -53,16 +53,19 @@ runs:
         SKRILLS_SKIP_PATH_MESSAGE: "1"
       run: |
         set -euo pipefail
+        installer_ref="v${SKRILLS_VERSION}"
         if [ "$SKRILLS_VERSION" = "latest" ]; then
           unset SKRILLS_VERSION
+          installer_ref="HEAD"
         fi
         export SKRILLS_BIN_DIR="${RUNNER_TEMP:-/tmp}/skrills-bin"
         # Use the install script from this repository if available,
-        # otherwise download it from GitHub.
+        # otherwise download the one from the requested release, so a pinned
+        # version does not run whatever installer master has today.
         if [ -f "${{ github.action_path }}/../../../scripts/install.sh" ]; then
           bash "${{ github.action_path }}/../../../scripts/install.sh"
         else
-          curl -LsSf "https://raw.githubusercontent.com/athola/skrills/HEAD/scripts/install.sh" | bash
+          curl -LsSf "https://raw.githubusercontent.com/athola/skrills/${installer_ref}/scripts/install.sh" | bash
         fi
         echo "${SKRILLS_BIN_DIR}" >> "$GITHUB_PATH"
 

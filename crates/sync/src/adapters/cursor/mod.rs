@@ -90,6 +90,14 @@ impl CursorAdapter {
 }
 
 impl AgentAdapter for CursorAdapter {
+    fn decision_scope(&self, kind: crate::decision::ItemKind) -> crate::decision::DecisionScope {
+        use crate::decision::{DecisionScope, ItemKind};
+        match kind {
+            ItemKind::Command | ItemKind::Agent | ItemKind::McpServer => DecisionScope::PerItem,
+            _ => DecisionScope::WholeCategory,
+        }
+    }
+
     fn name(&self) -> &str {
         "cursor"
     }
@@ -214,7 +222,6 @@ impl AgentAdapter for CursorAdapter {
     ) -> Result<WriteReport> {
         crate::adapters::utils::ensure_not_engaged(self.kill_switch.as_ref())?;
         use std::collections::HashSet;
-        use std::fs;
         use std::path::PathBuf;
 
         let mut report = WriteReport::default();
@@ -224,7 +231,7 @@ impl AgentAdapter for CursorAdapter {
         }
 
         let local_dir = self.root.join("plugins").join("local");
-        fs::create_dir_all(&local_dir)?;
+        crate::adapters::utils::create_dir_all(&local_dir)?;
 
         let plan = plan_mirror(&local_dir, assets);
         report.warnings.extend(plan.refusals);
@@ -239,7 +246,10 @@ impl AgentAdapter for CursorAdapter {
             // Read before this run writes anything: only a directory skrills
             // already owned may have files swept out of it.
             let already_marked = has_mirror_marker(&plugin_dir);
-            let ledger = already_marked.then(|| read_ledger(&plugin_dir)).flatten();
+            let ledger = match already_marked.then(|| read_ledger(&plugin_dir)) {
+                None => Ok(None),
+                Some(read) => read,
+            };
 
             // Ownership is settled before the first write. An unmarked
             // directory that holds files this plugin does not ship belongs to
@@ -273,6 +283,19 @@ impl AgentAdapter for CursorAdapter {
             // plugin, so only then can an absent file be read as "upstream
             // dropped it" rather than "this batch did not include it".
             if plan.authoritative.contains(dir_name) {
+                let ledger = match ledger {
+                    Ok(ledger) => ledger,
+                    Err(e) => {
+                        // Without the ledger nothing says which files sync
+                        // wrote, and rewriting the marker would forget them.
+                        report.warnings.push(unreadable_marker(
+                            dir_name,
+                            &e,
+                            "no stale file was removed and the marker was left as it is",
+                        ));
+                        continue;
+                    }
+                };
                 let carried = match &ledger {
                     Some(listed) => sweep_ledger(
                         &plugin_dir,
@@ -332,10 +355,18 @@ impl AgentAdapter for CursorAdapter {
             let (marked, warnings) = marked_mirror_dirs(&local_dir);
             report.warnings.extend(warnings);
             for name in marked {
-                if !plan.present.contains(&name) {
-                    report
+                if plan.present.contains(&name) {
+                    continue;
+                }
+                match read_ledger(&local_dir.join(&name)) {
+                    Ok(_) => report
                         .warnings
-                        .push(format!("Would prune stale plugin mirror: {name}"));
+                        .push(format!("Would prune stale plugin mirror: {name}")),
+                    Err(e) => report.warnings.push(unreadable_marker(
+                        &name,
+                        &e,
+                        "the stale mirror would not be pruned",
+                    )),
                 }
             }
         }
@@ -369,17 +400,24 @@ const MIRROR_MARKER_BODY: &str =
 /// marker without this line predates the ledger.
 const LEDGER_HEADING: &str = "Files written by sync (only these are ever removed):";
 
-/// The ledger in `plugin_dir`'s marker, or `None` for a marker that predates it.
-fn read_ledger(plugin_dir: &std::path::Path) -> Option<Vec<std::path::PathBuf>> {
-    let body = std::fs::read_to_string(plugin_dir.join(MIRROR_MARKER)).ok()?;
+/// The ledger in `plugin_dir`'s marker, or `None` for a marker that predates
+/// it. A marker that cannot be read is an error, not a pre-ledger marker:
+/// read as one, it let the cleanup remove files sync never wrote.
+fn read_ledger(plugin_dir: &std::path::Path) -> std::io::Result<Option<Vec<std::path::PathBuf>>> {
+    let body = std::fs::read_to_string(plugin_dir.join(MIRROR_MARKER))?;
     let mut lines = body.lines();
     lines.next();
-    (lines.next() == Some(LEDGER_HEADING)).then(|| {
+    Ok((lines.next() == Some(LEDGER_HEADING)).then(|| {
         lines
             .filter(|line| !line.is_empty())
             .map(std::path::PathBuf::from)
             .collect()
-    })
+    }))
+}
+
+/// The warning for a marker [`read_ledger`] could not read.
+fn unreadable_marker(dir_name: &str, error: &std::io::Error, skipped: &str) -> String {
+    format!("Could not read plugins/local/{dir_name}/{MIRROR_MARKER} ({error}), so {skipped}")
 }
 
 /// Marker body listing `kept` (absolute) and `carried` (relative) paths.
@@ -551,7 +589,7 @@ fn prepare_plugin_dir(plugin_dir: &std::path::Path) -> std::result::Result<(), S
             plugin_dir.display()
         )),
         Ok(_) => Ok(()),
-        Err(_) => fs::create_dir_all(plugin_dir).map_err(|e| {
+        Err(_) => crate::adapters::utils::create_dir_all(plugin_dir).map_err(|e| {
             format!(
                 "Could not create plugin mirror {}: {e}",
                 plugin_dir.display()
@@ -673,7 +711,7 @@ fn write_one_asset(
 
     if !content_matches {
         if let Some(parent) = dest.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
+            if let Err(e) = crate::adapters::utils::create_dir_all(parent) {
                 tracing::warn!(plugin = %dir_name, error = %e, "Could not create asset parent");
                 report.warnings.push(format!(
                     "Skipped plugin asset {}/{}: {e}",
@@ -781,7 +819,7 @@ fn clear_conflicting_path(
                 Ok(_) if !owned => return refuse(&walked),
                 // A file or a symlink: a symlinked parent would also steer the
                 // write out of the plugin directory.
-                Ok(_) => fs::remove_file(&walked)?,
+                Ok(_) => crate::adapters::utils::remove_file(&walked)?,
                 // Nothing here yet, so nothing deeper can exist either.
                 Err(_) => break,
             }
@@ -791,8 +829,8 @@ fn clear_conflicting_path(
     match fs::symlink_metadata(dest) {
         Ok(meta) if meta.is_file() => Ok(()),
         Ok(_) if !owned => refuse(dest),
-        Ok(meta) if meta.is_dir() => fs::remove_dir_all(dest),
-        Ok(_) => fs::remove_file(dest),
+        Ok(meta) if meta.is_dir() => crate::adapters::utils::remove_tree(dest),
+        Ok(_) => crate::adapters::utils::remove_file(dest),
         Err(_) => Ok(()),
     }
 }
@@ -818,16 +856,14 @@ fn exec_bit_matches(_dest: &std::path::Path, _executable: bool) -> bool {
 #[cfg(unix)]
 fn apply_exec_bit(dest: &std::path::Path, executable: bool) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let mut permissions = std::fs::metadata(dest)?.permissions();
-    let current = permissions.mode();
+    let current = std::fs::metadata(dest)?.permissions().mode();
     let desired = if executable {
         current | 0o111
     } else {
         current & !0o111
     };
     if desired != current {
-        permissions.set_mode(desired);
-        std::fs::set_permissions(dest, permissions)?;
+        crate::adapters::utils::set_mode(dest, desired)?;
     }
     Ok(())
 }
@@ -848,7 +884,6 @@ fn sweep_unreferenced(
     kept: &std::collections::HashSet<std::path::PathBuf>,
     report: &mut WriteReport,
 ) {
-    use std::fs;
     use walkdir::WalkDir;
 
     let marker = plugin_dir.join(MIRROR_MARKER);
@@ -877,13 +912,13 @@ fn sweep_unreferenced(
         if entry.file_type().is_dir() {
             // `contents_first` means the directory is already empty if every file
             // under it went away with the upstream plugin.
-            let _ = fs::remove_dir(path);
+            let _ = crate::adapters::utils::remove_dir(path);
             continue;
         }
         if kept.contains(path) {
             continue;
         }
-        match fs::remove_file(path) {
+        match crate::adapters::utils::remove_file(path) {
             // A dropped skill's marker is not a file the plugin shipped.
             Ok(()) if entry.file_name() == crate::adapters::utils::SYNCED_MARKER => {}
             Ok(()) => removed += 1,
@@ -945,7 +980,7 @@ fn sweep_ledger(
             carried.push(relative.clone());
             continue;
         }
-        match fs::remove_file(&path) {
+        match crate::adapters::utils::remove_file(&path) {
             Ok(()) => {
                 if path.file_name()
                     != Some(std::ffi::OsStr::new(crate::adapters::utils::SYNCED_MARKER))
@@ -957,7 +992,7 @@ fn sweep_ledger(
                     .skip(1)
                     .take_while(|dir| *dir != plugin_dir)
                 {
-                    if fs::remove_dir(dir).is_err() {
+                    if crate::adapters::utils::remove_dir(dir).is_err() {
                         break;
                     }
                 }
@@ -1088,8 +1123,6 @@ fn prune_stale_mirrors(
     touched: &std::collections::HashSet<String>,
     report: &mut WriteReport,
 ) {
-    use std::fs;
-
     let (marked, warnings) = marked_mirror_dirs(local_dir);
     report.warnings.extend(warnings);
 
@@ -1098,11 +1131,28 @@ fn prune_stale_mirrors(
             continue;
         }
         let path = local_dir.join(&name);
-        if let Some(listed) = read_ledger(&path) {
+        let ledger = match read_ledger(&path) {
+            Ok(ledger) => ledger,
+            Err(e) => {
+                report.warnings.push(unreadable_marker(
+                    &name,
+                    &e,
+                    "the stale mirror was not pruned",
+                ));
+                continue;
+            }
+        };
+        if let Some(listed) = ledger {
             let none_kept = std::collections::HashSet::new();
             sweep_ledger(&path, &name, &listed, &none_kept, false, report);
-            let _ = fs::remove_file(path.join(MIRROR_MARKER));
-            if fs::remove_dir(&path).is_ok() {
+            if let Err(e) = crate::adapters::utils::remove_file(&path.join(MIRROR_MARKER)) {
+                report.warnings.push(format!(
+                    "Pruned stale plugin {name}, but could not remove {MIRROR_MARKER}: {e}; \
+                     plugins/local/{name} was left"
+                ));
+                continue;
+            }
+            if crate::adapters::utils::remove_dir(&path).is_ok() {
                 report.warnings.push(format!("Pruned stale plugin: {name}"));
             } else {
                 report.warnings.push(format!(
@@ -1112,7 +1162,7 @@ fn prune_stale_mirrors(
             }
             continue;
         }
-        match fs::remove_dir_all(&path) {
+        match crate::adapters::utils::remove_tree(&path) {
             Ok(()) => {
                 tracing::info!(plugin = %name, "Pruned stale local plugin");
                 report.warnings.push(format!("Pruned stale plugin: {name}"));
@@ -1124,5 +1174,272 @@ fn prune_stale_mirrors(
                     .push(format!("Failed to prune stale plugin {name}: {e}"));
             }
         }
+    }
+}
+
+/// Tests of what the mirror records for a snapshot and how it treats its
+/// marker. The adapter's behaviour tests are in `tests.rs`.
+#[cfg(test)]
+mod recorded_mirror_tests {
+    use super::*;
+    use crate::adapters::ClaudeAdapter;
+    use crate::{SyncOrchestrator, SyncParams};
+
+    fn put(path: &std::path::Path, body: &[u8]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    fn manifest(plugin: &str) -> PluginAsset {
+        PluginAsset::new(
+            plugin.to_string(),
+            "market".to_string(),
+            "1.0.0".to_string(),
+            std::path::PathBuf::from(".claude-plugin/plugin.json"),
+            format!("{{\"name\": \"{plugin}\"}}").into_bytes(),
+            false,
+        )
+    }
+
+    fn runner(executable: bool) -> PluginAsset {
+        PluginAsset::new(
+            "my-plugin".to_string(),
+            "market".to_string(),
+            "1.0.0".to_string(),
+            std::path::PathBuf::from("bin/runner"),
+            b"#!/bin/sh\n".to_vec(),
+            executable,
+        )
+    }
+
+    /// The paths each snapshot under `root` recorded, newest first, for a
+    /// failure message that names the file rewritten on every run.
+    fn recorded_paths(root: &std::path::Path) -> Vec<Vec<std::path::PathBuf>> {
+        crate::snapshot::list(root)
+            .unwrap()
+            .iter()
+            .map(|info| {
+                crate::snapshot::read_manifest(&root.join(&info.name))
+                    .unwrap()
+                    .into_iter()
+                    .map(|entry| entry.path)
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_second_identical_sync_to_cursor_leaves_no_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (source, target, snaps) = (
+            tmp.path().join("claude"),
+            tmp.path().join("cursor"),
+            tmp.path().join("snapshots"),
+        );
+        put(&source.join("commands/hello.md"), b"# Hello\n");
+        put(
+            &source.join("skills/alpha/SKILL.md"),
+            b"---\nname: alpha\ndescription: A\n---\nBody\n",
+        );
+        let version = source.join("plugins/cache/market/my-plugin/1.0.0");
+        put(
+            &version.join(".claude-plugin/plugin.json"),
+            b"{\"name\": \"my-plugin\"}",
+        );
+        put(&version.join("scripts/run.sh"), b"#!/bin/sh\n");
+        put(
+            &source.join("agents/rev.md"),
+            b"---\nname: rev\ndescription: R\ntools: Read\n---\nBody\n",
+        );
+        put(&source.join("CLAUDE.md"), b"# Rules\n");
+        put(
+            &source.join(".claude.json"),
+            b"{\"mcpServers\": {\"api\": {\"command\": \"/bin/api\", \"args\": [\"a\"]}}}",
+        );
+        put(
+            &source.join("settings.json"),
+            b"{\"model\": \"opus\", \"hooks\": {\"PreToolUse\": [{\"matcher\": \"Bash\", \
+              \"hooks\": [{\"type\": \"command\", \"command\": \"echo\"}]}]}}",
+        );
+        let sync_once = || {
+            let report = SyncOrchestrator::new(
+                ClaudeAdapter::with_root(source.clone()),
+                CursorAdapter::with_root(target.clone()),
+            )
+            .with_snapshot_root(Some(snaps.clone()))
+            .sync(&SyncParams {
+                full_plugin_mirror: true,
+                ..Default::default()
+            })
+            .unwrap();
+            assert!(report.success, "{report:?}");
+        };
+
+        sync_once();
+        assert!(
+            target
+                .join("plugins/local/my-plugin")
+                .join(MIRROR_MARKER)
+                .is_file(),
+            "the plugin must be mirrored for the marker to be stamped"
+        );
+        sync_once();
+
+        assert_eq!(
+            crate::snapshot::list(&snaps).unwrap().len(),
+            1,
+            "the second sync changed nothing, yet recorded {:?}",
+            recorded_paths(&snaps)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_restores_an_exec_bit_a_mirror_sync_flipped_on_unchanged_content() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let snaps = tmp.path().join("snapshots");
+        let adapter = CursorAdapter::with_root(tmp.path().join("cursor"));
+        let dest = tmp.path().join("cursor/plugins/local/my-plugin/bin/runner");
+        adapter
+            .write_plugin_assets(&[manifest("my-plugin"), runner(true)])
+            .unwrap();
+        let mode =
+            |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let before = mode(&dest);
+        assert_ne!(before & 0o111, 0);
+
+        {
+            let _session = crate::snapshot::begin(&snaps).unwrap();
+            adapter
+                .write_plugin_assets(&[manifest("my-plugin"), runner(false)])
+                .unwrap();
+        }
+        assert_eq!(mode(&dest) & 0o111, 0, "the sync clears the bit");
+        crate::snapshot::rollback(&snaps, None).unwrap();
+
+        assert_eq!(mode(&dest), before);
+    }
+
+    /// A marker that exists but cannot be read was taken for one written
+    /// before the ledger, so the sweep removed every file the batch did not
+    /// carry, including what the plugin's hooks wrote at run time.
+    #[test]
+    fn an_unreadable_marker_skips_the_sweep_with_a_warning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+        let plugin_dir = tmp.path().join("plugins/local/my-plugin");
+        adapter
+            .write_plugin_assets(&[manifest("my-plugin"), runner(false)])
+            .unwrap();
+        let runtime = plugin_dir.join("data/session.json");
+        put(&runtime, b"{}");
+        // Not UTF-8, so `read_to_string` fails though the file is there.
+        std::fs::write(plugin_dir.join(MIRROR_MARKER), [0xff, 0xfe, 0x00]).unwrap();
+
+        let report = adapter
+            .write_plugin_assets(&[manifest("my-plugin"), runner(false)])
+            .unwrap();
+
+        assert!(runtime.exists(), "the sweep must not run: {report:?}");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains(MIRROR_MARKER) && w.contains("my-plugin")),
+            "{:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn an_unreadable_marker_keeps_a_stale_mirror_with_a_warning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+        let stale = tmp.path().join("plugins/local/gone");
+        put(&stale.join("data/session.json"), b"{}");
+        std::fs::write(stale.join(MIRROR_MARKER), [0xff, 0xfe, 0x00]).unwrap();
+
+        let report = adapter
+            .write_plugin_assets(&[manifest("my-plugin"), runner(false)])
+            .unwrap();
+
+        assert!(
+            stale.join("data/session.json").exists(),
+            "the stale mirror must not be pruned: {report:?}"
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains(MIRROR_MARKER) && w.contains("gone")),
+            "{:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn a_preview_does_not_promise_to_prune_a_mirror_whose_marker_is_unreadable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+        let stale = tmp.path().join("plugins/local/gone");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join(MIRROR_MARKER), [0xff, 0xfe, 0x00]).unwrap();
+
+        let report = adapter
+            .preview_plugin_assets(&[manifest("my-plugin"), runner(false)])
+            .unwrap();
+
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("Would prune")),
+            "{:?}",
+            report.warnings
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("gone") && w.contains("would not be pruned")),
+            "{:?}",
+            report.warnings
+        );
+    }
+
+    /// The marker's removal error was dropped, and the warning that followed
+    /// blamed files sync did not write.
+    #[cfg(unix)]
+    #[test]
+    fn a_marker_that_cannot_be_removed_is_named_in_the_prune_warning() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let adapter = CursorAdapter::with_root(tmp.path().to_path_buf());
+        let stale = tmp.path().join("plugins/local/gone");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(
+            stale.join(MIRROR_MARKER),
+            format!("{MIRROR_MARKER_BODY}\n{LEDGER_HEADING}\n"),
+        )
+        .unwrap();
+        // A read-only directory refuses the unlink.
+        std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let report = adapter
+            .write_plugin_assets(&[manifest("my-plugin"), runner(false)])
+            .unwrap();
+
+        std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if !stale.join(MIRROR_MARKER).exists() {
+            // Running as root ignores directory permissions; nothing to assert.
+            return;
+        }
+        let expected = format!("could not remove {MIRROR_MARKER}");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("gone") && w.contains(&expected)),
+            "{:?}",
+            report.warnings
+        );
     }
 }

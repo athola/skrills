@@ -7,7 +7,6 @@ use crate::common::{Command, ContentFormat};
 use crate::report::WriteReport;
 use crate::Result;
 use anyhow::Context;
-use std::fs;
 use std::path::Path;
 use tracing::warn;
 use walkdir::WalkDir;
@@ -90,7 +89,7 @@ pub fn read_agents(root: &Path) -> Result<Vec<Command>> {
 /// Writes agents to the agents directory.
 pub fn write_agents(root: &Path, agents: &[Command]) -> Result<WriteReport> {
     let dir = agents_dir(root);
-    fs::create_dir_all(&dir)
+    crate::adapters::utils::create_dir_all(&dir)
         .with_context(|| format!("Failed to create agents directory: {}", dir.display()))?;
 
     let mut report = WriteReport::default();
@@ -197,7 +196,7 @@ pub fn read_instructions(root: &Path) -> Result<Vec<Command>> {
 /// as `**/*.instructions.md`, scoped by an `applyTo` glob.
 pub fn write_instructions(root: &Path, instructions: &[Command]) -> Result<WriteReport> {
     let dir = instructions_dir(root);
-    fs::create_dir_all(&dir)
+    crate::adapters::utils::create_dir_all(&dir)
         .with_context(|| format!("Failed to create instructions directory: {}", dir.display()))?;
 
     let mut report = WriteReport::default();

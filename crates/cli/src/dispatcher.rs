@@ -15,18 +15,19 @@ use crate::cli::{CertAction, Cli, Commands};
 use crate::commands::{
     handle_agent_command, handle_analyze_command, handle_analyze_project_context_command,
     handle_cert_install_command, handle_cert_renew_command, handle_cert_status_command,
-    handle_create_skill_command, handle_export_analytics_command, handle_import_analytics_command,
-    handle_metrics_command, handle_mirror_command, handle_multi_cli_agent_command,
-    handle_pre_commit_validate_command, handle_recommend_command,
-    handle_recommend_skills_smart_command, handle_resolve_dependencies_command,
-    handle_search_skills_command, handle_search_skills_github_command, handle_serve_command,
-    handle_setup_command, handle_skill_catalog_command, handle_skill_deprecate_command,
-    handle_skill_diff_command, handle_skill_import_command, handle_skill_profile_command,
-    handle_skill_rollback_command, handle_skill_score_command, handle_skill_usage_report_command,
+    handle_create_skill_command, handle_create_skill_template_command,
+    handle_export_analytics_command, handle_import_analytics_command, handle_metrics_command,
+    handle_mirror_command, handle_multi_cli_agent_command, handle_pre_commit_validate_command,
+    handle_prune_command, handle_recommend_command, handle_recommend_skills_smart_command,
+    handle_resolve_dependencies_command, handle_search_skills_command,
+    handle_search_skills_github_command, handle_serve_command, handle_setup_command,
+    handle_skill_catalog_command, handle_skill_deprecate_command, handle_skill_diff_command,
+    handle_skill_import_command, handle_skill_profile_command, handle_skill_rollback_command,
+    handle_skill_score_command, handle_skill_usage_report_command,
     handle_suggest_new_skills_command, handle_sync_agents_command, handle_sync_all_command,
-    handle_sync_command, handle_sync_pull_command, handle_sync_status_command,
-    handle_validate_command, run_sync_with_adapters, skipped_commands_note, ServeOptions,
-    SetupOptions, SmartRecommendOptions, SyncAllArgs,
+    handle_sync_command, handle_sync_pull_command, handle_sync_rollback_command,
+    handle_sync_status_command, handle_validate_command, run_sync_with_adapters,
+    skipped_commands_note, ServeOptions, SetupOptions, SmartRecommendOptions, SyncAllArgs,
 };
 use crate::doctor::doctor_report;
 use crate::tui::tui_flow;
@@ -58,6 +59,11 @@ pub fn run() -> Result<()> {
     let config_error = crate::config::try_apply_config_to_env().err();
 
     let cli = Cli::parse();
+    if cli.offline {
+        // One switch for every network-backed feature, read by
+        // `skrills_state::is_offline`. Set before any thread is spawned.
+        std::env::set_var(skrills_state::network::OFFLINE_ENV, "1");
+    }
 
     // Check for first-run (only for user-facing commands, not for `serve` which is called by MCP)
     // Also skip for batch/non-interactive commands like sync-all
@@ -271,6 +277,7 @@ pub fn run() -> Result<()> {
             validate,
             autofix,
             keep_versions,
+            interactive,
         } => handle_sync_all_command(SyncAllArgs {
             from,
             to,
@@ -281,8 +288,14 @@ pub fn run() -> Result<()> {
             validate,
             autofix,
             keep_versions,
+            interactive,
         }),
         Commands::SyncStatus { from, to } => handle_sync_status_command(from, to),
+        Commands::SyncRollback {
+            list,
+            snapshot,
+            force,
+        } => handle_sync_rollback_command(list, snapshot, force),
         Commands::Doctor => doctor_report(),
         Commands::Tui { skill_dirs } => tui_flow(&merge_extra_dirs(&skill_dirs)),
         #[cfg(feature = "dashboard")]
@@ -329,13 +342,23 @@ pub fn run() -> Result<()> {
             #[cfg(feature = "watch")]
             watch,
             #[cfg(feature = "watch")]
-                debounce_ms: _debounce_ms,
+            debounce_ms,
         } => {
-            // The watch loop is tracked in #208. Until it exists, a one-shot
-            // run that exits 0 would look like a watcher that saw no changes.
             #[cfg(feature = "watch")]
             if watch {
-                anyhow::bail!("validate --watch is not implemented (tracked in #208)");
+                if autofix || format.is_json() {
+                    anyhow::bail!(
+                        "--watch prints results as files change; drop --autofix and --format json"
+                    );
+                }
+                let paths = crate::commands::skill_roots_for(&skill_dirs)?
+                    .into_iter()
+                    .map(|root| root.root)
+                    .collect();
+                let config = skrills_validate::watch::WatchConfig::new(paths, target)
+                    .with_debounce_ms(debounce_ms)
+                    .with_errors_only(errors_only);
+                return skrills_validate::watch::run_watch_loop(&config);
             }
             handle_validate_command(skill_dirs, target, autofix, backup, format, errors_only)
         }
@@ -401,19 +424,34 @@ pub fn run() -> Result<()> {
             name,
             description,
             method,
+            template,
+            target,
             target_dir,
             project_dir,
             dry_run,
             format,
-        } => handle_create_skill_command(
-            name,
-            description,
-            method,
-            target_dir,
-            project_dir,
-            dry_run,
-            format,
-        ),
+        } => match template {
+            Some(template) => handle_create_skill_template_command(
+                template,
+                name,
+                description,
+                target,
+                target_dir,
+                dry_run,
+                format,
+            ),
+            // clap requires both unless --template is set.
+            None => handle_create_skill_command(
+                name.ok_or_else(|| anyhow::anyhow!("create-skill requires a NAME"))?,
+                description
+                    .ok_or_else(|| anyhow::anyhow!("create-skill requires --description"))?,
+                method,
+                target_dir,
+                project_dir,
+                dry_run,
+                format,
+            ),
+        },
         Commands::SearchSkillsGithub {
             query,
             limit,
@@ -498,6 +536,22 @@ pub fn run() -> Result<()> {
             output,
             skill_dirs,
         } => handle_skill_usage_report_command(period, format, output, skill_dirs),
+        Commands::Prune {
+            apply,
+            older_than_days,
+            yes,
+            ignore_short_history,
+            skill_dirs,
+            format,
+            ..
+        } => handle_prune_command(
+            apply,
+            older_than_days,
+            yes,
+            ignore_short_history,
+            skill_dirs,
+            format,
+        ),
         Commands::SkillScore {
             name,
             skill_dirs,

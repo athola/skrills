@@ -1,5 +1,6 @@
+use super::sync_prompt::{is_cancelled, require_terminal, PromptDecider};
 use super::validate::{run_validation, Autofix};
-use crate::cli::Platform;
+use crate::cli::{Platform, SyncEndpoint};
 use anyhow::{anyhow, bail, Result};
 use skrills_discovery::merge_extra_dirs;
 use skrills_discovery::{SkillRoot, SkillSource};
@@ -17,14 +18,64 @@ pub(crate) fn print_skill_warnings(report: &skrills_sync::SyncReport) {
     }
 }
 
+/// Prints every phase's warnings and fails when a phase failed.
+///
+/// A failed phase only sets `report.success` and leaves a warning, so a
+/// caller that returns `Ok` regardless exits 0 on a sync that did not happen.
+fn check_phases(report: &skrills_sync::SyncReport) -> Result<()> {
+    let phases = [
+        &report.skills,
+        &report.commands,
+        &report.mcp_servers,
+        &report.preferences,
+        &report.agents,
+        &report.hooks,
+        &report.instructions,
+        &report.plugin_assets,
+    ];
+    for warning in phases.iter().flat_map(|phase| &phase.warnings) {
+        eprintln!("Warning: {warning}");
+    }
+    if !report.success {
+        bail!("a sync phase failed; see the warnings above");
+    }
+    Ok(())
+}
+
+/// Handle the `sync-agents` command, in its own snapshot so `sync-rollback`
+/// can put the previous AGENTS.md back.
 pub(crate) fn handle_sync_agents_command(
     path: Option<PathBuf>,
     skill_dirs: Vec<PathBuf>,
 ) -> Result<()> {
     let path = path.unwrap_or_else(|| PathBuf::from("AGENTS.md"));
-    sync_agents(&path, &merge_extra_dirs(&skill_dirs))?;
+    let path = resolve_parent_components(&path);
+    let _snapshot = skrills_sync::snapshot::begin_default();
+    refresh_agents_md(&path, skill_dirs)
+}
+
+/// Writes AGENTS.md under whatever snapshot is already running; `mirror`
+/// calls it inside its own, which cannot be nested.
+fn refresh_agents_md(path: &Path, skill_dirs: Vec<PathBuf>) -> Result<()> {
+    sync_agents(path, &merge_extra_dirs(&skill_dirs))?;
     println!("Updated {}", path.display());
     Ok(())
+}
+
+/// `path` with `..` resolved through its existing parent directory. The
+/// snapshot recorder refuses a path holding `..`, so `--path ../AGENTS.md`
+/// would otherwise fail inside a snapshot. A path whose parent does not exist
+/// yet is returned unchanged.
+fn resolve_parent_components(path: &Path) -> PathBuf {
+    let has_parent_component = path
+        .components()
+        .any(|part| part == std::path::Component::ParentDir);
+    match (has_parent_component, path.parent(), path.file_name()) {
+        (true, Some(parent), Some(name)) => parent
+            .canonicalize()
+            .map_or_else(|_| path.to_path_buf(), |real| real.join(name)),
+        _ => path.to_path_buf(),
+    }
 }
 
 /// Handle the `sync` command.
@@ -52,6 +103,13 @@ pub(crate) fn handle_mirror_command(
 ) -> Result<()> {
     let home = home_dir()?;
     let claude_root = mirror_source_root(&home);
+    // The agent copy, the skills and the orchestrator below are one mirror;
+    // a shared session makes one rollback undo all of it.
+    let _snapshot = if dry_run {
+        None
+    } else {
+        skrills_sync::snapshot::begin_default()
+    };
     if !skip_existing_commands {
         eprintln!(
             "Warning: mirroring commands into ~/.codex/prompts will overwrite prompts with the same name unless --skip-existing-commands is used."
@@ -79,7 +137,7 @@ pub(crate) fn handle_mirror_command(
     // Mirror commands/mcp/prefs
     let source = skrills_sync::ClaudeAdapter::new()?;
     let target = skrills_sync::CodexAdapter::new()?;
-    let orch = skrills_sync::SyncOrchestrator::new(source, target);
+    let orch = skrills_sync::SyncOrchestrator::new(source, target).with_default_sync_state();
     let params = skrills_sync::SyncParams {
         dry_run,
         sync_skills: false,
@@ -91,11 +149,15 @@ pub(crate) fn handle_mirror_command(
         ..Default::default()
     };
     let sync_report = orch.sync(&params)?;
+    if !codex_report.success {
+        bail!("the skill sync to Codex failed; see the warnings above");
+    }
+    check_phases(&sync_report)?;
     // Refresh Codex's global AGENTS.md with skills and agents (mirror roots
     // now populated). Never the working directory's AGENTS.md: that is
     // whatever repository `mirror` happens to run from.
     if !dry_run {
-        handle_sync_agents_command(Some(home.join(".codex/AGENTS.md")), vec![])?;
+        refresh_agents_md(&home.join(".codex/AGENTS.md"), vec![])?;
     }
 
     println!(
@@ -126,8 +188,25 @@ pub(crate) fn handle_mirror_command(
 
 /// Runs one adapter sync from `from` to `to`.
 pub(crate) fn run_sync_with_adapters(
-    from: Platform,
-    to: Platform,
+    from: impl Into<SyncEndpoint>,
+    to: impl Into<SyncEndpoint>,
+    params: &skrills_sync::SyncParams,
+) -> Result<skrills_sync::SyncReport> {
+    let (from, to) = (from.into(), to.into());
+    if from == to {
+        return Err(anyhow!(
+            "Source and target cannot be the same: {}",
+            from.as_str()
+        ));
+    }
+    // Adapter creation, built-in or configured, is the library's job.
+    skrills_sync::orchestrator::sync_between_endpoints(&from, &to, params)
+}
+
+/// [`run_sync_with_adapters`] that asks about each change at the terminal.
+fn run_interactive_sync(
+    from: &SyncEndpoint,
+    to: &SyncEndpoint,
     params: &skrills_sync::SyncParams,
 ) -> Result<skrills_sync::SyncReport> {
     if from == to {
@@ -136,8 +215,12 @@ pub(crate) fn run_sync_with_adapters(
             from.as_str()
         ));
     }
-    // sync_between handles adapter creation for every platform.
-    skrills_sync::orchestrator::sync_between(from, to, params)
+    skrills_sync::orchestrator::sync_between_endpoints_with_decider(
+        from,
+        to,
+        params,
+        std::sync::Arc::new(PromptDecider),
+    )
 }
 
 /// The directory a CLI keeps its skills in, as `sync-status` counts them.
@@ -155,43 +238,57 @@ pub(crate) fn source_skill_root(from: Platform, home: &Path) -> PathBuf {
     }
 }
 
+/// The directory a configured adapter keeps its skills in, or `None` when its
+/// file configures no `skills_dir`. Built-ins resolve as [`source_skill_root`].
+pub(crate) fn endpoint_skill_root(from: &SyncEndpoint, home: &Path) -> Result<Option<PathBuf>> {
+    match from {
+        SyncEndpoint::Builtin(platform) => Ok(Some(source_skill_root(*platform, home))),
+        SyncEndpoint::Custom(name) => Ok(skrills_sync::load_adapter(name, home)?
+            .skills_dir()
+            .map(Path::to_path_buf)),
+    }
+}
+
 /// The skill roots `sync-all` reads from `from`, for validation.
 ///
 /// For Claude this is the user skills and the plugin cache under the mirror
 /// source, plus the marketplaces when `include_marketplace` is set: the same
 /// trees the skill sync walks. The rest of `~/.claude` (sessions, settings)
-/// holds no skills.
+/// holds no skills. A configured adapter contributes its `skills_dir`.
 fn source_validation_roots(
-    from: Platform,
+    from: &SyncEndpoint,
     home: &Path,
     include_marketplace: bool,
-) -> Vec<SkillRoot> {
-    let root = source_skill_root(from, home);
-    let mut dirs = match from {
-        Platform::Claude => vec![root.join("skills"), root.join("plugins/cache")],
-        _ => vec![root.clone()],
+) -> Result<Vec<SkillRoot>> {
+    let mut dirs: Vec<PathBuf> = match (from, endpoint_skill_root(from, home)?) {
+        (SyncEndpoint::Builtin(Platform::Claude), Some(root)) => {
+            let mut dirs = vec![root.join("skills"), root.join("plugins/cache")];
+            if include_marketplace {
+                dirs.push(root.join("plugins/marketplaces"));
+            }
+            dirs
+        }
+        (_, root) => root.into_iter().collect(),
     };
-    if from.is_claude() && include_marketplace {
-        dirs.push(root.join("plugins/marketplaces"));
-    }
-    dirs.into_iter()
+    Ok(dirs
+        .drain(..)
         .enumerate()
         .map(|(i, root)| SkillRoot {
             root,
             source: SkillSource::Extra(i as u32),
         })
-        .collect()
+        .collect())
 }
 
 /// The strictest validation target any of `targets` needs.
-fn validation_target_for(targets: &[Platform]) -> VT {
-    let codex = targets.contains(&Platform::Codex);
-    let copilot = targets.contains(&Platform::Copilot);
+fn validation_target_for(targets: &[SyncEndpoint]) -> VT {
+    let codex = targets.contains(&SyncEndpoint::Builtin(Platform::Codex));
+    let copilot = targets.contains(&SyncEndpoint::Builtin(Platform::Copilot));
     match (codex, copilot) {
         (true, true) => VT::All,
         (true, false) => VT::Codex,
         (false, true) => VT::Copilot,
-        // Claude and Cursor accept what Claude accepts.
+        // Claude, Cursor and configured adapters accept what Claude accepts.
         (false, false) => VT::Claude,
     }
 }
@@ -199,8 +296,8 @@ fn validation_target_for(targets: &[Platform]) -> VT {
 /// Options for `sync-all`, one field per flag.
 #[derive(Debug, Clone)]
 pub(crate) struct SyncAllArgs {
-    pub from: Platform,
-    pub to: Option<Platform>,
+    pub from: SyncEndpoint,
+    pub to: Option<SyncEndpoint>,
     pub dry_run: bool,
     pub skip_existing_commands: bool,
     pub include_marketplace: bool,
@@ -208,13 +305,19 @@ pub(crate) struct SyncAllArgs {
     pub validate: bool,
     pub autofix: bool,
     pub keep_versions: bool,
+    pub interactive: bool,
 }
 
 /// Validates (and with `--autofix`, repairs) the source skills before any
-/// target is touched. Returns an error, and so writes nothing, when an error
-/// remains.
-fn validate_sync_source(args: &SyncAllArgs, targets: &[Platform], home: &Path) -> Result<()> {
-    let roots = source_validation_roots(args.from, home, args.include_marketplace);
+/// target is touched, and returns the source skills autofix rewrote. When an
+/// error remains it returns an error before any target is written; the
+/// rewrites autofix already made stay, and are listed on stderr.
+fn validate_sync_source(
+    args: &SyncAllArgs,
+    targets: &[SyncEndpoint],
+    home: &Path,
+) -> Result<Vec<PathBuf>> {
+    let roots = source_validation_roots(&args.from, home, args.include_marketplace)?;
     let target = validation_target_for(targets);
     let mode = match (args.autofix, args.dry_run) {
         (false, _) => Autofix::Off,
@@ -240,14 +343,20 @@ fn validate_sync_source(args: &SyncAllArgs, targets: &[Platform], home: &Path) -
         for line in run.failure_lines() {
             eprintln!("{line}");
         }
+        let rewritten = if args.dry_run {
+            None
+        } else {
+            source_rewrite_note(&run.fixed)
+        };
         bail!(
-            "sync-all aborted before syncing any target: the {} source skills do not validate{}",
+            "sync-all aborted before syncing any target: the {} source skills do not validate{}{}",
             args.from.as_str(),
             if args.autofix {
                 " even after autofix"
             } else {
                 "; fix them or rerun with --autofix"
-            }
+            },
+            rewritten.map_or_else(String::new, |note| format!("\n{note}"))
         );
     }
     tracing::info!(
@@ -255,28 +364,64 @@ fn validate_sync_source(args: &SyncAllArgs, targets: &[Platform], home: &Path) -
         target = ?target,
         "source skills validated"
     );
-    Ok(())
+    Ok(if args.dry_run { Vec::new() } else { run.fixed })
 }
 
-/// Handle the `sync-all` command.
-///
+/// The line a failed `sync-all` adds when `--autofix` rewrote source skills:
+/// that happens before the snapshot starts, so `sync-rollback` cannot undo
+/// it, and the user should not believe the run left the source untouched.
+fn source_rewrite_note(autofixed: &[PathBuf]) -> Option<String> {
+    if autofixed.is_empty() {
+        return None;
+    }
+    let paths: Vec<String> = autofixed.iter().map(|p| p.display().to_string()).collect();
+    Some(format!(
+        "--autofix already rewrote {} source skill(s), which sync-rollback does not restore: {}",
+        autofixed.len(),
+        paths.join(", ")
+    ))
+}
+
 /// With `--validate` or `--autofix`, the source skill tree is validated for
 /// the strictest of the targets before the first target is synced, and any
 /// remaining error aborts the whole run with nothing written to any target.
 /// `--autofix` repairs the source first (or, under `--dry-run`, checks what
-/// the repair would leave) and then validates as `--validate` does.
+/// the repair would leave) and then validates as `--validate` does. The
+/// repair is outside the snapshot, so a failure later in the run names the
+/// rewritten source skills. A target whose sync phase failed fails the run.
 pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
-    let targets: Vec<Platform> = match args.to {
+    // Before validation: `--autofix` writes to the source, and "nothing was
+    // written" has to hold when the prompts cannot be answered.
+    let will_prompt = args.interactive && !args.dry_run;
+    {
+        use std::io::IsTerminal;
+        require_terminal(
+            will_prompt,
+            std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+        )?;
+    }
+    let targets: Vec<SyncEndpoint> = match args.to.clone() {
         Some(t) => vec![t],
         None => args.from.other_targets(),
     };
 
-    if args.validate || args.autofix {
-        validate_sync_source(&args, &targets, &home_dir()?)?;
-    }
+    let autofixed = if args.validate || args.autofix {
+        validate_sync_source(&args, &targets, &home_dir()?)?
+    } else {
+        Vec::new()
+    };
 
     let multi_target = targets.len() > 1;
-    let from = args.from;
+    let from = args.from.clone();
+
+    // One snapshot for the invocation, not one per target: a rollback then
+    // undoes the whole `sync-all` instead of only its last target. Each
+    // target's orchestrator joins this session.
+    let _snapshot = if args.dry_run {
+        None
+    } else {
+        skrills_sync::snapshot::begin_default()
+    };
 
     sync_each_target(&targets, |target| {
         if multi_target {
@@ -287,7 +432,7 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
             );
         }
 
-        let delivery = skrills_sync::skill_delivery(from, target);
+        let delivery = skrills_sync::skill_delivery_for(&from, target);
         let params = skrills_sync::SyncParams {
             from: Some(from.as_str().to_string()),
             dry_run: args.dry_run,
@@ -300,17 +445,26 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
             exclude_plugins: args.exclude_plugins.clone(),
             full_plugin_mirror: delivery.full_plugin_mirror,
             keep_versions: args.keep_versions,
+            interactive: args.interactive,
             ..Default::default()
         };
 
-        let report = run_sync_with_adapters(from, target, &params)?;
+        let report = if will_prompt {
+            run_interactive_sync(&from, target, &params)?
+        } else {
+            run_sync_with_adapters(from.clone(), target.clone(), &params)?
+        };
 
         tracing::info!(
             "{}{}",
             report.summary,
             skipped_commands_note(args.skip_existing_commands, &report)
         );
-        Ok(())
+        check_phases(&report)
+    })
+    .map_err(|e| match source_rewrite_note(&autofixed) {
+        Some(note) => anyhow!("{e:#}\n{note}"),
+        None => e,
     })?;
 
     if args.dry_run {
@@ -323,10 +477,19 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
 /// error naming which targets succeeded and which failed. Stopping at the
 /// first failure left later targets unsynced with no word on the earlier ones.
 fn sync_each_target(
-    targets: &[Platform],
-    mut sync: impl FnMut(Platform) -> Result<()>,
+    targets: &[SyncEndpoint],
+    mut sync: impl FnMut(&SyncEndpoint) -> Result<()>,
 ) -> Result<()> {
-    let outcomes: Vec<(Platform, Result<()>)> = targets.iter().map(|&t| (t, sync(t))).collect();
+    let mut outcomes: Vec<(&SyncEndpoint, Result<()>)> = Vec::new();
+    for target in targets {
+        let outcome = sync(target);
+        // A cancelled prompt ends the run, not just this target's questions.
+        let cancelled = outcome.as_ref().err().is_some_and(is_cancelled);
+        outcomes.push((target, outcome));
+        if cancelled {
+            break;
+        }
+    }
     if outcomes.iter().all(|(_, r)| r.is_ok()) {
         return Ok(());
     }
@@ -364,11 +527,87 @@ pub(crate) fn skipped_commands_note(
     }
 }
 
+/// Handle the `sync-rollback` command.
+pub(crate) fn handle_sync_rollback_command(
+    list: bool,
+    snapshot: Option<String>,
+    force: bool,
+) -> Result<()> {
+    let root = skrills_sync::snapshot::default_root()
+        .ok_or_else(|| anyhow!("no home directory, so ~/.skrills/snapshots cannot be located"))?;
+    if list {
+        print!(
+            "{}",
+            render_snapshot_list(&root, &skrills_sync::snapshot::list(&root)?)
+        );
+        return Ok(());
+    }
+    let report = if force {
+        skrills_sync::snapshot::force_rollback(&root, snapshot.as_deref())?
+    } else {
+        skrills_sync::snapshot::rollback(&root, snapshot.as_deref())?
+    };
+    println!(
+        "Rolled back {}: restored {} file(s), deleted {} file(s) and {} director(ies) the sync had created",
+        report.snapshot, report.restored, report.removed, report.dirs_removed
+    );
+    for path in &report.changed_since_sync {
+        println!(
+            "Changed since the sync, not restored (--force restores it): {}",
+            path.display()
+        );
+    }
+    for path in &report.not_restorable {
+        println!(
+            "Not restored (a special file or link this platform cannot recreate): {}",
+            path.display()
+        );
+    }
+    for dir in &report.left_in_place {
+        println!(
+            "Left in place (no longer empty, or replaced): {}",
+            dir.display()
+        );
+    }
+    for (path, reason) in &report.failed {
+        println!("Not restored, failed: {}: {reason}", path.display());
+    }
+    if !report.failed.is_empty() {
+        return Err(anyhow!(
+            "rollback of {} is incomplete: {} path(s) could not be restored; the rest above was done",
+            report.snapshot,
+            report.failed.len()
+        ));
+    }
+    Ok(())
+}
+
+/// The `sync-rollback --list` table, newest first.
+fn render_snapshot_list(root: &Path, snapshots: &[skrills_sync::snapshot::SnapshotInfo]) -> String {
+    if snapshots.is_empty() {
+        return format!("No snapshots in {}\n", root.display());
+    }
+    snapshots
+        .iter()
+        .map(|info| {
+            format!(
+                "{}  {}  {} files\n",
+                info.name,
+                skrills_sync::snapshot::display_time(info.taken_at),
+                info.entries
+            )
+        })
+        .collect()
+}
+
 /// Handle the `sync-status` command.
-pub(crate) fn handle_sync_status_command(from: Platform, to: Option<Platform>) -> Result<()> {
+pub(crate) fn handle_sync_status_command(
+    from: SyncEndpoint,
+    to: Option<SyncEndpoint>,
+) -> Result<()> {
     let target = to.unwrap_or_else(|| from.default_target());
     // Same rule as sync-all, so the preview matches the run.
-    let delivery = skrills_sync::skill_delivery(from, target);
+    let delivery = skrills_sync::skill_delivery_for(&from, &target);
 
     let params = skrills_sync::SyncParams {
         from: Some(from.as_str().to_string()),
@@ -387,7 +626,7 @@ pub(crate) fn handle_sync_status_command(from: Platform, to: Option<Platform>) -
         "sync direction"
     );
 
-    let report = run_sync_with_adapters(from, target, &params)?;
+    let report = run_sync_with_adapters(from.clone(), target, &params)?;
 
     tracing::info!(
         commands = report.commands.written,
@@ -396,8 +635,8 @@ pub(crate) fn handle_sync_status_command(from: Platform, to: Option<Platform>) -
         "pending changes"
     );
 
-    let source_root = source_skill_root(from, &home_dir()?);
-    if source_root.exists() {
+    let source_root = endpoint_skill_root(&from, &home_dir()?)?;
+    if let Some(source_root) = source_root.filter(|root| root.exists()) {
         // A walk error is counted and reported rather than dropped, so an
         // unreadable subdirectory does not make its skills look absent.
         let mut walk_errors: u64 = 0;
@@ -462,27 +701,47 @@ mod tests {
         }
     }
 
+    fn codex() -> SyncEndpoint {
+        SyncEndpoint::Builtin(Platform::Codex)
+    }
+
+    fn copilot() -> SyncEndpoint {
+        SyncEndpoint::Builtin(Platform::Copilot)
+    }
+
+    fn cursor() -> SyncEndpoint {
+        SyncEndpoint::Builtin(Platform::Cursor)
+    }
+
+    #[test]
+    fn a_cancelled_prompt_stops_the_remaining_targets() {
+        let mut attempted = Vec::new();
+
+        let err = sync_each_target(&[codex(), copilot()], |target| {
+            attempted.push(target.clone());
+            Err(skrills_sync::SyncError::InteractiveAborted.into())
+        })
+        .unwrap_err();
+
+        assert_eq!(attempted, vec![codex()]);
+        assert!(format!("{err}").contains("codex: failed"), "{err}");
+    }
+
     #[test]
     fn sync_all_continues_past_a_failed_target_and_names_each_outcome() {
         let mut attempted = Vec::new();
 
-        let err = sync_each_target(
-            &[Platform::Codex, Platform::Copilot, Platform::Cursor],
-            |target| {
-                attempted.push(target);
-                if target == Platform::Copilot {
-                    bail!("copilot dir is not writable")
-                }
-                Ok(())
-            },
-        )
+        let err = sync_each_target(&[codex(), copilot(), cursor()], |target| {
+            attempted.push(target.clone());
+            if *target == copilot() {
+                bail!("copilot dir is not writable")
+            }
+            Ok(())
+        })
         .unwrap_err()
         .to_string();
 
-        assert_eq!(
-            attempted,
-            vec![Platform::Codex, Platform::Copilot, Platform::Cursor]
-        );
+        assert_eq!(attempted, vec![codex(), copilot(), cursor()]);
         assert!(err.contains("codex: ok"), "{err}");
         assert!(
             err.contains("copilot: failed: copilot dir is not writable"),
@@ -596,5 +855,186 @@ mod tests {
         );
         assert!(home.join(".codex/AGENTS.md").exists());
         Ok(())
+    }
+
+    const SKILLS_AND_COMMANDS: &str = "name = \"windsurf\"\nroot = \"~/.windsurf\"\nskills_dir = \"skills\"\ncommands_dir = \"workflows\"\n";
+
+    fn windsurf() -> SyncEndpoint {
+        SyncEndpoint::Custom("windsurf".to_string())
+    }
+
+    fn sync_all_args(from: SyncEndpoint, to: Option<SyncEndpoint>) -> SyncAllArgs {
+        SyncAllArgs {
+            from,
+            to,
+            dry_run: false,
+            skip_existing_commands: false,
+            include_marketplace: false,
+            exclude_plugins: Vec::new(),
+            validate: false,
+            autofix: false,
+            keep_versions: false,
+            interactive: false,
+        }
+    }
+
+    fn put(path: &std::path::Path, body: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    /// Seeds a Claude skill and command, and the windsurf adapter file, under `home`.
+    fn seed_home_with_windsurf(home: &std::path::Path) {
+        put(
+            &home.join(".claude/skills/alpha/SKILL.md"),
+            "---\nname: alpha\ndescription: An example skill.\n---\nBody\n",
+        );
+        put(&home.join(".claude/commands/hello.md"), "# Hello\n");
+        put(
+            &skrills_sync::adapters_dir(home).join("windsurf.toml"),
+            SKILLS_AND_COMMANDS,
+        );
+    }
+
+    #[test]
+    fn a_path_without_parent_components_is_kept_as_given() {
+        assert_eq!(
+            resolve_parent_components(Path::new("docs/AGENTS.md")),
+            PathBuf::from("docs/AGENTS.md")
+        );
+    }
+
+    #[test]
+    fn parent_components_resolve_through_the_existing_parent() -> Result<()> {
+        let tmp = tempdir()?;
+        std::fs::create_dir(tmp.path().join("work"))?;
+        let resolved = resolve_parent_components(&tmp.path().join("work/../AGENTS.md"));
+        assert_eq!(resolved, tmp.path().canonicalize()?.join("AGENTS.md"));
+        Ok(())
+    }
+
+    #[test]
+    fn parent_components_under_a_missing_parent_are_kept_as_given() -> Result<()> {
+        let tmp = tempdir()?;
+        let missing = tmp.path().join("gone/../AGENTS.md");
+        assert_eq!(resolve_parent_components(&missing), missing);
+        Ok(())
+    }
+
+    #[test]
+    fn sync_all_into_a_custom_adapter_writes_skills_and_commands_and_rolls_back() -> Result<()> {
+        let _guard = skrills_test_utils::env_guard();
+        let tmp = tempdir()?;
+        let home = tmp.path();
+        let _home_guard = skrills_test_utils::set_env_var("HOME", Some(home.to_str().unwrap()));
+        seed_home_with_windsurf(home);
+
+        handle_sync_all_command(sync_all_args(
+            SyncEndpoint::Builtin(Platform::Claude),
+            Some(windsurf()),
+        ))?;
+
+        let root = home.join(".windsurf");
+        assert!(root.join("skills/alpha/SKILL.md").is_file());
+        assert_eq!(
+            std::fs::read_to_string(root.join("workflows/hello.md"))?,
+            "# Hello\n"
+        );
+
+        handle_sync_rollback_command(false, None, false)?;
+
+        assert!(!root.join("skills/alpha/SKILL.md").exists());
+        assert!(!root.join("workflows/hello.md").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn sync_all_to_an_unknown_name_lists_the_built_ins_and_the_configured_adapters() -> Result<()> {
+        let _guard = skrills_test_utils::env_guard();
+        let tmp = tempdir()?;
+        let home = tmp.path();
+        let _home_guard = skrills_test_utils::set_env_var("HOME", Some(home.to_str().unwrap()));
+        seed_home_with_windsurf(home);
+
+        let err = handle_sync_all_command(sync_all_args(
+            SyncEndpoint::Builtin(Platform::Claude),
+            Some(SyncEndpoint::Custom("nope".to_string())),
+        ))
+        .unwrap_err();
+
+        let shown = format!("{err:#}");
+        for expected in ["nope", "claude", "codex", "copilot", "cursor", "windsurf"] {
+            assert!(shown.contains(expected), "{expected} missing: {shown}");
+        }
+        assert!(!home.join(".windsurf").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn sync_all_from_a_custom_adapter_validates_its_skills_and_syncs_them() -> Result<()> {
+        let _guard = skrills_test_utils::env_guard();
+        let tmp = tempdir()?;
+        let home = tmp.path();
+        let _home_guard = skrills_test_utils::set_env_var("HOME", Some(home.to_str().unwrap()));
+        seed_home_with_windsurf(home);
+        put(
+            &home.join(".windsurf/skills/beta/SKILL.md"),
+            "---\nname: beta\ndescription: From windsurf.\n---\nBody\n",
+        );
+        let mut args = sync_all_args(windsurf(), Some(SyncEndpoint::Builtin(Platform::Claude)));
+        args.validate = true;
+
+        handle_sync_all_command(args)?;
+
+        assert!(home.join(".claude/skills/beta/SKILL.md").is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn sync_all_from_a_custom_adapter_aborts_when_its_skills_fail_validation() -> Result<()> {
+        let _guard = skrills_test_utils::env_guard();
+        let tmp = tempdir()?;
+        let home = tmp.path();
+        let _home_guard = skrills_test_utils::set_env_var("HOME", Some(home.to_str().unwrap()));
+        seed_home_with_windsurf(home);
+        put(
+            &home.join(".windsurf/skills/broken/SKILL.md"),
+            "no frontmatter at all\n",
+        );
+        let mut args = sync_all_args(windsurf(), Some(SyncEndpoint::Builtin(Platform::Codex)));
+        args.validate = true;
+
+        let err = handle_sync_all_command(args).unwrap_err();
+
+        assert!(err.to_string().contains("do not validate"), "{err:#}");
+        assert!(!home.join(".agents/skills/broken").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn sync_status_reports_for_a_custom_endpoint_with_and_without_a_skills_dir() -> Result<()> {
+        let _guard = skrills_test_utils::env_guard();
+        let tmp = tempdir()?;
+        let home = tmp.path();
+        let _home_guard = skrills_test_utils::set_env_var("HOME", Some(home.to_str().unwrap()));
+        seed_home_with_windsurf(home);
+        put(
+            &skrills_sync::adapters_dir(home).join("bare.toml"),
+            "name = \"bare\"\nroot = \"~/.bare\"\n",
+        );
+
+        handle_sync_status_command(windsurf(), None)?;
+        handle_sync_status_command(
+            SyncEndpoint::Custom("bare".to_string()),
+            Some(SyncEndpoint::Builtin(Platform::Claude)),
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn the_strictest_validation_target_ignores_custom_endpoints() {
+        assert_eq!(validation_target_for(&[windsurf(), codex()]), VT::Codex);
+        assert_eq!(validation_target_for(&[windsurf()]), VT::Claude);
     }
 }

@@ -2,12 +2,16 @@
 
 use crate::adapters::AgentAdapter;
 use crate::common::Command;
+use crate::conflict::Ledger;
+use crate::decision::{DecisionScope, ItemDecider, ItemKind};
+use crate::interactive::{changed_names, file_key, DecisionBook, Gate, Resolved};
 use crate::models::transform_model;
 use crate::report::{SkipReason, SyncReport, WriteReport};
 use crate::Result;
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// Parameters for a sync operation.
 ///
@@ -24,10 +28,11 @@ pub struct SyncParams {
     pub from: Option<String>,
     /// Perform dry run (preview only)
     pub dry_run: bool,
-    /// Skip confirmation prompts and override `skip_existing_*` flags.
+    /// Override the `skip_existing_*` flags.
     ///
     /// When `force` is true, `skip_existing_commands` and `skip_existing_instructions`
-    /// are ignored, all items are written regardless.
+    /// are ignored and existing items are overwritten. It does not affect
+    /// `interactive`: an interactive sync still asks about every change.
     pub force: bool,
     /// Sync skills
     #[serde(default = "default_true")]
@@ -62,9 +67,11 @@ pub struct SyncParams {
     /// Sync plugin assets (scripts, binaries, libraries that skills/hooks depend on)
     #[serde(default = "default_true")]
     pub sync_plugin_assets: bool,
-    /// Reserved for a per-file preview-and-confirm mode that is not
-    /// implemented. [`SyncOrchestrator::sync`] refuses to run when it is set,
-    /// rather than writing without the confirmation it promises.
+    /// Ask before writing each new or changed item and write only the ones
+    /// accepted. Needs an [`ItemDecider`] on the orchestrator
+    /// ([`SyncOrchestrator::with_decider`]); without one, and not a dry run,
+    /// [`SyncOrchestrator::sync`] refuses rather than write unasked. A dry
+    /// run writes nothing, so it previews and never asks.
     #[serde(default)]
     pub interactive: bool,
     /// Exclude skills and assets from these plugins (e.g., ["phantom", "scry"]).
@@ -210,26 +217,35 @@ pub(crate) fn preview_skill_items(
     })
 }
 
+/// Whether the target copy `held` already carries `item`'s bytes and every
+/// one of its modules.
+pub(crate) fn is_unchanged(held: &Command, item: &Command) -> bool {
+    held.content == item.content
+        && item.modules.iter().all(|m| {
+            held.modules
+                .iter()
+                .any(|tm| tm.relative_path == m.relative_path && tm.content == m.content)
+        })
+}
+
 fn preview_items_keyed(
     items: &[Command],
     read_target: impl FnOnce() -> Result<Vec<Command>>,
     key: impl Fn(&Command) -> String,
 ) -> WriteReport {
+    let mut report = WriteReport::default();
     let target = read_target().unwrap_or_else(|e| {
-        tracing::debug!(error = %format!("{e:#}"), "Dry run could not read the target; counting every item");
+        tracing::warn!(error = %format!("{e:#}"), "Dry run could not read the target; counting every item");
+        report.warnings.push(format!(
+            "The preview could not read the target, so every item counts as a write: {e:#}"
+        ));
         Vec::new()
     });
     let by_key: HashMap<String, &Command> = target.iter().map(|c| (key(c), c)).collect();
-    let mut report = WriteReport::default();
     for item in items {
-        let unchanged = by_key.get(&key(item)).is_some_and(|t| {
-            t.content == item.content
-                && item.modules.iter().all(|m| {
-                    t.modules
-                        .iter()
-                        .any(|tm| tm.relative_path == m.relative_path && tm.content == m.content)
-                })
-        });
+        let unchanged = by_key
+            .get(&key(item))
+            .is_some_and(|t| is_unchanged(t, item));
         if unchanged {
             report.skipped.push(SkipReason::Unchanged {
                 item: item.name.clone(),
@@ -319,17 +335,20 @@ fn target_writes(
     supported
 }
 
-/// Runs one sync phase into its slot of the report.
+/// Runs the phase for `kind` into its slot of the report.
 ///
 /// A failure is written into the slot as a warning and marks the run failed,
-/// and the remaining phases still run. The kill switch is the exception: once
+/// and the remaining phases still run. The conflicts it found are forgotten,
+/// since its write did not happen. The kill switch is the exception: once
 /// it is engaged no phase may write, so its error ends the sync.
 fn run_phase(
-    name: &str,
+    kind: ItemKind,
+    ledger: &Ledger,
     slot: &mut WriteReport,
     failed: &mut bool,
     phase: impl FnOnce(&mut WriteReport) -> Result<()>,
 ) -> Result<()> {
+    let name = kind.plural();
     let Err(e) = phase(slot) else {
         return Ok(());
     };
@@ -338,12 +357,14 @@ fn run_phase(
         Some(
             crate::error::SyncError::TokenBudgetExceeded { .. }
                 | crate::error::SyncError::KillSwitchEngaged
+                | crate::error::SyncError::InteractiveAborted
         )
     ) {
         return Err(e);
     }
     tracing::error!(phase = name, error = %format!("{e:#}"), "Sync phase failed");
     slot.warnings.push(format!("{name} sync failed: {e:#}"));
+    ledger.forget_found(kind);
     *failed = true;
     Ok(())
 }
@@ -371,7 +392,7 @@ fn without_excluded_plugins(
 /// `.`, spaces and `/` or kebab-case, so `my.cmd`, `my-cmd` and `mycmd` can all
 /// land in one file. Comparing these keys errs towards "already exists", which
 /// in skip-existing mode means keeping the target copy.
-fn existing_key(name: &str) -> String {
+pub(crate) fn existing_key(name: &str) -> String {
     let key: String = name
         .chars()
         .filter(|c| c.is_alphanumeric())
@@ -384,11 +405,24 @@ fn existing_key(name: &str) -> String {
     }
 }
 
+/// The warning for a target that could not be read to look for conflicts.
+fn unchecked_conflicts(kind: ItemKind, error: &anyhow::Error) -> String {
+    tracing::warn!(error = %format!("{error:#}"), "Could not read the target to look for conflicts");
+    format!(
+        "Conflicts were not checked for {}: could not read the target: {error:#}",
+        kind.plural()
+    )
+}
+
 /// Lock file in a target's config root that serializes syncs into it.
 const SYNC_LOCK_FILE: &str = ".skrills-sync.lock";
 
 /// Waits for and takes the advisory lock on `root`'s [`SYNC_LOCK_FILE`]. The
 /// lock is released when the returned file is dropped.
+///
+/// Opens the file directly, not through the recording helpers, and the
+/// raw-mutation test allows it by name: the lock is not user content, and a
+/// rollback that removed it could pull it from under a running sync.
 fn lock_target(root: &std::path::Path) -> Result<std::fs::File> {
     std::fs::create_dir_all(root)
         .with_context(|| format!("Failed to create {}", root.display()))?;
@@ -411,6 +445,18 @@ pub struct SyncOrchestrator<S: AgentAdapter, T: AgentAdapter> {
     /// Where a `skrills cold-window` process in another process records an
     /// engaged kill switch; see [`crate::kill_switch_marker`].
     kill_switch_marker: Option<std::path::PathBuf>,
+    /// Where each sync's pre-write snapshot goes; `None` takes none.
+    /// [`SyncOrchestrator::new`] starts without one, so an orchestrator built
+    /// by hand writes nothing outside the target unless asked; the
+    /// [`sync_between`] family opts in to `~/.skrills/snapshots`.
+    snapshot_root: Option<std::path::PathBuf>,
+    /// Answers the per-item questions of an interactive sync.
+    decider: Option<Arc<dyn ItemDecider>>,
+    /// Where the per-target baselines and the resolution log live; `None`
+    /// detects no conflicts and records nothing. [`SyncOrchestrator::new`]
+    /// starts without one, for the reason `snapshot_root` does; the
+    /// [`sync_between`] family opts in to `~/.skrills/sync-state`.
+    state_root: Option<std::path::PathBuf>,
 }
 
 impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
@@ -422,7 +468,32 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             source,
             target,
             kill_switch_marker: crate::kill_switch_marker::marker_path(),
+            snapshot_root: None,
+            decider: None,
+            state_root: None,
         }
+    }
+
+    /// Keeps the conflict baseline and resolution log under `root`. `None`
+    /// keeps none.
+    #[must_use]
+    pub fn with_state_root(mut self, root: Option<std::path::PathBuf>) -> Self {
+        self.state_root = root;
+        self
+    }
+
+    /// [`Self::with_state_root`] at the per-user `~/.skrills/sync-state`.
+    #[must_use]
+    pub fn with_default_sync_state(self) -> Self {
+        self.with_state_root(crate::conflict::default_root())
+    }
+
+    /// Lets `params.interactive` ask `decider` about each new or changed
+    /// item before anything is written.
+    #[must_use]
+    pub fn with_decider(mut self, decider: Arc<dyn ItemDecider>) -> Self {
+        self.decider = Some(decider);
+        self
     }
 
     /// Consults the kill-switch marker at `path` instead of the per-user one;
@@ -433,18 +504,40 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         self
     }
 
+    /// Snapshots what each non-dry-run sync overwrites or deletes under
+    /// `root`, for `skrills sync-rollback`; `None` takes no snapshots.
+    #[must_use]
+    pub fn with_snapshot_root(mut self, root: Option<std::path::PathBuf>) -> Self {
+        self.snapshot_root = root;
+        self
+    }
+
+    /// [`Self::with_snapshot_root`] at [`crate::snapshot::default_root`].
+    #[must_use]
+    pub fn with_default_snapshots(self) -> Self {
+        self.with_snapshot_root(crate::snapshot::default_root())
+    }
+
     /// Performs the sync operation.
     ///
     /// Logs [`crate::adapters::traits::FieldSupport`] mismatches for observability but always delegates
     /// to the target adapter, adapters may implement creative mappings for
     /// fields they don't "natively" support (e.g., Copilot maps commands to
     /// prompts, Codex converts agents to skills).
+    ///
+    /// With `params.interactive`, every question is asked before the first
+    /// write, so cancelling writes none of the target's items. The target's
+    /// config root and its lock file may already have been created.
     pub fn sync(&self, params: &SyncParams) -> Result<SyncReport> {
-        if params.interactive {
-            // Nothing implements the per-file preview and confirmation this
-            // flag promises; running anyway would write without asking.
-            bail!("interactive sync is not implemented; preview with dry_run instead");
-        }
+        // A dry run writes nothing, so there is nothing to confirm.
+        let decider = if params.interactive && !params.dry_run {
+            let Some(decider) = self.decider.as_deref() else {
+                bail!("interactive sync needs an item decider; nothing was written");
+            };
+            Some(decider)
+        } else {
+            None
+        };
 
         // A `skrills cold-window` in another process may have engaged its
         // kill switch (FR12). A dry run writes nothing, so it still runs.
@@ -461,6 +554,54 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             Some(lock_target(&self.target.config_root())?)
         };
 
+        // After the checks above so a refused sync leaves no snapshot, and
+        // after the lock so the prior state is read once no other sync can
+        // change it. A caller that already holds a session, such as
+        // `sync-all` covering every target, gets one snapshot for the lot.
+        let _snapshot = match (&self.snapshot_root, params.dry_run) {
+            (Some(root), false) => crate::snapshot::begin_unless_active(root),
+            _ => None,
+        };
+        // No session now means none was running and none could be started.
+        let unsnapshotted = match (&self.snapshot_root, params.dry_run) {
+            (Some(root), false) if !crate::write_session::is_active() => Some(format!(
+                "This sync was not snapshotted (no snapshot could be started under {}), so \
+                 `skrills sync-rollback` cannot undo it",
+                root.display()
+            )),
+            _ => None,
+        };
+
+        // Read once, before any phase writes, so every pass compares against
+        // the state the last sync left.
+        let ledger = Ledger::load(
+            self.state_root.as_deref(),
+            crate::conflict::target_key(self.target.name(), &self.target.config_root()),
+        );
+        let notes: Vec<&str> = unsnapshotted
+            .as_deref()
+            .into_iter()
+            .chain(ledger.warning())
+            .collect();
+        let Some(decider) = decider else {
+            return self.run_phases(params, &Gate::off(), &ledger, &notes);
+        };
+        let book = DecisionBook::default();
+        drop(self.run_phases(params, &Gate::collect(decider, &book), &ledger, &notes)?);
+        self.run_phases(params, &Gate::apply(&book), &ledger, &notes)
+    }
+
+    /// Runs every phase once. `gate` decides what each writer is given: all of
+    /// it when off, nothing (the questions are only asked) when collecting,
+    /// the accepted items when applying. `notes` are warnings about the run
+    /// as a whole, such as a snapshot that could not be started.
+    fn run_phases(
+        &self,
+        params: &SyncParams,
+        gate: &Gate,
+        ledger: &Ledger,
+        notes: &[&str],
+    ) -> Result<SyncReport> {
         let mut report = SyncReport::new();
         let target_support = self.target.write_support();
         let source_support = self.source.read_support();
@@ -490,33 +631,58 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 &mut report.commands,
             )
         {
-            run_phase("commands", &mut report.commands, &mut failed, |slot| {
-                let commands = self.source.read_commands(params.include_marketplace)?;
-                let commands = without_excluded_plugins(commands, params);
-                let (commands, cmd_dups) = dedup_by_name(
-                    commands,
-                    "command",
-                    |c| c.name.clone(),
-                    |c| c.source_path.display().to_string(),
-                );
-                *slot = sync_items(
-                    commands,
-                    params.force,
-                    params.dry_run,
-                    params.skip_existing_commands,
+            run_phase(
+                ItemKind::Command,
+                ledger,
+                &mut report.commands,
+                &mut failed,
+                |slot| {
+                    let commands = self.source.read_commands(params.include_marketplace)?;
+                    let commands = without_excluded_plugins(commands, params);
+                    let (commands, cmd_dups) = dedup_by_name(
+                        commands,
+                        "command",
+                        |c| c.name.clone(),
+                        |c| c.source_path.display().to_string(),
+                    );
                     // Only the writer's own directory: plugin-cache and
                     // marketplace commands are never overwritten, so they
                     // cannot make a command "already exist".
-                    || {
+                    let read_existing = || -> Result<Vec<Command>> {
                         let mut existing = self.target.read_commands(false)?;
                         existing.retain(|c| c.plugin_origin.is_none());
                         Ok(existing)
-                    },
-                    |items| self.target.write_commands(items),
-                )?;
-                slot.duplicates = cmd_dups;
-                Ok(())
-            })?;
+                    };
+                    // A skipped existing command is never overwritten, so it
+                    // cannot be a conflict either.
+                    let unchecked = (params.dry_run
+                        && (params.force || !params.skip_existing_commands))
+                        .then(|| {
+                            self.scan_files(ledger, ItemKind::Command, &commands, read_existing)
+                        })
+                        .flatten();
+                    *slot = sync_items(
+                        commands,
+                        params.force,
+                        params.dry_run,
+                        params.skip_existing_commands,
+                        read_existing,
+                        |items| {
+                            self.write_files_gated(
+                                gate,
+                                ledger,
+                                ItemKind::Command,
+                                items.to_vec(),
+                                read_existing,
+                                |kept| self.target.write_commands(kept),
+                            )
+                        },
+                    )?;
+                    slot.warnings.extend(unchecked);
+                    slot.duplicates = cmd_dups;
+                    Ok(())
+                },
+            )?;
         }
 
         // Sync skills
@@ -529,62 +695,83 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 &mut report.skills,
             )
         {
-            run_phase("skills", &mut report.skills, &mut failed, |slot| {
-                let mut skills = self.source.read_skills()?;
-                let mut in_mirror_names = Vec::new();
-                if mirror_carries_plugin_skills {
-                    let before = skills.len();
-                    in_mirror_names = skills
-                        .iter()
-                        .filter(|s| {
-                            s.plugin_origin
-                                .as_ref()
-                                .is_some_and(|o| !params.is_plugin_excluded(&o.plugin_name))
-                        })
-                        .map(crate::adapters::utils::skill_folder_name)
-                        .collect();
-                    skills.retain(|s| s.plugin_origin.is_none());
-                    let in_mirror = before - skills.len();
-                    if in_mirror > 0 {
-                        tracing::debug!(
+            run_phase(
+                ItemKind::Skill,
+                ledger,
+                &mut report.skills,
+                &mut failed,
+                |slot| {
+                    let mut skills = self.source.read_skills()?;
+                    let mut in_mirror_names = Vec::new();
+                    if mirror_carries_plugin_skills {
+                        let before = skills.len();
+                        in_mirror_names = skills
+                            .iter()
+                            .filter(|s| {
+                                s.plugin_origin
+                                    .as_ref()
+                                    .is_some_and(|o| !params.is_plugin_excluded(&o.plugin_name))
+                            })
+                            .map(crate::adapters::utils::skill_folder_name)
+                            .collect();
+                        skills.retain(|s| s.plugin_origin.is_none());
+                        let in_mirror = before - skills.len();
+                        if in_mirror > 0 {
+                            tracing::debug!(
                             in_mirror,
                             "Plugin skills ride the plugin mirror; not copying them flat as well"
                         );
+                        }
                     }
-                }
-                let before = skills.len();
-                let skills = without_excluded_plugins(skills, params);
-                let excluded_count = before - skills.len();
-                if excluded_count > 0 {
-                    tracing::info!(
-                        excluded = excluded_count,
-                        "Excluded skills from filtered plugins"
+                    let before = skills.len();
+                    let skills = without_excluded_plugins(skills, params);
+                    let excluded_count = before - skills.len();
+                    if excluded_count > 0 {
+                        tracing::info!(
+                            excluded = excluded_count,
+                            "Excluded skills from filtered plugins"
+                        );
+                    }
+                    let (skills, skill_dups) = dedup_by_name(
+                        skills,
+                        "skill",
+                        |s| s.name.clone(),
+                        |s| s.source_path.display().to_string(),
                     );
-                }
-                let (skills, skill_dups) = dedup_by_name(
-                    skills,
-                    "skill",
-                    |s| s.name.clone(),
-                    |s| s.source_path.display().to_string(),
-                );
-                if !params.dry_run {
-                    *slot = self.target.write_skills(&skills)?;
-                } else {
-                    *slot = self.target.preview_skills(&skills)?;
-                }
-                if !params.keep_versions && !in_mirror_names.is_empty() {
-                    let removed = self
-                        .target
-                        .remove_flat_skill_copies(&in_mirror_names, params.dry_run)?;
-                    slot.warnings.extend(removed.warnings);
-                }
-                slot.duplicates = skill_dups;
-                // Report excluded plugins as skipped
-                for _ in 0..excluded_count {
-                    slot.skipped.push(SkipReason::PluginExcluded);
-                }
-                Ok(())
-            })?;
+                    if !params.dry_run {
+                        *slot = self.write_files_gated(
+                            gate,
+                            ledger,
+                            ItemKind::Skill,
+                            skills,
+                            || self.target.read_skills(),
+                            |kept| self.target.write_skills(kept),
+                        )?;
+                    } else {
+                        let unchecked = self.scan_files(ledger, ItemKind::Skill, &skills, || {
+                            self.target.read_skills()
+                        });
+                        *slot = self.target.preview_skills(&skills)?;
+                        slot.warnings.extend(unchecked);
+                    }
+                    // The flat copies go only because the plugin mirror carries
+                    // those skills; a rejected mirror leaves them as the only copy.
+                    let mirror_rejected = gate.category_rejected(ItemKind::PluginAssets);
+                    if !params.keep_versions && !in_mirror_names.is_empty() && !mirror_rejected {
+                        let removed = self.target.remove_flat_skill_copies(
+                            &in_mirror_names,
+                            params.dry_run || gate.is_collecting(),
+                        )?;
+                        slot.warnings.extend(removed.warnings);
+                    }
+                    slot.duplicates = skill_dups;
+                    // Report excluded plugins as skipped
+                    for _ in 0..excluded_count {
+                        slot.skipped.push(SkipReason::PluginExcluded);
+                    }
+                    Ok(())
+                },
+            )?;
         }
 
         // Sync MCP servers
@@ -598,16 +785,20 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             )
         {
             run_phase(
-                "MCP servers",
+                ItemKind::McpServer,
+                ledger,
                 &mut report.mcp_servers,
                 &mut failed,
                 |slot| {
                     let servers = self.source.read_mcp_servers()?;
                     if !params.dry_run {
-                        *slot = self.target.write_mcp_servers(&servers)?;
+                        *slot = self.write_servers_gated(gate, ledger, servers)?;
                     } else {
                         // A target the real run would refuse fails the preview too.
                         let target = self.target.read_mcp_servers()?;
+                        for (name, server) in &servers {
+                            ledger.server_conflict(name, server, target.get(name));
+                        }
                         *slot = preview_servers(&servers, &target);
                     }
                     Ok(())
@@ -626,7 +817,8 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             )
         {
             run_phase(
-                "preferences",
+                ItemKind::Preferences,
+                ledger,
                 &mut report.preferences,
                 &mut failed,
                 |slot| {
@@ -656,7 +848,25 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                     }
 
                     if !params.dry_run {
-                        *slot = self.target.write_preferences(&prefs)?;
+                        let decision = match prefs.model.as_deref() {
+                            Some(model) if !gate.is_off() => {
+                                let current = self.target.read_preferences()?.model;
+                                gate.decide_model(current.as_deref(), model)?
+                            }
+                            _ => Some(crate::decision::Decision::Accept),
+                        };
+                        let item = "model".to_string();
+                        match decision {
+                            // Asked above; the applying pass writes.
+                            _ if gate.is_collecting() => {}
+                            Some(crate::decision::Decision::Accept) => {
+                                *slot = self.target.write_preferences(&prefs)?;
+                            }
+                            Some(crate::decision::Decision::Reject) => {
+                                slot.skipped.push(SkipReason::Declined { item });
+                            }
+                            None => slot.skipped.push(SkipReason::Unconfirmed { item }),
+                        }
                     } else if let Some(model) = &prefs.model {
                         let current = self.target.read_preferences().ok().and_then(|p| p.model);
                         if current.as_ref() == Some(model) {
@@ -683,15 +893,32 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 &mut report.agents,
             )
         {
-            run_phase("agents", &mut report.agents, &mut failed, |slot| {
-                let agents = without_excluded_plugins(self.source.read_agents()?, params);
-                if !params.dry_run {
-                    *slot = self.target.write_agents(&agents)?;
-                } else {
-                    *slot = preview_items(&agents, || self.target.read_agents());
-                }
-                Ok(())
-            })?;
+            run_phase(
+                ItemKind::Agent,
+                ledger,
+                &mut report.agents,
+                &mut failed,
+                |slot| {
+                    let agents = without_excluded_plugins(self.source.read_agents()?, params);
+                    if !params.dry_run {
+                        *slot = self.write_files_gated(
+                            gate,
+                            ledger,
+                            ItemKind::Agent,
+                            agents,
+                            || self.target.read_agents(),
+                            |kept| self.target.write_agents(kept),
+                        )?;
+                    } else {
+                        let unchecked = self.scan_files(ledger, ItemKind::Agent, &agents, || {
+                            self.target.read_agents()
+                        });
+                        *slot = preview_items(&agents, || self.target.read_agents());
+                        slot.warnings.extend(unchecked);
+                    }
+                    Ok(())
+                },
+            )?;
         }
 
         // Sync hooks (lifecycle events). Cursor reads Claude's own hooks from
@@ -715,15 +942,32 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 &mut report.hooks,
             )
         {
-            run_phase("hooks", &mut report.hooks, &mut failed, |slot| {
-                let hooks = without_excluded_plugins(self.source.read_hooks()?, params);
-                if !params.dry_run {
-                    *slot = self.target.write_hooks(&hooks)?;
-                } else {
-                    *slot = preview_items(&hooks, || self.target.read_hooks());
-                }
-                Ok(())
-            })?;
+            run_phase(
+                ItemKind::Hook,
+                ledger,
+                &mut report.hooks,
+                &mut failed,
+                |slot| {
+                    let hooks = without_excluded_plugins(self.source.read_hooks()?, params);
+                    if !params.dry_run {
+                        *slot = self.write_files_gated(
+                            gate,
+                            ledger,
+                            ItemKind::Hook,
+                            hooks,
+                            || self.target.read_hooks(),
+                            |kept| self.target.write_hooks(kept),
+                        )?;
+                    } else {
+                        let unchecked = self.scan_files(ledger, ItemKind::Hook, &hooks, || {
+                            self.target.read_hooks()
+                        });
+                        *slot = preview_items(&hooks, || self.target.read_hooks());
+                        slot.warnings.extend(unchecked);
+                    }
+                    Ok(())
+                },
+            )?;
         }
 
         // Sync instructions (CLAUDE.md → *.instructions.md / .cursor/rules/*.mdc)
@@ -737,19 +981,42 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
             )
         {
             run_phase(
-                "instructions",
+                ItemKind::Instruction,
+                ledger,
                 &mut report.instructions,
                 &mut failed,
                 |slot| {
                     let instructions = self.source.read_instructions()?;
+                    let read_existing = || self.target.read_instructions();
+                    let unchecked = (params.dry_run
+                        && (params.force || !params.skip_existing_instructions))
+                        .then(|| {
+                            self.scan_files(
+                                ledger,
+                                ItemKind::Instruction,
+                                &instructions,
+                                read_existing,
+                            )
+                        })
+                        .flatten();
                     *slot = sync_items(
                         instructions,
                         params.force,
                         params.dry_run,
                         params.skip_existing_instructions,
-                        || self.target.read_instructions(),
-                        |items| self.target.write_instructions(items),
+                        read_existing,
+                        |items| {
+                            self.write_files_gated(
+                                gate,
+                                ledger,
+                                ItemKind::Instruction,
+                                items.to_vec(),
+                                read_existing,
+                                |kept| self.target.write_instructions(kept),
+                            )
+                        },
                     )?;
+                    slot.warnings.extend(unchecked);
                     Ok(())
                 },
             )?;
@@ -793,7 +1060,8 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                 report.plugin_assets.skipped.push(reason);
             } else {
                 run_phase(
-                    "plugin assets",
+                    ItemKind::PluginAssets,
+                    ledger,
                     &mut report.plugin_assets,
                     &mut failed,
                     |slot| {
@@ -809,7 +1077,41 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
                             let options = crate::adapters::MirrorOptions {
                                 keep_versions: params.keep_versions,
                             };
-                            *slot = self.target.write_plugin_assets_with(&assets, &options)?;
+                            // The mirror prunes as well as writes and has no
+                            // per-file round trip, so it is one question. It
+                            // shows only a count, so its answer carries no
+                            // fingerprint: the skills phase has already acted
+                            // on it when this phase runs again.
+                            let decision = if gate.is_off() {
+                                Some(crate::decision::Decision::Accept)
+                            } else {
+                                let pending = self.target.preview_plugin_assets(&assets)?.written;
+                                if pending == 0 {
+                                    Some(crate::decision::Decision::Accept)
+                                } else {
+                                    gate.decide_category(
+                                        ItemKind::PluginAssets,
+                                        &[format!(
+                                            "{pending} plugin asset file(s) to write or prune"
+                                        )],
+                                        0,
+                                        String::new(),
+                                    )?
+                                }
+                            };
+                            let item = ItemKind::PluginAssets.plural().to_string();
+                            match decision {
+                                // Asked above; the applying pass writes.
+                                _ if gate.is_collecting() => {}
+                                Some(crate::decision::Decision::Accept) => {
+                                    *slot =
+                                        self.target.write_plugin_assets_with(&assets, &options)?;
+                                }
+                                Some(crate::decision::Decision::Reject) => {
+                                    slot.skipped.push(SkipReason::Declined { item });
+                                }
+                                None => slot.skipped.push(SkipReason::Unconfirmed { item }),
+                            }
                         } else {
                             // The writer also deletes, so the preview has to come from
                             // the adapter rather than from the batch length alone.
@@ -825,9 +1127,321 @@ impl<S: AgentAdapter, T: AgentAdapter> SyncOrchestrator<S, T> {
         }
 
         report.success = !failed;
+        // A plain run overwrites what the baseline says the target changed;
+        // an interactive one asked, so the person already knows.
+        if gate.is_off() {
+            self.warn_of_conflicts(params, ledger, &mut report);
+        }
+        // Saved after a failed phase too: only phases that wrote noted their
+        // items, and a phase that failed forgot its conflicts.
+        if !params.dry_run && !gate.is_collecting() {
+            let saved = ledger.persist(std::time::SystemTime::now(), |kind, name| {
+                gate.answered(kind, name)
+            });
+            if let Err(e) = saved {
+                tracing::warn!(error = %format!("{e:#}"), "Could not save the conflict baseline");
+                // The report has no list of its own, so this rides on the
+                // first phase.
+                report.commands.warnings.push(format!(
+                    "The sync wrote, but its conflict baseline could not be saved: {e:#}"
+                ));
+            }
+        }
+        if !gate.is_collecting() {
+            report
+                .commands
+                .warnings
+                .extend(notes.iter().map(|note| note.to_string()));
+        }
         report.summary = report.format_summary(self.source.name(), self.target.name());
 
         Ok(report)
+    }
+
+    /// Adds, per kind, one warning naming the items both sides changed since
+    /// the last sync. The source wins in a plain run, so the target's edits
+    /// are gone unless a snapshot can bring them back.
+    fn warn_of_conflicts(&self, params: &SyncParams, ledger: &Ledger, report: &mut SyncReport) {
+        for kind in [
+            ItemKind::Command,
+            ItemKind::Skill,
+            ItemKind::Agent,
+            ItemKind::Hook,
+            ItemKind::Instruction,
+            ItemKind::McpServer,
+        ] {
+            let names = ledger.found_names(kind);
+            if names.is_empty() {
+                continue;
+            }
+            let label = if names.len() == 1 {
+                kind.to_string()
+            } else {
+                format!("{} {}", names.len(), kind.plural())
+            };
+            let outcome = match (params.dry_run, crate::write_session::is_active()) {
+                (true, _) => "a sync would overwrite the target's edits",
+                (false, true) => {
+                    "the source overwrote the target's edits; `skrills sync-rollback` undoes it"
+                }
+                (false, false) => "the source overwrote the target's edits",
+            };
+            let slot = match kind {
+                ItemKind::Command => &mut report.commands,
+                ItemKind::Skill => &mut report.skills,
+                ItemKind::Agent => &mut report.agents,
+                ItemKind::Hook => &mut report.hooks,
+                ItemKind::Instruction => &mut report.instructions,
+                ItemKind::McpServer => &mut report.mcp_servers,
+                ItemKind::Preferences => &mut report.preferences,
+                ItemKind::PluginAssets => &mut report.plugin_assets,
+            };
+            slot.warnings.push(format!(
+                "{label} changed on both the source and the target since the last sync, so {outcome}: {}",
+                names.join(", ")
+            ));
+        }
+    }
+
+    /// Finds the items the source and the target both changed, for a run that
+    /// asks nobody (a plain sync or a dry run). A target that cannot be read
+    /// reports no conflicts, and the returned warning says they were not
+    /// checked.
+    #[must_use]
+    fn scan_files(
+        &self,
+        ledger: &Ledger,
+        kind: ItemKind,
+        items: &[Command],
+        read_target: impl FnOnce() -> Result<Vec<Command>>,
+    ) -> Option<String> {
+        if !ledger.has_baseline() {
+            return None;
+        }
+        let held = match read_target() {
+            Ok(held) => held,
+            Err(e) => return Some(unchecked_conflicts(kind, &e)),
+        };
+        let by_key: HashMap<String, &Command> = held
+            .iter()
+            .filter(|t| t.plugin_origin.is_none())
+            .map(|t| (file_key(kind, t), t))
+            .collect();
+        for item in items {
+            ledger.file_conflict(kind, item, by_key.get(&file_key(kind, item)).copied());
+        }
+        None
+    }
+
+    /// Notes what each item of `items` hashed to on both sides after the
+    /// write, so the next sync can tell what changed. `skip` leaves out items
+    /// whose baseline should not move.
+    fn record_files(
+        &self,
+        ledger: &Ledger,
+        kind: ItemKind,
+        items: &[Command],
+        read_target: impl FnOnce() -> Result<Vec<Command>>,
+        skip: impl Fn(&Command) -> bool,
+    ) {
+        if !ledger.is_enabled() {
+            return;
+        }
+        let held = match read_target() {
+            Ok(held) => held,
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "Could not read the target to record a baseline");
+                return;
+            }
+        };
+        let by_key: HashMap<String, &Command> = held
+            .iter()
+            .filter(|t| t.plugin_origin.is_none())
+            .map(|t| (file_key(kind, t), t))
+            .collect();
+        for item in items.iter().filter(|item| !skip(item)) {
+            if let Some(after) = by_key.get(&file_key(kind, item)) {
+                ledger.record_file(kind, item, after);
+            }
+        }
+    }
+
+    /// Hands `write` what `gate` allows: everything when off, nothing when
+    /// collecting (the questions are asked and no item is written), and the
+    /// accepted items when applying.
+    ///
+    /// A category the target's writer does not give back byte for byte
+    /// ([`AgentAdapter::decision_scope`]) is one question, and a rejection
+    /// skips `write` altogether so none of its sweeps can run.
+    fn write_files_gated(
+        &self,
+        gate: &Gate,
+        ledger: &Ledger,
+        kind: ItemKind,
+        items: Vec<Command>,
+        read_target: impl Fn() -> Result<Vec<Command>>,
+        write: impl FnOnce(&[Command]) -> Result<WriteReport>,
+    ) -> Result<WriteReport> {
+        if gate.is_off() {
+            let unchecked = self.scan_files(ledger, kind, &items, &read_target);
+            let mut report = write(&items)?;
+            report.warnings.extend(unchecked);
+            // A file the writer refused still holds the target's edits, so
+            // it is neither reported as overwritten nor recorded.
+            let refused: Vec<&String> = report
+                .skipped
+                .iter()
+                .filter_map(|reason| match reason {
+                    SkipReason::Refused { item, .. } => Some(item),
+                    _ => None,
+                })
+                .collect();
+            for item in &refused {
+                ledger.forget(kind, item);
+            }
+            self.record_files(ledger, kind, &items, &read_target, |item| {
+                refused.contains(&&item.name)
+            });
+            return Ok(report);
+        }
+        // An unreadable target cannot be classified, so it is not written.
+        let mut target = read_target()?;
+        target.retain(|t| t.plugin_origin.is_none());
+        let resolved = match self.target.decision_scope(kind) {
+            DecisionScope::PerItem => {
+                gate.resolve_files(kind, items.clone(), &target, |c| file_key(kind, c), ledger)?
+            }
+            DecisionScope::WholeCategory => {
+                let pending = changed_names(&items, &target, |c| file_key(kind, c));
+                // The target's own preview is the arbiter where it differs
+                // from a byte compare (Codex rewrites a skill's `name`).
+                let anything = match kind {
+                    ItemKind::Skill => self.target.preview_skills(&items)?.written > 0,
+                    _ => !pending.is_empty(),
+                };
+                let conflicting = items
+                    .iter()
+                    .filter(|item| {
+                        let by_key = file_key(kind, item);
+                        let held = target.iter().find(|t| file_key(kind, t) == by_key);
+                        ledger.file_conflict(kind, item, held)
+                    })
+                    .count();
+                let decision = if anything {
+                    let seen =
+                        crate::interactive::files_seen(&items, &target, |c| file_key(kind, c));
+                    gate.decide_category(kind, &pending, conflicting, seen)?
+                } else {
+                    Some(crate::decision::Decision::Accept)
+                };
+                let category = vec![kind.plural().to_string()];
+                let (declined, unconfirmed) = match decision {
+                    Some(crate::decision::Decision::Accept) => (Vec::new(), Vec::new()),
+                    Some(crate::decision::Decision::Reject) => (category, Vec::new()),
+                    None => (Vec::new(), category),
+                };
+                let skip_write = !declined.is_empty() || !unconfirmed.is_empty();
+                Resolved {
+                    items: if skip_write {
+                        Vec::new()
+                    } else {
+                        items.clone()
+                    },
+                    declined,
+                    unconfirmed,
+                    skip_write,
+                }
+            }
+        };
+        if gate.is_collecting() {
+            return Ok(WriteReport::default());
+        }
+        let report = if resolved.skip_write {
+            WriteReport::default()
+        } else {
+            write(&resolved.items)?
+        };
+        // A rejected change leaves its baseline where it was, except a
+        // rejected conflict: that was resolved, and asking again every sync
+        // would be noise. An unconfirmed one was never decided, so its
+        // baseline stays too.
+        let whole = |names: &[String]| resolved.skip_write && !names.is_empty();
+        let keeps_baseline = |item: &Command| {
+            let named = |names: &[String]| whole(names) || names.contains(&item.name);
+            named(&resolved.unconfirmed)
+                || (named(&resolved.declined) && !ledger.is_found(kind, &item.name))
+        };
+        self.record_files(ledger, kind, &items, &read_target, keeps_baseline);
+        Ok(gate.annotate(report, &resolved.declined, &resolved.unconfirmed))
+    }
+
+    /// [`Self::write_files_gated`] for MCP servers, which are keyed by name
+    /// and merged into the target's config.
+    fn write_servers_gated(
+        &self,
+        gate: &Gate,
+        ledger: &Ledger,
+        servers: HashMap<String, crate::common::McpServer>,
+    ) -> Result<WriteReport> {
+        if gate.is_off() {
+            let mut unchecked = None;
+            if ledger.has_baseline() {
+                match self.target.read_mcp_servers() {
+                    Ok(held) => {
+                        for (name, server) in &servers {
+                            ledger.server_conflict(name, server, held.get(name));
+                        }
+                    }
+                    Err(e) => unchecked = Some(unchecked_conflicts(ItemKind::McpServer, &e)),
+                }
+            }
+            let mut report = self.target.write_mcp_servers(&servers)?;
+            report.warnings.extend(unchecked);
+            self.record_servers(ledger, &servers, &[], &[]);
+            return Ok(report);
+        }
+        let held = self.target.read_mcp_servers()?;
+        let scope = self.target.decision_scope(ItemKind::McpServer);
+        let source = servers.clone();
+        let (kept, declined, unconfirmed) = gate.resolve_servers(scope, servers, &held, ledger)?;
+        if gate.is_collecting() {
+            return Ok(WriteReport::default());
+        }
+        let report = if kept.is_empty() && (!declined.is_empty() || !unconfirmed.is_empty()) {
+            WriteReport::default()
+        } else {
+            self.target.write_mcp_servers(&kept)?
+        };
+        self.record_servers(ledger, &source, &declined, &unconfirmed);
+        Ok(gate.annotate(report, &declined, &unconfirmed))
+    }
+
+    /// [`Self::record_files`] for MCP servers; `declined` names keep their
+    /// baseline unless they were a conflict, and `unconfirmed` ones always.
+    fn record_servers(
+        &self,
+        ledger: &Ledger,
+        servers: &HashMap<String, crate::common::McpServer>,
+        declined: &[String],
+        unconfirmed: &[String],
+    ) {
+        if !ledger.is_enabled() {
+            return;
+        }
+        let held = match self.target.read_mcp_servers() {
+            Ok(held) => held,
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "Could not read the target to record a baseline");
+                return;
+            }
+        };
+        for (name, server) in servers {
+            let moved = !unconfirmed.contains(name)
+                && (!declined.contains(name) || ledger.is_found(ItemKind::McpServer, name));
+            if let (true, Some(after)) = (moved, held.get(name)) {
+                ledger.record_server(name, server, after);
+            }
+        }
     }
 }
 
@@ -840,9 +1454,72 @@ pub fn sync_between(
     to: crate::Platform,
     params: &SyncParams,
 ) -> Result<SyncReport> {
-    let source = create_source_adapter(from, params)?;
-    let target = create_adapter(to)?;
-    SyncOrchestrator::new(source, target).sync(params)
+    sync_between_endpoints(&from.into(), &to.into(), params)
+}
+
+/// [`sync_between`] that answers `params.interactive` with `decider`.
+pub fn sync_between_with_decider(
+    from: crate::Platform,
+    to: crate::Platform,
+    params: &SyncParams,
+    decider: Arc<dyn ItemDecider>,
+) -> Result<SyncReport> {
+    sync_between_endpoints_with_decider(&from.into(), &to.into(), params, decider)
+}
+
+/// [`sync_between`] for endpoints, which may be configured adapters.
+pub fn sync_between_endpoints(
+    from: &crate::SyncEndpoint,
+    to: &crate::SyncEndpoint,
+    params: &SyncParams,
+) -> Result<SyncReport> {
+    let source = create_endpoint_source_adapter(from, params)?;
+    let target = create_endpoint_adapter(to)?;
+    SyncOrchestrator::new(source, target)
+        .with_default_snapshots()
+        .with_default_sync_state()
+        .sync(params)
+}
+
+/// [`sync_between_endpoints`] that answers `params.interactive` with `decider`.
+pub fn sync_between_endpoints_with_decider(
+    from: &crate::SyncEndpoint,
+    to: &crate::SyncEndpoint,
+    params: &SyncParams,
+    decider: Arc<dyn ItemDecider>,
+) -> Result<SyncReport> {
+    let source = create_endpoint_source_adapter(from, params)?;
+    let target = create_endpoint_adapter(to)?;
+    SyncOrchestrator::new(source, target)
+        .with_default_snapshots()
+        .with_default_sync_state()
+        .with_decider(decider)
+        .sync(params)
+}
+
+/// [`create_adapter`] for an endpoint. A custom name that is not configured,
+/// or whose file is invalid, is an error that says what exists or what is
+/// wrong, before anything is read or written.
+pub fn create_endpoint_adapter(endpoint: &crate::SyncEndpoint) -> Result<Box<dyn AgentAdapter>> {
+    match endpoint {
+        crate::SyncEndpoint::Builtin(platform) => create_adapter(*platform),
+        crate::SyncEndpoint::Custom(name) => {
+            let home = crate::adapter_config::user_home()?;
+            let config = crate::adapter_config::load_adapter(name, &home)?;
+            Ok(Box::new(crate::adapters::ConfigAdapter::new(config)))
+        }
+    }
+}
+
+/// [`create_source_adapter`] for an endpoint.
+pub fn create_endpoint_source_adapter(
+    endpoint: &crate::SyncEndpoint,
+    params: &SyncParams,
+) -> Result<Box<dyn AgentAdapter>> {
+    match endpoint {
+        crate::SyncEndpoint::Builtin(platform) => create_source_adapter(*platform, params),
+        crate::SyncEndpoint::Custom(_) => create_endpoint_adapter(endpoint),
+    }
 }
 
 /// [`create_adapter`] for the side being read: a Claude source also reads
@@ -890,7 +1567,9 @@ pub fn sync_claude_skills_to_codex(
         include_marketplace,
         ..Default::default()
     };
-    SyncOrchestrator::new(source, target).sync(&params)
+    SyncOrchestrator::new(source, target)
+        .with_snapshot_root(Some(home.join(".skrills").join("snapshots")))
+        .sync(&params)
 }
 
 /// Creates an adapter for the given platform name.
@@ -1549,26 +2228,6 @@ mod tests {
         assert!(report.success);
     }
 
-    /// `interactive` promised a per-file confirmation that does not exist, so
-    /// a caller asking for it got an unconfirmed write.
-    #[test]
-    fn interactive_mode_is_refused_before_anything_is_written() {
-        let src_dir = tempdir().unwrap();
-        let tgt_dir = tempdir().unwrap();
-        fs::create_dir_all(src_dir.path().join("commands")).unwrap();
-        fs::write(src_dir.path().join("commands/hello.md"), "# Hello").unwrap();
-
-        let source = ClaudeAdapter::with_root(src_dir.path().to_path_buf());
-        let target = ClaudeAdapter::with_root(tgt_dir.path().to_path_buf());
-        let result = SyncOrchestrator::new(source, target).sync(&SyncParams {
-            interactive: true,
-            ..Default::default()
-        });
-
-        assert!(result.is_err());
-        assert!(!tgt_dir.path().join("commands/hello.md").exists());
-    }
-
     /// The writer stores `my.cmd` as `mycmd.md`; skip-existing compared the
     /// raw names, missed the match and overwrote the target's file.
     #[test]
@@ -2219,6 +2878,226 @@ mod tests {
         );
     }
 
+    fn tree_of(root: &std::path::Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+        walkdir::WalkDir::new(root)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().is_file())
+            .filter(|entry| entry.file_name() != SYNC_LOCK_FILE)
+            .map(|entry| {
+                let relative = entry.path().strip_prefix(root).unwrap().to_path_buf();
+                (relative, fs::read(entry.path()).unwrap())
+            })
+            .collect()
+    }
+
+    fn deciding(
+        answer: impl Fn(&crate::decision::ItemChange) -> crate::decision::Decision
+            + Send
+            + Sync
+            + 'static,
+    ) -> Arc<dyn ItemDecider> {
+        Arc::new(move |change: &crate::decision::ItemChange| Ok(answer(change)))
+    }
+
+    /// Syncs the seeded plugin root into a Cursor target that still holds a
+    /// legacy flat copy of the plugin skill, interactively.
+    fn interactive_mirror_sync(
+        answer: impl Fn(&crate::decision::ItemChange) -> crate::decision::Decision
+            + Send
+            + Sync
+            + 'static,
+    ) -> (tempfile::TempDir, SyncReport) {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        seed_claude_root_with_plugin_and_local_skill(src_dir.path());
+        let flat = tgt_dir.path().join("skills/deep-work");
+        fs::create_dir_all(&flat).unwrap();
+        fs::write(flat.join("SKILL.md"), "Old description\n# Deep work\n").unwrap();
+
+        let report = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            crate::adapters::CursorAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .with_kill_switch_marker(None)
+        .with_decider(deciding(answer))
+        .sync(&SyncParams {
+            interactive: true,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_agents: false,
+            sync_hooks: false,
+            sync_instructions: false,
+            full_plugin_mirror: true,
+            ..Default::default()
+        })
+        .unwrap();
+        (tgt_dir, report)
+    }
+
+    #[test]
+    fn rejecting_everything_keeps_the_plugin_mirror_and_the_flat_copy_it_would_replace() {
+        let before = {
+            let probe = tempdir().unwrap();
+            let flat = probe.path().join("skills/deep-work");
+            fs::create_dir_all(&flat).unwrap();
+            fs::write(flat.join("SKILL.md"), "Old description\n# Deep work\n").unwrap();
+            tree_of(probe.path())
+        };
+
+        let (tgt_dir, report) = interactive_mirror_sync(|_| crate::decision::Decision::Reject);
+
+        assert_eq!(tree_of(tgt_dir.path()), before);
+        assert_eq!(report.plugin_assets.written, 0);
+        assert!(report
+            .plugin_assets
+            .skipped
+            .iter()
+            .any(|r| matches!(r, SkipReason::Declined { item } if item == "plugin assets")));
+    }
+
+    #[test]
+    fn rejecting_only_the_mirror_keeps_the_flat_copy_but_writes_what_was_accepted() {
+        let (tgt_dir, _) = interactive_mirror_sync(|change| {
+            if change.kind == ItemKind::PluginAssets {
+                crate::decision::Decision::Reject
+            } else {
+                crate::decision::Decision::Accept
+            }
+        });
+
+        assert!(tgt_dir.path().join("skills/deep-work/SKILL.md").exists());
+        assert!(tgt_dir.path().join("skills/local-only/SKILL.md").exists());
+        assert!(!tgt_dir.path().join("plugins").exists());
+    }
+
+    #[test]
+    fn accepting_the_mirror_removes_the_flat_copy_as_a_default_sync_does() {
+        let (tgt_dir, report) = interactive_mirror_sync(|_| crate::decision::Decision::Accept);
+
+        assert!(!tgt_dir.path().join("skills/deep-work").exists());
+        assert!(tgt_dir
+            .path()
+            .join("plugins/local/my-plugin/skills/deep-work/SKILL.md")
+            .exists());
+        assert!(report.success, "{report:?}");
+    }
+
+    /// Hooks are rewritten into the target's JSON, so they are one question,
+    /// and a rejection must not reach the writer at all.
+    #[test]
+    fn rejecting_the_hooks_never_calls_the_hook_writer() {
+        use crate::adapters::traits::{FieldSupport, MockAgentAdapter};
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("hooks")).unwrap();
+        fs::write(src_dir.path().join("hooks/PreToolUse.md"), "echo hi").unwrap();
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = asked.clone();
+
+        let mut target = MockAgentAdapter::new();
+        target.expect_name().return_const("mock".to_string());
+        let root = tgt_dir.path().to_path_buf();
+        target.expect_config_root().returning(move || root.clone());
+        target.expect_write_support().returning(|| FieldSupport {
+            hooks: true,
+            ..FieldSupport::default()
+        });
+        target.expect_read_hooks().returning(|| Ok(Vec::new()));
+        target
+            .expect_decision_scope()
+            .returning(|_| DecisionScope::WholeCategory);
+        target.expect_write_hooks().times(0);
+
+        let report = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            target,
+        )
+        .with_kill_switch_marker(None)
+        .with_decider(Arc::new(move |change: &crate::decision::ItemChange| {
+            record.lock().unwrap().push(change.clone());
+            Ok(crate::decision::Decision::Reject)
+        }))
+        .sync(&SyncParams {
+            interactive: true,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            sync_agents: false,
+            sync_hooks: true,
+            sync_instructions: false,
+            sync_plugin_assets: false,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let asked = asked.lock().unwrap();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert_eq!(asked[0].kind, ItemKind::Hook);
+        assert_eq!(asked[0].diff, "PreToolUse");
+        assert_eq!(report.hooks.written, 0);
+        assert!(matches!(
+            report.hooks.skipped.as_slice(),
+            [SkipReason::Declined { item }] if item == "hooks"
+        ));
+    }
+
+    #[test]
+    fn accepting_the_hooks_calls_the_hook_writer_once_with_all_of_them() {
+        use crate::adapters::traits::{FieldSupport, MockAgentAdapter};
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("hooks")).unwrap();
+        fs::write(src_dir.path().join("hooks/PreToolUse.md"), "echo hi").unwrap();
+
+        let mut target = MockAgentAdapter::new();
+        target.expect_name().return_const("mock".to_string());
+        let root = tgt_dir.path().to_path_buf();
+        target.expect_config_root().returning(move || root.clone());
+        target.expect_write_support().returning(|| FieldSupport {
+            hooks: true,
+            ..FieldSupport::default()
+        });
+        target.expect_read_hooks().returning(|| Ok(Vec::new()));
+        target
+            .expect_decision_scope()
+            .returning(|_| DecisionScope::WholeCategory);
+        target
+            .expect_write_hooks()
+            .times(1)
+            .withf(|hooks| hooks.len() == 1 && hooks[0].name == "PreToolUse")
+            .returning(|_| {
+                Ok(WriteReport {
+                    written: 1,
+                    ..WriteReport::default()
+                })
+            });
+
+        let report = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            target,
+        )
+        .with_kill_switch_marker(None)
+        .with_decider(deciding(|_| crate::decision::Decision::Accept))
+        .sync(&SyncParams {
+            interactive: true,
+            sync_commands: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            sync_agents: false,
+            sync_hooks: true,
+            sync_instructions: false,
+            sync_plugin_assets: false,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(report.hooks.written, 1);
+    }
+
     #[test]
     fn create_adapter_all_platforms() {
         // These only verify the adapter constructs; the actual root may not exist
@@ -2226,5 +3105,668 @@ mod tests {
         for platform in crate::Platform::ALL {
             assert_eq!(create_adapter(platform).unwrap().name(), platform.as_str());
         }
+    }
+
+    /// A sync with a snapshot root: the source command and the target prompt
+    /// it overwrites, plus a second command the target has never had.
+    fn snapshotted_sync(
+        root: &std::path::Path,
+        dry_run: bool,
+    ) -> (tempfile::TempDir, std::path::PathBuf) {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("commands")).unwrap();
+        fs::write(src_dir.path().join("commands/hello.md"), "# New Hello").unwrap();
+        fs::write(src_dir.path().join("commands/fresh.md"), "# Fresh").unwrap();
+        fs::create_dir_all(tgt_dir.path().join("prompts")).unwrap();
+        fs::write(tgt_dir.path().join("prompts/hello.md"), "# Old Hello").unwrap();
+
+        SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .with_snapshot_root(Some(root.to_path_buf()))
+        .sync(&SyncParams {
+            dry_run,
+            sync_commands: true,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_skills: false,
+            ..Default::default()
+        })
+        .unwrap()
+        .success
+        .then_some(())
+        .expect("sync succeeds");
+        let target = tgt_dir.path().to_path_buf();
+        (tgt_dir, target)
+    }
+
+    #[test]
+    fn a_sync_over_an_existing_file_snapshots_its_old_bytes() {
+        let snaps = tempdir().unwrap();
+        let (_tgt, target) = snapshotted_sync(snaps.path(), false);
+
+        assert_eq!(
+            fs::read_to_string(target.join("prompts/hello.md")).unwrap(),
+            "# New Hello"
+        );
+        let taken = crate::snapshot::list(snaps.path()).unwrap();
+        assert_eq!(taken.len(), 1);
+        let blob = snaps
+            .path()
+            .join(&taken[0].name)
+            .join("blobs")
+            .join(crate::adapters::utils::hash_content(b"# Old Hello"));
+        assert_eq!(fs::read(blob).unwrap(), b"# Old Hello");
+    }
+
+    #[test]
+    fn rollback_undoes_a_sync_by_restoring_old_bytes_and_deleting_new_files() {
+        let snaps = tempdir().unwrap();
+        let (_tgt, target) = snapshotted_sync(snaps.path(), false);
+        assert!(target.join("prompts/fresh.md").exists());
+
+        crate::snapshot::rollback(snaps.path(), None).unwrap();
+        assert_eq!(
+            fs::read_to_string(target.join("prompts/hello.md")).unwrap(),
+            "# Old Hello"
+        );
+        assert!(!target.join("prompts/fresh.md").exists());
+    }
+
+    #[test]
+    fn a_dry_run_takes_no_snapshot() {
+        let snaps = tempdir().unwrap();
+        let root = snaps.path().join("snapshots");
+        let (_tgt, target) = snapshotted_sync(&root, true);
+
+        assert!(!root.exists());
+        assert_eq!(
+            fs::read_to_string(target.join("prompts/hello.md")).unwrap(),
+            "# Old Hello"
+        );
+    }
+
+    #[test]
+    fn a_sync_refused_before_it_starts_takes_no_snapshot() {
+        let snaps = tempdir().unwrap();
+        let root = snaps.path().join("snapshots");
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        let outcome = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .with_snapshot_root(Some(root.clone()))
+        .sync(&SyncParams {
+            interactive: true,
+            ..Default::default()
+        });
+
+        let error = outcome.unwrap_err();
+        assert!(
+            format!("{error:#}").contains("needs an item decider"),
+            "{error:#}"
+        );
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn a_sync_that_changes_nothing_leaves_no_snapshot() {
+        let snaps = tempdir().unwrap();
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        let sync_once = || {
+            SyncOrchestrator::new(
+                ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+                CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+            )
+            .with_snapshot_root(Some(snaps.path().to_path_buf()))
+            .sync(&SyncParams {
+                sync_mcp_servers: false,
+                sync_preferences: false,
+                ..Default::default()
+            })
+            .unwrap()
+            .success
+            .then_some(())
+            .expect("sync succeeds");
+        };
+        // The first sync creates the target's folders, which rollback must
+        // be able to remove; the second finds them and changes nothing.
+        sync_once();
+        let first = crate::snapshot::list(snaps.path()).unwrap();
+        assert_eq!(first.len(), 1);
+        sync_once();
+
+        assert_eq!(crate::snapshot::list(snaps.path()).unwrap(), first);
+    }
+
+    #[test]
+    fn a_sync_without_a_snapshot_root_records_nothing_and_still_writes() {
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("commands")).unwrap();
+        fs::write(src_dir.path().join("commands/hello.md"), "# Hello").unwrap();
+        let orchestrator = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        );
+        assert_eq!(orchestrator.snapshot_root, None);
+        orchestrator
+            .sync(&SyncParams {
+                sync_mcp_servers: false,
+                sync_preferences: false,
+                sync_skills: false,
+                ..Default::default()
+            })
+            .unwrap()
+            .success
+            .then_some(())
+            .expect("sync succeeds");
+        assert!(tgt_dir.path().join("prompts/hello.md").exists());
+    }
+
+    #[test]
+    fn a_sync_inside_a_running_session_joins_it_instead_of_starting_another() {
+        let snaps = tempdir().unwrap();
+        let outer_root = snaps.path().join("outer");
+        let inner_root = snaps.path().join("inner");
+        let outer = crate::snapshot::begin(&outer_root).unwrap();
+        let (_tgt, _target) = snapshotted_sync(&inner_root, false);
+        drop(outer);
+
+        assert!(!inner_root.exists());
+        let joined = crate::snapshot::list(&outer_root).unwrap();
+        assert_eq!(joined.len(), 1);
+        assert_eq!(
+            joined[0].entries, 2,
+            "both of the sync's writes land in the outer snapshot"
+        );
+    }
+
+    #[test]
+    fn a_sync_still_writes_when_the_snapshot_root_cannot_be_created() {
+        let tmp = tempdir().unwrap();
+        let blocker = tmp.path().join("blocker");
+        fs::write(&blocker, "a file where the snapshot root should go").unwrap();
+        let (_tgt, target) = snapshotted_sync(&blocker.join("snapshots"), false);
+
+        assert_eq!(
+            fs::read_to_string(target.join("prompts/hello.md")).unwrap(),
+            "# New Hello"
+        );
+    }
+
+    #[test]
+    fn an_interactive_sync_snapshots_what_the_user_accepted() {
+        let _lock = skrills_test_utils::env_guard();
+        let home = tempdir().unwrap();
+        let _env = skrills_test_utils::set_env_var("HOME", Some(home.path().to_str().unwrap()));
+        fs::create_dir_all(home.path().join(".claude/commands")).unwrap();
+        fs::write(home.path().join(".claude/commands/hello.md"), "# New Hello").unwrap();
+        fs::create_dir_all(home.path().join(".codex/prompts")).unwrap();
+        fs::write(home.path().join(".codex/prompts/hello.md"), "# Old Hello").unwrap();
+
+        let accept_all = |_: &crate::decision::ItemChange| Ok(crate::decision::Decision::Accept);
+        let report = sync_between_with_decider(
+            crate::Platform::Claude,
+            crate::Platform::Codex,
+            &SyncParams {
+                interactive: true,
+                sync_commands: true,
+                sync_mcp_servers: false,
+                sync_preferences: false,
+                sync_skills: false,
+                ..Default::default()
+            },
+            Arc::new(accept_all),
+        )
+        .unwrap();
+
+        assert!(report.success);
+        let snaps = home.path().join(".skrills/snapshots");
+        let taken = crate::snapshot::list(&snaps).unwrap();
+        assert_eq!(taken.len(), 1, "the accepted overwrite is snapshotted");
+        let blob = snaps
+            .join(&taken[0].name)
+            .join("blobs")
+            .join(crate::adapters::utils::hash_content(b"# Old Hello"));
+        assert_eq!(fs::read(blob).unwrap(), b"# Old Hello");
+    }
+
+    #[test]
+    fn default_snapshots_point_at_the_per_user_snapshot_directory() {
+        let _lock = skrills_test_utils::env_guard();
+        let home = tempdir().unwrap();
+        let _env = skrills_test_utils::set_env_var("HOME", Some(home.path().to_str().unwrap()));
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        let orchestrator = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .with_default_snapshots();
+        assert_eq!(
+            orchestrator.snapshot_root,
+            Some(home.path().join(".skrills").join("snapshots"))
+        );
+    }
+
+    /// A Claude source and target, commands only, with a state root and
+    /// optionally a snapshot root, for the baseline and warning tests.
+    struct Ledgered {
+        source: tempfile::TempDir,
+        target: tempfile::TempDir,
+        state: tempfile::TempDir,
+    }
+
+    impl Ledgered {
+        fn new() -> Self {
+            Self {
+                source: tempdir().unwrap(),
+                target: tempdir().unwrap(),
+                state: tempdir().unwrap(),
+            }
+        }
+
+        fn put(root: &std::path::Path, relative: &str, body: &str) {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, body).unwrap();
+        }
+
+        fn sync(&self, snapshots: Option<std::path::PathBuf>) -> SyncReport {
+            SyncOrchestrator::new(
+                ClaudeAdapter::with_root(self.source.path().to_path_buf()),
+                ClaudeAdapter::with_root(self.target.path().to_path_buf()),
+            )
+            .with_kill_switch_marker(None)
+            .with_state_root(Some(self.state.path().to_path_buf()))
+            .with_snapshot_root(snapshots)
+            .sync(&commands_only())
+            .unwrap()
+        }
+
+        fn baseline_path(&self) -> std::path::PathBuf {
+            let key = crate::conflict::target_key("claude", self.target.path());
+            self.state.path().join(format!("{key}.json"))
+        }
+
+        /// `names` synced once at "v1", then edited on both sides.
+        fn in_conflict(names: &[&str]) -> Self {
+            let rig = Self::new();
+            for name in names {
+                Self::put(rig.source.path(), &format!("commands/{name}.md"), "# v1\n");
+            }
+            assert!(rig.sync(None).success);
+            for name in names {
+                Self::put(rig.source.path(), &format!("commands/{name}.md"), "# v2\n");
+                Self::put(
+                    rig.target.path(),
+                    &format!("commands/{name}.md"),
+                    "# mine\n",
+                );
+            }
+            rig
+        }
+    }
+
+    fn commands_only() -> SyncParams {
+        SyncParams {
+            sync_skills: false,
+            sync_mcp_servers: false,
+            sync_preferences: false,
+            sync_agents: false,
+            sync_hooks: false,
+            sync_instructions: false,
+            sync_plugin_assets: false,
+            ..Default::default()
+        }
+    }
+
+    fn all_warnings(report: &SyncReport) -> Vec<String> {
+        [
+            &report.commands,
+            &report.skills,
+            &report.mcp_servers,
+            &report.preferences,
+            &report.agents,
+            &report.hooks,
+            &report.instructions,
+            &report.plugin_assets,
+        ]
+        .iter()
+        .flat_map(|slot| slot.warnings.clone())
+        .collect()
+    }
+
+    /// Restores a mode changed for a test, so the tempdir can be removed
+    /// even when an assertion fails first.
+    #[cfg(unix)]
+    struct ModeGuard(std::path::PathBuf, u32);
+
+    #[cfg(unix)]
+    impl ModeGuard {
+        fn set(path: &std::path::Path, mode: u32) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let old = fs::metadata(path).unwrap().permissions().mode();
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+            Self(path.to_path_buf(), old)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ModeGuard {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _restored = fs::set_permissions(&self.0, fs::Permissions::from_mode(self.1));
+        }
+    }
+
+    #[test]
+    fn rollback_undoes_the_phases_that_wrote_when_another_phase_failed() {
+        let snaps = tempdir().unwrap();
+        let state = tempdir().unwrap();
+        let src_dir = tempdir().unwrap();
+        let tgt_dir = tempdir().unwrap();
+        fs::create_dir_all(src_dir.path().join("commands")).unwrap();
+        fs::write(src_dir.path().join("commands/hello.md"), "# New Hello").unwrap();
+        fs::write(
+            src_dir.path().join(".claude.json"),
+            r#"{"mcpServers": {"s": {"command": "/bin/s"}}}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(tgt_dir.path().join("prompts")).unwrap();
+        fs::write(tgt_dir.path().join("prompts/hello.md"), "# Old Hello").unwrap();
+        // A malformed config.toml makes the MCP phase fail.
+        fs::write(tgt_dir.path().join("config.toml"), "[unclosed\n").unwrap();
+
+        let report = SyncOrchestrator::new(
+            ClaudeAdapter::with_root(src_dir.path().to_path_buf()),
+            CodexAdapter::with_root(tgt_dir.path().to_path_buf()),
+        )
+        .with_kill_switch_marker(None)
+        .with_snapshot_root(Some(snaps.path().to_path_buf()))
+        .with_state_root(Some(state.path().to_path_buf()))
+        .sync(&SyncParams {
+            sync_commands: true,
+            sync_mcp_servers: true,
+            ..commands_only()
+        })
+        .unwrap();
+
+        assert!(!report.success, "{report:?}");
+        assert_eq!(report.commands.written, 1, "{report:?}");
+        let key = crate::conflict::target_key("codex", tgt_dir.path());
+        let baseline = fs::read_to_string(state.path().join(format!("{key}.json")))
+            .expect("the commands phase wrote, so its baseline is saved");
+        assert!(baseline.contains("command:hello"), "{baseline}");
+        assert!(!baseline.contains("MCP server:"), "{baseline}");
+
+        crate::snapshot::rollback(snaps.path(), None).unwrap();
+        assert_eq!(
+            fs::read_to_string(tgt_dir.path().join("prompts/hello.md")).unwrap(),
+            "# Old Hello"
+        );
+    }
+
+    /// The commands directory is made read-only, so the conflict is found but
+    /// the writer refuses the file.
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_write_does_not_claim_it_overwrote_the_targets_edits() {
+        let rig = Ledgered::in_conflict(&["foo"]);
+        let _guard = ModeGuard::set(&rig.target.path().join("commands"), 0o555);
+
+        let before = fs::read_to_string(rig.baseline_path()).unwrap();
+
+        let report = rig.sync(None);
+
+        assert_eq!(report.commands.written, 0, "{report:?}");
+        let warnings = all_warnings(&report);
+        assert!(
+            !warnings.iter().any(|w| w.contains("changed on both")),
+            "{warnings:?}"
+        );
+        // Recording it would make the next sync overwrite the edit unwarned.
+        assert_eq!(fs::read_to_string(rig.baseline_path()).unwrap(), before);
+    }
+
+    /// A Claude source and a Codex target holding MCP server `srv`, synced
+    /// once and then edited on both sides.
+    fn mcp_in_conflict() -> (Ledgered, impl Fn(&Ledgered) -> SyncReport) {
+        let rig = Ledgered::new();
+        let sync = |rig: &Ledgered| {
+            SyncOrchestrator::new(
+                ClaudeAdapter::with_root(rig.source.path().to_path_buf()),
+                CodexAdapter::with_root(rig.target.path().to_path_buf()),
+            )
+            .with_kill_switch_marker(None)
+            .with_state_root(Some(rig.state.path().to_path_buf()))
+            .sync(&SyncParams {
+                sync_commands: false,
+                sync_mcp_servers: true,
+                ..commands_only()
+            })
+            .unwrap()
+        };
+        let source = |arg: &str| {
+            format!(r#"{{"mcpServers": {{"srv": {{"command": "/bin/srv", "args": ["{arg}"]}}}}}}"#)
+        };
+        Ledgered::put(rig.source.path(), ".claude.json", &source("v1"));
+        assert!(sync(&rig).success);
+        Ledgered::put(rig.source.path(), ".claude.json", &source("v2"));
+        let config = rig.target.path().join("config.toml");
+        let edited = fs::read_to_string(&config).unwrap().replace("v1", "mine");
+        fs::write(&config, edited).unwrap();
+        (rig, sync)
+    }
+
+    /// The target root is made read-only, so the conflict is found but the
+    /// MCP phase fails.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_phase_does_not_claim_it_overwrote_the_targets_edits() {
+        let (rig, sync) = mcp_in_conflict();
+        let _guard = ModeGuard::set(rig.target.path(), 0o555);
+
+        let report = sync(&rig);
+
+        assert!(!report.success, "{report:?}");
+        let warnings = all_warnings(&report);
+        assert!(
+            !warnings.iter().any(|w| w.contains("changed on both")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn a_target_read_failure_neither_warns_nor_erases_the_items_baseline() {
+        let (rig, sync) = mcp_in_conflict();
+        let key = crate::conflict::target_key("codex", rig.target.path());
+        let baseline = rig.state.path().join(format!("{key}.json"));
+        let before = fs::read_to_string(&baseline).unwrap();
+        fs::write(rig.target.path().join("config.toml"), "[unclosed\n").unwrap();
+
+        let report = sync(&rig);
+
+        assert!(!report.success, "{report:?}");
+        let warnings = all_warnings(&report);
+        assert!(
+            !warnings.iter().any(|w| w.contains("changed on both")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("MCP servers sync failed")),
+            "{warnings:?}"
+        );
+        assert_eq!(fs::read_to_string(&baseline).unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sync_whose_conflict_baseline_cannot_be_saved_still_succeeds_and_says_so() {
+        let rig = Ledgered::new();
+        Ledgered::put(rig.source.path(), "commands/foo.md", "# v1\n");
+        let _guard = ModeGuard::set(rig.state.path(), 0o555);
+
+        let report = rig.sync(None);
+
+        assert!(report.success, "{report:?}");
+        assert!(rig.target.path().join("commands/foo.md").exists());
+        assert!(
+            all_warnings(&report)
+                .iter()
+                .any(|w| w.contains("conflict baseline could not be saved")),
+            "{report:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_version_baseline_is_left_alone_and_the_report_says_so() {
+        let rig = Ledgered::new();
+        Ledgered::put(rig.source.path(), "commands/foo.md", "# v1\n");
+        let newer = r#"{"version": 99, "items": {}}"#;
+        fs::write(rig.baseline_path(), newer).unwrap();
+
+        let report = rig.sync(None);
+
+        assert!(report.success, "{report:?}");
+        assert_eq!(fs::read_to_string(rig.baseline_path()).unwrap(), newer);
+        assert!(
+            all_warnings(&report)
+                .iter()
+                .any(|w| w.contains("version 99") && w.contains("left as it is")),
+            "{report:?}"
+        );
+        assert!(report.summary.contains("version 99"), "{}", report.summary);
+    }
+
+    #[test]
+    fn a_sync_whose_snapshot_cannot_start_says_so_in_the_report() {
+        let tmp = tempdir().unwrap();
+        // A regular file where `~/.skrills` belongs.
+        let skrills_home = tmp.path().join(".skrills");
+        fs::write(&skrills_home, "not a directory").unwrap();
+        let rig = Ledgered::new();
+        Ledgered::put(rig.source.path(), "commands/foo.md", "# v1\n");
+
+        let report = rig.sync(Some(skrills_home.join("snapshots")));
+
+        assert!(report.success, "{report:?}");
+        assert!(rig.target.path().join("commands/foo.md").exists());
+        let warnings = all_warnings(&report);
+        assert!(
+            warnings.iter().any(|w| w.contains("not snapshotted")
+                && w.contains("`skrills sync-rollback` cannot undo")),
+            "{warnings:?}"
+        );
+        assert!(
+            report.summary.contains("not snapshotted"),
+            "{}",
+            report.summary
+        );
+    }
+
+    #[test]
+    fn a_conflict_warning_names_one_item_by_kind_and_more_by_count() {
+        let one = Ledgered::in_conflict(&["foo"]).sync(None);
+        let two = Ledgered::in_conflict(&["bar", "foo"]).sync(None);
+
+        assert!(
+            one.commands
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("command changed on both") && w.ends_with(": foo")),
+            "{:?}",
+            one.commands.warnings
+        );
+        assert!(
+            two.commands
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("2 commands changed on both") && w.ends_with(": bar, foo")),
+            "{:?}",
+            two.commands.warnings
+        );
+    }
+
+    /// A target whose commands cannot be read, with a baseline for `foo`.
+    fn unreadable_commands_target(
+        root: &std::path::Path,
+        state: &std::path::Path,
+    ) -> crate::adapters::traits::MockAgentAdapter {
+        use crate::adapters::traits::{FieldSupport, MockAgentAdapter};
+        let key = crate::conflict::target_key("mock", root);
+        let baseline =
+            r#"{"version": 1, "items": {"command:foo": {"source": "s", "target": "t"}}}"#;
+        fs::write(state.join(format!("{key}.json")), baseline).unwrap();
+        let mut target = MockAgentAdapter::new();
+        target.expect_name().return_const("mock".to_string());
+        let root = root.to_path_buf();
+        target.expect_config_root().returning(move || root.clone());
+        target.expect_write_support().returning(|| FieldSupport {
+            commands: true,
+            ..FieldSupport::default()
+        });
+        target
+            .expect_read_commands()
+            .returning(|_| Err(anyhow::anyhow!("permission denied")));
+        target.expect_write_commands().returning(|items| {
+            Ok(WriteReport {
+                written: items.len(),
+                ..WriteReport::default()
+            })
+        });
+        target
+    }
+
+    #[test]
+    fn an_unreadable_target_says_conflicts_were_not_checked_and_the_preview_counts_every_item() {
+        let rig = Ledgered::new();
+        Ledgered::put(rig.source.path(), "commands/foo.md", "# v1\n");
+        let sync = |dry_run: bool| {
+            SyncOrchestrator::new(
+                ClaudeAdapter::with_root(rig.source.path().to_path_buf()),
+                unreadable_commands_target(rig.target.path(), rig.state.path()),
+            )
+            .with_kill_switch_marker(None)
+            .with_state_root(Some(rig.state.path().to_path_buf()))
+            .sync(&SyncParams {
+                dry_run,
+                ..commands_only()
+            })
+            .unwrap()
+        };
+
+        let preview = sync(true);
+        let plain = sync(false);
+
+        assert_eq!(preview.commands.written, 1, "{preview:?}");
+        let unchecked = "Conflicts were not checked for commands: could not read the target";
+        for report in [&preview, &plain] {
+            assert!(
+                report
+                    .commands
+                    .warnings
+                    .iter()
+                    .any(|w| w.starts_with(unchecked)),
+                "{:?}",
+                report.commands.warnings
+            );
+        }
+        assert!(
+            preview
+                .commands
+                .warnings
+                .iter()
+                .any(|w| w.contains("so every item counts as a write")),
+            "{:?}",
+            preview.commands.warnings
+        );
     }
 }

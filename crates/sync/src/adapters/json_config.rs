@@ -163,6 +163,110 @@ pub(crate) fn encode_server(server: &McpServer, dialect: Dialect) -> Map<String,
     entry
 }
 
+/// Reads the servers under `key` of the JSON file at `path`; a missing file
+/// or key has none.
+///
+/// An entry that does not fit (a numeric `env` value, an `sse` endpoint,
+/// neither `command` nor `url`) is skipped with a warning rather than failing
+/// every server: sync carries only stdio and http.
+pub(crate) fn read_servers_at(path: &Path, key: &str) -> Result<HashMap<String, McpServer>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(e) => return Err(anyhow!("Failed to read {}: {e}", path.display())),
+    };
+    let document: Value = serde_json::from_str(&text)
+        .map_err(|e| anyhow!("Failed to parse {} as JSON: {e}", path.display()))?;
+    let entries = match document.get(key) {
+        None => return Ok(HashMap::new()),
+        Some(Value::Object(entries)) => entries,
+        Some(_) => return Err(anyhow!("`{key}` in {} is not an object", path.display())),
+    };
+    let mut servers = HashMap::new();
+    for (name, entry) in entries {
+        match decode_server(name, entry) {
+            Ok(server) => {
+                servers.insert(name.clone(), server);
+            }
+            Err(reason) => tracing::warn!(
+                server = %name,
+                path = %path.display(),
+                %reason,
+                "Skipping MCP entry sync cannot carry"
+            ),
+        }
+    }
+    Ok(servers)
+}
+
+/// The entries under `key` of `document` that [`read_servers_at`] skips,
+/// with why. A writer must not merge over one: the target would read it as
+/// absent, and the merge would replace the settings sync cannot carry.
+pub(crate) fn undecodable_servers(document: &Value, key: &str) -> Vec<(String, String)> {
+    let Some(Value::Object(entries)) = document.get(key) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|(name, entry)| Some((name.clone(), decode_server(name, entry).err()?)))
+        .collect()
+}
+
+fn decode_server(name: &str, entry: &Value) -> std::result::Result<McpServer, String> {
+    let fields = entry
+        .as_object()
+        .ok_or_else(|| format!("it is {}, not an object", json_kind(entry)))?;
+    if fields.get("type").and_then(Value::as_str) == Some("sse") {
+        return Err("sync carries only stdio and http servers, not `sse`".to_string());
+    }
+    let command = fields.get("command").and_then(Value::as_str);
+    let url = fields.get("url").and_then(Value::as_str);
+    if command.is_none() && url.is_none() {
+        return Err("it has neither a `command` nor a `url` string".to_string());
+    }
+    let list = |key: &str| -> std::result::Result<Vec<String>, String> {
+        let not_strings = || format!("`{key}` is not a list of strings");
+        match fields.get(key) {
+            None => Ok(Vec::new()),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|item| item.as_str().map(str::to_string).ok_or_else(not_strings))
+                .collect(),
+            Some(_) => Err(not_strings()),
+        }
+    };
+    let strings = |key: &str| -> std::result::Result<Option<HashMap<String, String>>, String> {
+        let not_strings = || format!("`{key}` is not an object of strings");
+        match fields.get(key) {
+            None => Ok(None),
+            Some(Value::Object(map)) => map
+                .iter()
+                .map(|(k, v)| Ok((k.clone(), v.as_str().ok_or_else(not_strings)?.to_string())))
+                .collect::<std::result::Result<HashMap<_, _>, String>>()
+                .map(Some),
+            Some(_) => Err(not_strings()),
+        }
+    };
+    let enabled = fields.get("disabled") != Some(&Value::Bool(true))
+        && fields.get("enabled") != Some(&Value::Bool(false));
+    Ok(McpServer {
+        name: name.to_string(),
+        transport: if url.is_some() {
+            McpTransport::Http
+        } else {
+            McpTransport::Stdio
+        },
+        command: command.unwrap_or_default().to_string(),
+        args: list("args")?,
+        env: strings("env")?.unwrap_or_default(),
+        url: url.map(str::to_string),
+        headers: strings("headers")?,
+        enabled,
+        allowed_tools: list("allowedTools")?,
+        disabled_tools: list("disabledTools")?,
+    })
+}
+
 fn string_map(map: &HashMap<String, String>) -> Value {
     let mut sorted: Vec<_> = map.iter().collect();
     sorted.sort();
@@ -186,16 +290,27 @@ pub(crate) fn merge_servers(
     dialect: Dialect,
     target_name: &str,
 ) -> Result<WriteReport> {
+    merge_servers_at(config, "mcpServers", servers, dialect, target_name)
+}
+
+/// [`merge_servers`] for a tool that keeps its servers under `servers_key`.
+pub(crate) fn merge_servers_at(
+    config: &mut Value,
+    servers_key: &str,
+    servers: &HashMap<String, McpServer>,
+    dialect: Dialect,
+    target_name: &str,
+) -> Result<WriteReport> {
     let mut report = WriteReport::default();
     let root = config
         .as_object_mut()
         .ok_or_else(|| anyhow!("MCP config root is not a JSON object"))?;
     let existing = root
-        .entry("mcpServers")
+        .entry(servers_key)
         .or_insert_with(|| Value::Object(Map::new()));
     if !existing.is_object() {
         return Err(anyhow!(
-            "`mcpServers` in the {target_name} config is {}, not an object; refusing to replace it",
+            "`{servers_key}` in the {target_name} config is {}, not an object; refusing to replace it",
             json_kind(existing)
         ));
     }
