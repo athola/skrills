@@ -455,18 +455,22 @@ chore: update dependencies"#;
     #[cfg(unix)]
     #[test]
     fn git_log_does_not_inherit_the_callers_repository_variables() {
-        use std::os::unix::fs::PermissionsExt;
         let _g = crate::test_support::env_guard();
         let _dir = crate::test_support::set_env_var("GIT_DIR", Some("/elsewhere/.git"));
         let _tree = crate::test_support::set_env_var("GIT_WORK_TREE", Some("/elsewhere"));
         let bin = tempfile::tempdir().unwrap();
         let git = bin.path().join("git");
-        std::fs::write(
-            &git,
-            "#!/bin/sh\necho \"${GIT_DIR:-unset} ${GIT_WORK_TREE:-unset}\"\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // A child shell writes the fake git. Written from this process, the
+        // open write fd can leak into a sibling test's fork and make the exec
+        // below fail with ETXTBSY (seen on Linux CI).
+        let made = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(r#"printf '#!/bin/sh\necho "${GIT_DIR:-unset} ${GIT_WORK_TREE:-unset}"\n' > "$1" && chmod 755 "$1""#)
+            .arg("sh")
+            .arg(&git)
+            .status()
+            .unwrap();
+        assert!(made.success());
         let out = run_git_log(git.as_os_str(), bin.path(), 1, Duration::from_secs(10)).unwrap();
         assert_eq!(out.trim(), "unset unset");
     }
