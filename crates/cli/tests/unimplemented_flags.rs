@@ -177,7 +177,17 @@ fn wait_for_line(
     needle: &str,
     seen: &mut Vec<String>,
 ) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    wait_for_line_within(lines, needle, seen, std::time::Duration::from_secs(30))
+}
+
+#[cfg(all(feature = "watch", unix))]
+fn wait_for_line_within(
+    lines: &std::sync::mpsc::Receiver<String>,
+    needle: &str,
+    seen: &mut Vec<String>,
+    within: std::time::Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + within;
     while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
         match lines.recv_timeout(left) {
             Ok(line) => {
@@ -201,9 +211,17 @@ fn validate_watch_revalidates_a_changed_skill_and_stops_on_sigint() {
     let home = tempfile::tempdir().unwrap();
     let skills = home.path().join("watched");
     std::fs::create_dir_all(skills.join("late")).unwrap();
+    std::fs::create_dir_all(skills.join("tidy")).unwrap();
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_skrills"))
-        .args(["validate", "--watch", "--debounce-ms", "50", "--skill-dir"])
+        .args([
+            "validate",
+            "--watch",
+            "--errors-only",
+            "--debounce-ms",
+            "50",
+            "--skill-dir",
+        ])
         .arg(&skills)
         .env("HOME", home.path())
         .env_remove("XDG_CONFIG_HOME")
@@ -229,10 +247,33 @@ fn validate_watch_revalidates_a_changed_skill_and_stops_on_sigint() {
 
     let mut seen = Vec::new();
     let ready = wait_for_line(&lines, "Press Ctrl+C", &mut seen);
-    if ready {
-        std::fs::write(skills.join("late/SKILL.md"), BARE_SKILL).unwrap();
+    // The watcher can be listening before FSEvents delivers its first event,
+    // so the write is repeated (with new bytes each time) until it is seen.
+    // A valid skill changes alongside; `--errors-only` must leave it out.
+    let mut revalidated = false;
+    for attempt in 0..20 {
+        if !ready || revalidated {
+            break;
+        }
+        std::fs::write(
+            skills.join("tidy/SKILL.md"),
+            format!("---\nname: tidy\ndescription: A valid skill\n---\n# Tidy {attempt}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            skills.join("late/SKILL.md"),
+            format!("{BARE_SKILL}\n{attempt}\n"),
+        )
+        .unwrap();
+        revalidated = wait_for_line_within(
+            &lines,
+            "Revalidating",
+            &mut seen,
+            std::time::Duration::from_millis(1500),
+        );
     }
-    let revalidated = ready && wait_for_line(&lines, "Revalidating", &mut seen);
+    // The result lines for the batch follow the header.
+    wait_for_line_within(&lines, "late", &mut seen, std::time::Duration::from_secs(5));
 
     let pid = child.id().to_string();
     let killed = Command::new("kill").args(["-INT", &pid]).status().unwrap();
@@ -241,6 +282,14 @@ fn validate_watch_revalidates_a_changed_skill_and_stops_on_sigint() {
 
     assert!(ready, "watcher never reported ready: {seen:?}");
     assert!(revalidated, "change was not revalidated: {seen:?}");
+    assert!(
+        seen.iter().any(|line| line.contains("late")),
+        "the failing skill was not reported: {seen:?}"
+    );
+    assert!(
+        !seen.iter().any(|line| line.contains("tidy")),
+        "--errors-only printed a valid skill: {seen:?}"
+    );
     assert!(killed.success());
     assert!(status.success(), "Ctrl+C should exit 0, got {status:?}");
     assert!(stopped, "no clean stop message: {seen:?}");

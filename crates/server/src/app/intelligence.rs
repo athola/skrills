@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::offline::{fetch_or_replay, open_cache, Outcome};
+use super::offline::{cache_and_offline_source, fetch_or_replay, query_key, Fresh, Outcome};
 use super::SkillService;
 
 impl SkillService {
@@ -585,7 +585,18 @@ impl SkillService {
         }
 
         // LLM generation
-        if method == CreationMethod::LLMGenerate || method == CreationMethod::Both {
+        let llm_offline = if method == CreationMethod::LLMGenerate || method == CreationMethod::Both
+        {
+            run_blocking(skrills_state::offline_source)
+        } else {
+            None
+        };
+        if let Some(source) = llm_offline {
+            // The LLM CLIs call a remote API, and nothing is cached to replay.
+            errors.push(format!(
+                "LLM generation skipped: offline mode ({source}), and it needs the network"
+            ));
+        } else if method == CreationMethod::LLMGenerate || method == CreationMethod::Both {
             match generate_skill_with_llm(&request).await {
                 Ok(result) => {
                     if result.success {
@@ -1287,21 +1298,24 @@ async fn search_github_cached(
     query: &str,
     limit: usize,
 ) -> Result<(Vec<skrills_intelligence::GitHubSkillResult>, Option<String>)> {
-    let key = format!("{}|{limit}", query.trim().to_lowercase());
+    let (cache, offline) = cache_and_offline_source();
     let outcome = fetch_or_replay(
-        open_cache().as_ref(),
-        skrills_state::is_offline(),
+        cache.as_ref(),
+        offline,
         "search-skills-github",
-        &key,
+        &query_key(query, limit),
         query,
         || async {
             let found = skrills_intelligence::search_github_skills(query, limit).await?;
-            Ok(serde_json::to_value(found)?)
+            Ok(Fresh::Complete(serde_json::to_value(found)?))
         },
     )
     .await?;
     Ok(match outcome {
         Outcome::Live(value) => (serde_json::from_value(value)?, None),
-        Outcome::Cached { value, notice } => (serde_json::from_value(value)?, Some(notice)),
+        Outcome::Cached(hit) => {
+            let notice = hit.notice();
+            (serde_json::from_value(hit.value)?, Some(notice))
+        }
     })
 }

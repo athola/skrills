@@ -99,7 +99,15 @@ pub(crate) fn default_target_dir(home: &Path, target: Platform) -> PathBuf {
         Platform::Claude => home.join(".claude/skills"),
         // Codex loads user skills from ~/.agents/skills.
         Platform::Codex => home.join(".agents/skills"),
-        Platform::Copilot => home.join(".copilot/skills"),
+        // COPILOT_HOME, then an XDG copilot directory, then ~/.copilot: the
+        // lookup sync and setup use, so a scaffolded skill lands where
+        // Copilot CLI reads.
+        Platform::Copilot => {
+            use skrills_sync::adapters::traits::AgentAdapter;
+            skrills_sync::CopilotAdapter::new()
+                .map(|adapter| adapter.config_root().join("skills"))
+                .unwrap_or_else(|_| home.join(".copilot/skills"))
+        }
         Platform::Cursor => home.join(".cursor/skills"),
     }
 }
@@ -195,28 +203,55 @@ pub(crate) fn create_from_template(request: &TemplateRequest) -> Result<Template
 
     std::fs::create_dir_all(&skill_dir)
         .with_context(|| format!("Failed to create directory {}", skill_dir.display()))?;
-    let mut file = match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-    {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => bail!(
+    let exists = || {
+        anyhow!(
             "{} already exists; remove it first to regenerate the skill",
             path.display()
-        ),
-        Err(e) => {
-            return Err(anyhow::Error::new(e)
-                .context(format!("Failed to write skill file {}", path.display())))
-        }
+        )
     };
-    file.write_all(content.as_bytes())
-        .with_context(|| format!("Failed to write skill file {}", path.display()))?;
+    if path.symlink_metadata().is_ok() {
+        return Err(exists());
+    }
+    // Written in full to a sibling first, then linked into place: a failed
+    // write leaves no truncated SKILL.md that every rerun would refuse.
+    // `hard_link` fails when the name exists, so a file that appeared
+    // meanwhile is still never replaced.
+    let staged = skill_dir.join(format!(".SKILL.md.{}.tmp", std::process::id()));
+    let failed = |e: std::io::Error| {
+        anyhow::Error::new(e).context(format!("Failed to write skill file {}", path.display()))
+    };
+    let placed = write_new(&staged, content.as_bytes())
+        .map_err(failed)
+        .and_then(|()| {
+            std::fs::hard_link(&staged, &path).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    exists()
+                } else {
+                    failed(e)
+                }
+            })
+        });
+    if let Err(e) = std::fs::remove_file(&staged) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(path = %staged.display(), error = %e, "Could not remove a staged skill file");
+        }
+    }
+    placed?;
     Ok(TemplateOutcome {
         content,
         path,
         written: true,
     })
+}
+
+/// Writes `bytes` to a file at `path` that must not exist yet.
+fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 /// Handle `create-skill --template <NAME>`: list the catalog for `list`,
@@ -454,12 +489,73 @@ mod tests {
             home.join(".agents/skills")
         );
         assert_eq!(
-            default_target_dir(home, Platform::Copilot),
-            home.join(".copilot/skills")
-        );
-        assert_eq!(
             default_target_dir(home, Platform::Cursor),
             home.join(".cursor/skills")
         );
+    }
+
+    /// Copilot's root comes from the lookup sync uses: `COPILOT_HOME` first,
+    /// else `~/.copilot` when no XDG copilot directory exists.
+    #[test]
+    fn copilot_default_directory_follows_copilot_home() {
+        let _guard = skrills_test_utils::env_guard();
+        let home = tempfile::tempdir().expect("tempdir");
+        let copilot_home = tempfile::tempdir().expect("tempdir");
+        let _home = skrills_test_utils::set_env_var("HOME", home.path().to_str());
+        let _xdg = skrills_test_utils::set_env_var("XDG_CONFIG_HOME", None);
+
+        let plain = {
+            let _unset = skrills_test_utils::set_env_var("COPILOT_HOME", None);
+            default_target_dir(home.path(), Platform::Copilot)
+        };
+        let _set = skrills_test_utils::set_env_var("COPILOT_HOME", copilot_home.path().to_str());
+        let overridden = default_target_dir(home.path(), Platform::Copilot);
+
+        assert_eq!(plain, home.path().join(".copilot/skills"));
+        assert_eq!(overridden, copilot_home.path().join("skills"));
+    }
+
+    #[test]
+    fn names_that_escape_or_exceed_the_limit_are_refused_with_the_reason() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let absolute = tmp.path().join("abs").display().to_string();
+        let too_long = "a".repeat(MAX_NAME_CHARS + 1);
+        for (bad, reason) in [
+            (absolute.as_str(), "simple directory name"),
+            ("../evil", "simple directory name"),
+            (too_long.as_str(), "longer than 100 characters"),
+        ] {
+            let mut req = request("testing", Platform::Claude, tmp.path());
+            req.name = bad.to_string();
+            let err = format!("{:#}", create_from_template(&req).expect_err(bad));
+            assert!(err.contains(reason), "{bad:?}: {err}");
+        }
+        assert!(!tmp.path().join("abs").exists());
+        let exact = "a".repeat(MAX_NAME_CHARS);
+        let mut req = request("testing", Platform::Claude, tmp.path());
+        req.name = exact.clone();
+        assert!(
+            create_from_template(&req).is_ok(),
+            "{exact} is at the limit"
+        );
+    }
+
+    #[test]
+    fn a_written_skill_leaves_no_staged_file_behind() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        create_from_template(&request("testing", Platform::Claude, tmp.path())).expect("create");
+
+        let names: Vec<String> = std::fs::read_dir(tmp.path().join("my-skill"))
+            .expect("read dir")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+
+        assert_eq!(names, ["SKILL.md"]);
     }
 }

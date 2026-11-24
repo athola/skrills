@@ -16,8 +16,9 @@ pub use enums::{
     version
 )]
 pub struct Cli {
-    /// Never use the network: serve cached results from network-backed
-    /// features. Same as setting `SKRILLS_OFFLINE=1`.
+    /// Offline mode: research and GitHub search serve cached results, and
+    /// LLM skill generation and subagent HTTP backends are refused. Same as
+    /// setting `SKRILLS_OFFLINE=1`.
     #[arg(long, global = true)]
     pub offline: bool,
     #[command(subcommand)]
@@ -252,7 +253,8 @@ pub enum Commands {
         #[arg(long, default_value_t = SyncEndpoint::Builtin(Platform::Claude))]
         from: SyncEndpoint,
         /// Target CLI: claude, codex, copilot, cursor, or an adapter name from
-        /// `~/.skrills/adapters`. If omitted, syncs to ALL other CLIs.
+        /// `~/.skrills/adapters`. If omitted, syncs to every other built-in
+        /// CLI; configured adapters are synced only when named here.
         #[arg(long)]
         to: Option<SyncEndpoint>,
         /// Preview changes without writing.
@@ -312,7 +314,8 @@ pub enum Commands {
         #[arg(long, conflicts_with = "list")]
         force: bool,
     },
-    /// Diagnoses Codex MCP configuration for this server.
+    /// Diagnoses the Codex MCP registration of this server and the custom
+    /// adapter files in `~/.skrills/adapters`; exits non-zero on a problem.
     Doctor,
     /// Validates skills for Claude Code and/or Codex CLI compatibility.
     Validate {
@@ -485,7 +488,9 @@ pub enum Commands {
         /// CLI the skill is written and validated for (with --template).
         #[arg(long, value_enum, default_value_t = Platform::Claude, requires = "template")]
         target: Platform,
-        /// Directory to create skill in (defaults to installed client, Claude preferred).
+        /// Directory to create the skill in. Defaults to the --target CLI's
+        /// skill root with --template, otherwise to the installed client's
+        /// (Claude preferred).
         #[arg(long)]
         target_dir: Option<PathBuf>,
         /// Project directory for context analysis.
@@ -736,7 +741,8 @@ pub enum Commands {
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,
     },
-    /// Find skills that session history shows unused, and remove them with a snapshot.
+    /// Find skills that session history shows unused: --suggest lists them,
+    /// --apply deletes them inside a snapshot that `sync-rollback` restores.
     #[command(group(clap::ArgGroup::new("mode").required(true).args(["suggest", "apply"])))]
     Prune {
         /// List stale skills and when each was last used; changes nothing.
@@ -755,8 +761,15 @@ pub enum Commands {
         )]
         older_than_days: u32,
         /// With --apply, skip the confirmation prompt (required without a terminal).
-        #[arg(long, requires = "apply")]
+        // `conflicts_with = "suggest"` and not `requires = "apply"`, which let
+        // `--suggest --yes` through; the mode group makes the two equivalent.
+        #[arg(long, conflicts_with = "suggest")]
         yes: bool,
+        /// With --apply, delete even when session history starts later than
+        /// the --older-than-days cutoff, so "never used" may only mean
+        /// "older than the history".
+        #[arg(long, conflicts_with = "suggest")]
+        ignore_short_history: bool,
         /// Skills directory to search (default: all discovered skills).
         #[arg(long = "skill-dir", value_name = "DIR")]
         skill_dirs: Vec<PathBuf>,

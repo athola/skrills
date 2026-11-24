@@ -702,9 +702,15 @@ logs (`~/.claude/projects`, `~/.codex/sessions`). When they hold no skill use
 at all, `prune` stops with an error instead of calling every skill stale.
 
 `--apply` lists the same skills, asks once for confirmation, takes a snapshot
-and deletes them. `skrills sync-rollback` restores them. `--yes` skips the
-prompt; without `--yes` and without a terminal, `--apply` fails before
-deleting anything.
+and deletes them, then names the snapshot. `skrills sync-rollback` restores
+them. `--yes` skips the prompt; without `--yes` and without a terminal,
+`--apply` fails before deleting anything.
+
+When the mined session history starts later than the threshold (10 days of
+logs and `--older-than-days 90`), "never used" may only mean "older than the
+history", so `--apply` refuses, names the date the history starts and deletes
+nothing. `--ignore-short-history` deletes anyway and prints the warning.
+`--suggest` shows the same warning as a note.
 
 `--older-than-days <DAYS>` sets the threshold (default: `90`). A skill is
 stale when its last use is more than that many days ago, so one used exactly
@@ -717,8 +723,10 @@ path. Skills that share a name in different roots share one usage record.
 
 Never deleted, whatever their usage: skills from the Claude plugin cache or
 marketplaces (a plugin update would restore them), sync mirrors, symlinked
-skill directories, and a skill directory that contains another skill. They
-are listed under "Stale but protected".
+skill directories, and a skill directory that contains another skill. Plugin
+and mirror skills are recognized by their own path too, so a `--skill-dir`
+above them (such as `~/.claude/plugins`) does not expose them. They are
+listed under "Stale but protected".
 
 ### pre-commit-validate
 

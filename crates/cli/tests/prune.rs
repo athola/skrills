@@ -228,6 +228,11 @@ fn a_zero_day_threshold_is_rejected() {
     let output = prune(home.path(), &["--suggest", "--older-than-days", "0"]);
 
     assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("--older-than-days"),
+        "{}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -238,7 +243,17 @@ fn prune_requires_exactly_one_of_suggest_and_apply() {
     let both = prune(home.path(), &["--suggest", "--apply"]);
 
     assert!(!neither.status.success());
+    assert!(
+        stderr(&neither).contains("--suggest") && stderr(&neither).contains("--apply"),
+        "{}",
+        stderr(&neither)
+    );
     assert!(!both.status.success());
+    assert!(
+        stderr(&both).contains("cannot be used with"),
+        "{}",
+        stderr(&both)
+    );
 }
 
 #[test]
@@ -248,6 +263,157 @@ fn yes_without_apply_is_rejected() {
     let output = prune(home.path(), &["--suggest", "--yes"]);
 
     assert!(!output.status.success());
+    // A parse error, not the later "no skill usage" failure this test used
+    // to pass on.
+    assert!(
+        stderr(&output).contains("cannot be used with") && stderr(&output).contains("'--yes'"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn prune_apply_refuses_plugin_cache_skills_found_through_an_extra_skill_dir() {
+    let home = tempfile::tempdir().unwrap();
+    let plugins = home.path().join(".claude/plugins");
+    let cached = seed_skill_in(&plugins.join("cache/acme/plugin/skills"), "plugin-skill");
+    let market = seed_skill_in(&plugins.join("marketplaces/acme/skills"), "market-skill");
+    seed_sessions(home.path(), &[("other-skill", 200)]);
+    let root = plugins.to_str().unwrap();
+
+    let suggest = skrills(
+        home.path(),
+        &[
+            "prune",
+            "--skill-dir",
+            root,
+            "--suggest",
+            "--format",
+            "json",
+        ],
+    );
+    let apply = skrills(
+        home.path(),
+        &["prune", "--skill-dir", root, "--apply", "--yes"],
+    );
+
+    assert!(suggest.status.success(), "{}", stderr(&suggest));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&suggest)).unwrap();
+    assert_eq!(report["candidates"], serde_json::json!([]), "{report}");
+    let skipped = report["skipped"].as_array().unwrap();
+    for name in ["plugin-skill", "market-skill"] {
+        let entry = skipped
+            .iter()
+            .find(|s| s["name"] == name)
+            .unwrap_or_else(|| panic!("{name} not skipped: {report}"));
+        assert!(
+            entry["reason"].as_str().unwrap().contains("plugin"),
+            "{entry}"
+        );
+    }
+    assert!(apply.status.success(), "{}", stderr(&apply));
+    assert!(cached.join("SKILL.md").exists());
+    assert!(market.join("SKILL.md").exists());
+}
+
+#[test]
+fn a_mirror_skill_found_through_an_extra_skill_dir_is_refused() {
+    let home = tempfile::tempdir().unwrap();
+    let mirrored = seed_skill_in(&home.path().join(".codex/skills-mirror"), "mirror-skill");
+    seed_sessions(home.path(), &[("other-skill", 200)]);
+    let root = home.path().join(".codex");
+
+    let apply = skrills(
+        home.path(),
+        &[
+            "prune",
+            "--skill-dir",
+            root.to_str().unwrap(),
+            "--apply",
+            "--yes",
+        ],
+    );
+
+    assert!(apply.status.success(), "{}", stderr(&apply));
+    assert!(mirrored.join("SKILL.md").exists());
+}
+
+#[test]
+fn apply_refuses_when_session_history_is_shorter_than_the_cutoff() {
+    let home = tempfile::tempdir().unwrap();
+    let unused = seed_skill(home.path(), "unused-skill");
+    seed_sessions(home.path(), &[("fresh-skill", 10), ("fresh-skill", 2)]);
+
+    let output = prune(home.path(), &["--apply", "--yes"]);
+
+    assert!(!output.status.success(), "{}", stdout(&output));
+    let err = stderr(&output);
+    assert!(err.contains(&date(now() - 10 * DAY)), "{err}");
+    assert!(err.contains("--ignore-short-history"), "{err}");
+    assert!(unused.join("SKILL.md").exists());
+    assert!(snapshot_names(home.path()).is_empty());
+}
+
+#[test]
+fn ignore_short_history_deletes_and_still_prints_the_caveat() {
+    let home = tempfile::tempdir().unwrap();
+    let unused = seed_skill(home.path(), "unused-skill");
+    seed_sessions(home.path(), &[("fresh-skill", 10)]);
+
+    let output = prune(home.path(), &["--apply", "--yes", "--ignore-short-history"]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let shown = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(shown.contains("only starts"), "{shown}");
+    assert!(!unused.exists());
+}
+
+#[test]
+fn ignore_short_history_is_refused_with_suggest() {
+    let home = tempfile::tempdir().unwrap();
+
+    let output = prune(home.path(), &["--suggest", "--ignore-short-history"]);
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("cannot be used with")
+            && stderr(&output).contains("'--ignore-short-history'"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn apply_names_the_snapshot_it_took() {
+    let home = tempfile::tempdir().unwrap();
+    seed_skill(home.path(), "stale-skill");
+    seed_sessions(home.path(), &[("stale-skill", 200)]);
+
+    let output = prune(home.path(), &["--apply", "--yes"]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let names = snapshot_names(home.path());
+    assert_eq!(names.len(), 1);
+    assert!(stdout(&output).contains(&names[0]), "{}", stdout(&output));
+}
+
+#[test]
+fn apply_deletes_nothing_when_no_snapshot_can_be_taken() {
+    let home = tempfile::tempdir().unwrap();
+    let stale = seed_skill(home.path(), "stale-skill");
+    seed_sessions(home.path(), &[("stale-skill", 200)]);
+    // A file where the snapshot directory has to go.
+    fs::write(home.path().join(".skrills"), "not a directory").unwrap();
+
+    let output = prune(home.path(), &["--apply", "--yes"]);
+
+    assert!(!output.status.success());
+    let err = stderr(&output);
+    assert!(
+        err.contains("snapshot") && err.contains("nothing deleted"),
+        "{err}"
+    );
+    assert!(stale.join("SKILL.md").exists());
 }
 
 #[test]

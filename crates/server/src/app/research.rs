@@ -20,7 +20,8 @@ use skrills_tome::models::{Paper, PaperSource};
 use skrills_tome::triz::{Parameter, TrizMatrix};
 
 use crate::app::offline::{
-    cached_tool_result, fetch_or_replay, open_cache, outcome_to_tool_result, remember, replay,
+    cache_and_offline_source, cached_tool_result, fallback, fetch_or_replay,
+    outcome_to_tool_result, query_key, remember, replay, stored_value, Fresh,
 };
 use crate::app::SkillService;
 use crate::handler::{invalid_params, run_blocking};
@@ -243,6 +244,16 @@ pub(crate) fn paper_sources(requested: Option<&Vec<Value>>) -> (Vec<&'static str
     (sources, errors)
 }
 
+/// Whether a fresh `search-papers` answer may be stored for offline use. One
+/// with a failed source (`partial`) is stored only when what is stored is
+/// partial too, or nothing is, so it never replaces a complete answer; a
+/// stored answer is complete when its `errors` list is empty.
+pub(crate) fn may_store_search_answer(partial: bool, stored: Option<&Value>) -> bool {
+    let stored_complete =
+        stored.is_some_and(|answer| answer["errors"].as_array().is_some_and(Vec::is_empty));
+    !partial || !stored_complete
+}
+
 /// Takes one paper from each source in turn, so a `limit` does not fill up
 /// from the first source, and drops repeats: by DOI when there is one, else
 /// by title with case and punctuation ignored.
@@ -348,20 +359,18 @@ impl SkillService {
             .min(100) as usize;
         let (sources, mut errors) = paper_sources(args.get("sources").and_then(|v| v.as_array()));
 
-        let cache = open_cache();
-        let cache_key = format!(
-            "{}|{limit}|{}",
-            query.trim().to_lowercase(),
-            sources.join(",")
-        );
-        if skrills_state::is_offline() {
-            let hit = replay(cache.as_ref(), "search-papers", &cache_key)?;
-            return Ok(cached_tool_result(hit, |papers| {
-                format!("Found {} papers", papers["count"])
-            }));
+        let (cache, offline) = cache_and_offline_source();
+        let cache_key = format!("{}|{}", query_key(query, limit), sources.join(","));
+        let summary = |papers: &Value| format!("Found {} papers", papers["count"]);
+        if let Some(source) = offline {
+            let hit = replay(cache.as_ref(), source, "search-papers", &cache_key)?;
+            return Ok(cached_tool_result(hit, summary));
         }
 
         let mut per_source: Vec<Vec<Paper>> = Vec::new();
+        // Kept apart from `errors`, which also names unknown requested
+        // sources: only a failed request makes the answer partial.
+        let mut source_failures = 0_usize;
         for source in sources {
             let result: Result<Vec<Paper>, _> = match source {
                 "arxiv" => ArxivClient::new().search(query, limit).await,
@@ -370,7 +379,10 @@ impl SkillService {
             };
             match result {
                 Ok(papers) => per_source.push(papers),
-                Err(e) => errors.push(format!("{source}: {e}")),
+                Err(e) => {
+                    source_failures += 1;
+                    errors.push(format!("{source}: {e}"));
+                }
             }
         }
         let deduped = merge_papers(per_source, limit);
@@ -394,6 +406,12 @@ impl SkillService {
             .collect();
 
         let all_failed = deduped.is_empty() && !errors.is_empty();
+        if all_failed && source_failures > 0 {
+            let error = anyhow!("all sources failed: {}", errors.join("; "));
+            if let Some(hit) = fallback(cache.as_ref(), "search-papers", &cache_key, &error) {
+                return Ok(cached_tool_result(hit, summary));
+            }
+        }
         let mut text = format!("Found {} papers", deduped.len());
         if !errors.is_empty() {
             text.push_str(&format!(
@@ -412,7 +430,13 @@ impl SkillService {
             "count": deduped.len(),
             "errors": errors,
         });
-        if !all_failed {
+        let partial = source_failures > 0;
+        let stored = if partial {
+            stored_value(cache.as_ref(), "search-papers", &cache_key)
+        } else {
+            None
+        };
+        if !all_failed && may_store_search_answer(partial, stored.as_ref()) {
             remember(
                 cache.as_ref(),
                 "search-papers",
@@ -443,10 +467,11 @@ impl SkillService {
             .unwrap_or(10)
             .min(100) as usize;
 
-        let cache_key = format!("{}|{limit}", query.trim().to_lowercase());
+        let cache_key = query_key(query, limit);
+        let (cache, offline) = cache_and_offline_source();
         let outcome = fetch_or_replay(
-            open_cache().as_ref(),
-            skrills_state::is_offline(),
+            cache.as_ref(),
+            offline,
             "search-discussions",
             &cache_key,
             query,
@@ -469,10 +494,10 @@ impl SkillService {
                         })
                     })
                     .collect();
-                Ok(json!({
+                Ok(Fresh::Complete(json!({
                     "discussions": discussion_json,
                     "count": discussions.len(),
-                }))
+                })))
             },
         )
         .await?;
@@ -491,24 +516,28 @@ impl SkillService {
             .and_then(|v| v.as_str())
             .ok_or_else(|| invalid_params("Missing required parameter: doi"))?;
 
+        let (cache, offline) = cache_and_offline_source();
         let outcome = fetch_or_replay(
-            open_cache().as_ref(),
-            skrills_state::is_offline(),
+            cache.as_ref(),
+            offline,
             "resolve-doi",
             &doi.trim().to_lowercase(),
             doi,
             || async {
                 let metadata = CrossRefClient::new().resolve_doi(doi).await?;
 
-                let pdf_url = match UnpaywallClient::default().find_pdf_url(doi).await {
-                    Ok(url) => url,
+                // A failed lookup is not "no open-access PDF": the answer is
+                // returned without `pdf_url` but not stored, so offline use
+                // never replays the failure as the answer.
+                let (pdf_url, complete) = match UnpaywallClient::default().find_pdf_url(doi).await {
+                    Ok(url) => (url, true),
                     Err(e) => {
                         tracing::warn!(doi = doi, error = %e, "Unpaywall lookup failed");
-                        None
+                        (None, false)
                     }
                 };
 
-                Ok(json!({
+                let metadata = json!({
                     "doi": metadata.doi,
                     "title": metadata.title,
                     "authors": metadata.authors,
@@ -517,7 +546,12 @@ impl SkillService {
                     "url": metadata.url,
                     "journal": metadata.journal,
                     "pdf_url": pdf_url,
-                }))
+                });
+                Ok(if complete {
+                    Fresh::Complete(metadata)
+                } else {
+                    Fresh::Partial(metadata)
+                })
             },
         )
         .await?;
@@ -543,7 +577,7 @@ impl SkillService {
             .and_then(|v| v.as_str())
             .ok_or_else(|| invalid_params("Missing required parameter: doi"))?;
 
-        let cache = ResearchCache::open()?;
+        let cache = run_blocking(ResearchCache::open)?;
         let pdf_path = cache.pdf_dir().join(pdf_cache_file_name(doi));
 
         // A cached file counts only if it is a PDF; anything else (an error
@@ -563,9 +597,9 @@ impl SkillService {
             ));
         }
 
-        if skrills_state::is_offline() {
+        if let Some(source) = run_blocking(skrills_state::offline_source) {
             return Err(anyhow!(
-                "offline mode: the PDF for DOI {doi} is not cached and downloading it needs the network"
+                "offline mode ({source}): the PDF for DOI {doi} is not cached and downloading it needs the network"
             ));
         }
 

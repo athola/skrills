@@ -1471,7 +1471,7 @@ mod tests {
         /// How long a polling check waits before failing. Each loop exits as
         /// soon as its condition holds, which takes milliseconds when idle;
         /// the slack is for the pre-commit hook, which runs every test binary
-        /// at once and starved the old 2-second loops of CPU.
+        /// at once and can starve a short deadline of CPU.
         const POLL_DEADLINE: Duration = Duration::from_secs(15);
 
         fn poll_deadline() -> std::time::Instant {

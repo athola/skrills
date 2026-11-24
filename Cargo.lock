@@ -4621,6 +4621,7 @@ dependencies = [
  "sha2 0.11.1",
  "skrills-test-utils",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]

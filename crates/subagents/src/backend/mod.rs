@@ -266,6 +266,26 @@ pub(crate) async fn run_http_adapter(
         return Err(anyhow!("{}", api_key_error));
     }
 
+    // Only the explicit switch refuses: the base URL may be a local server,
+    // which a failed probe of the public internet says nothing about.
+    if skrills_state::network::offline_switch_is_on() {
+        let refusal = format!(
+            "offline mode ({}): the {error_label} backend needs the network",
+            skrills_state::OfflineSource::Switch
+        );
+        store
+            .update_status(
+                run_id,
+                RunStatus {
+                    state: RunState::Failed,
+                    message: Some(refusal.clone()),
+                    updated_at: OffsetDateTime::now_utc(),
+                },
+            )
+            .await?;
+        return Err(anyhow!(refusal));
+    }
+
     let resp = build_request()
         .send()
         .await

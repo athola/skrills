@@ -18,6 +18,30 @@ pub(crate) fn print_skill_warnings(report: &skrills_sync::SyncReport) {
     }
 }
 
+/// Prints every phase's warnings and fails when a phase failed.
+///
+/// A failed phase only sets `report.success` and leaves a warning, so a
+/// caller that returns `Ok` regardless exits 0 on a sync that did not happen.
+fn check_phases(report: &skrills_sync::SyncReport) -> Result<()> {
+    let phases = [
+        &report.skills,
+        &report.commands,
+        &report.mcp_servers,
+        &report.preferences,
+        &report.agents,
+        &report.hooks,
+        &report.instructions,
+        &report.plugin_assets,
+    ];
+    for warning in phases.iter().flat_map(|phase| &phase.warnings) {
+        eprintln!("Warning: {warning}");
+    }
+    if !report.success {
+        bail!("a sync phase failed; see the warnings above");
+    }
+    Ok(())
+}
+
 /// Handle the `sync-agents` command, in its own snapshot so `sync-rollback`
 /// can put the previous AGENTS.md back.
 pub(crate) fn handle_sync_agents_command(
@@ -125,6 +149,10 @@ pub(crate) fn handle_mirror_command(
         ..Default::default()
     };
     let sync_report = orch.sync(&params)?;
+    if !codex_report.success {
+        bail!("the skill sync to Codex failed; see the warnings above");
+    }
+    check_phases(&sync_report)?;
     // Refresh Codex's global AGENTS.md with skills and agents (mirror roots
     // now populated). Never the working directory's AGENTS.md: that is
     // whatever repository `mirror` happens to run from.
@@ -281,9 +309,14 @@ pub(crate) struct SyncAllArgs {
 }
 
 /// Validates (and with `--autofix`, repairs) the source skills before any
-/// target is touched. Returns an error, and so writes nothing, when an error
-/// remains.
-fn validate_sync_source(args: &SyncAllArgs, targets: &[SyncEndpoint], home: &Path) -> Result<()> {
+/// target is touched, and returns the source skills autofix rewrote. When an
+/// error remains it returns an error before any target is written; the
+/// rewrites autofix already made stay, and are listed on stderr.
+fn validate_sync_source(
+    args: &SyncAllArgs,
+    targets: &[SyncEndpoint],
+    home: &Path,
+) -> Result<Vec<PathBuf>> {
     let roots = source_validation_roots(&args.from, home, args.include_marketplace)?;
     let target = validation_target_for(targets);
     let mode = match (args.autofix, args.dry_run) {
@@ -310,14 +343,20 @@ fn validate_sync_source(args: &SyncAllArgs, targets: &[SyncEndpoint], home: &Pat
         for line in run.failure_lines() {
             eprintln!("{line}");
         }
+        let rewritten = if args.dry_run {
+            None
+        } else {
+            source_rewrite_note(&run.fixed)
+        };
         bail!(
-            "sync-all aborted before syncing any target: the {} source skills do not validate{}",
+            "sync-all aborted before syncing any target: the {} source skills do not validate{}{}",
             args.from.as_str(),
             if args.autofix {
                 " even after autofix"
             } else {
                 "; fix them or rerun with --autofix"
-            }
+            },
+            rewritten.map_or_else(String::new, |note| format!("\n{note}"))
         );
     }
     tracing::info!(
@@ -325,16 +364,31 @@ fn validate_sync_source(args: &SyncAllArgs, targets: &[SyncEndpoint], home: &Pat
         target = ?target,
         "source skills validated"
     );
-    Ok(())
+    Ok(if args.dry_run { Vec::new() } else { run.fixed })
 }
 
-/// Handle the `sync-all` command.
-///
+/// The line a failed `sync-all` adds when `--autofix` rewrote source skills:
+/// that happens before the snapshot starts, so `sync-rollback` cannot undo
+/// it, and the user should not believe the run left the source untouched.
+fn source_rewrite_note(autofixed: &[PathBuf]) -> Option<String> {
+    if autofixed.is_empty() {
+        return None;
+    }
+    let paths: Vec<String> = autofixed.iter().map(|p| p.display().to_string()).collect();
+    Some(format!(
+        "--autofix already rewrote {} source skill(s), which sync-rollback does not restore: {}",
+        autofixed.len(),
+        paths.join(", ")
+    ))
+}
+
 /// With `--validate` or `--autofix`, the source skill tree is validated for
 /// the strictest of the targets before the first target is synced, and any
 /// remaining error aborts the whole run with nothing written to any target.
 /// `--autofix` repairs the source first (or, under `--dry-run`, checks what
-/// the repair would leave) and then validates as `--validate` does.
+/// the repair would leave) and then validates as `--validate` does. The
+/// repair is outside the snapshot, so a failure later in the run names the
+/// rewritten source skills. A target whose sync phase failed fails the run.
 pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
     // Before validation: `--autofix` writes to the source, and "nothing was
     // written" has to hold when the prompts cannot be answered.
@@ -351,9 +405,11 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
         None => args.from.other_targets(),
     };
 
-    if args.validate || args.autofix {
-        validate_sync_source(&args, &targets, &home_dir()?)?;
-    }
+    let autofixed = if args.validate || args.autofix {
+        validate_sync_source(&args, &targets, &home_dir()?)?
+    } else {
+        Vec::new()
+    };
 
     let multi_target = targets.len() > 1;
     let from = args.from.clone();
@@ -404,7 +460,11 @@ pub(crate) fn handle_sync_all_command(args: SyncAllArgs) -> Result<()> {
             report.summary,
             skipped_commands_note(args.skip_existing_commands, &report)
         );
-        Ok(())
+        check_phases(&report)
+    })
+    .map_err(|e| match source_rewrite_note(&autofixed) {
+        Some(note) => anyhow!("{e:#}\n{note}"),
+        None => e,
     })?;
 
     if args.dry_run {

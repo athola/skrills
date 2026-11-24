@@ -44,7 +44,7 @@ Use `make`:
 
 ### Does it work offline?
 
-Yes. The MCP server and CLI work locally without internet access.
+Yes. Discovery, validation, analysis, sync, `prune` and `sync-rollback` need no network. The research and GitHub search tools serve their newest cached answer when offline; LLM skill generation is refused. `SKRILLS_OFFLINE=1` (or `--offline`) forces this, and `SKRILLS_OFFLINE=0` skips the connectivity probe. See [Offline Mode](../book/src/runtime-tuning.md#offline-mode).
 
 ### Why doesn't Copilot have slash commands?
 

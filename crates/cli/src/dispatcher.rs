@@ -540,10 +540,18 @@ pub fn run() -> Result<()> {
             apply,
             older_than_days,
             yes,
+            ignore_short_history,
             skill_dirs,
             format,
             ..
-        } => handle_prune_command(apply, older_than_days, yes, skill_dirs, format),
+        } => handle_prune_command(
+            apply,
+            older_than_days,
+            yes,
+            ignore_short_history,
+            skill_dirs,
+            format,
+        ),
         Commands::SkillScore {
             name,
             skill_dirs,

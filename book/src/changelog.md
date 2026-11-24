@@ -2,6 +2,12 @@
 
 ## 0.9.1 (Unreleased)
 
+- **Rollback**: `sync-all`, `mirror`, `sync-agents`, `prune --apply` and the MCP sync tools snapshot what they overwrite or delete, and `skrills sync-rollback` restores the latest snapshot (`--list` shows them).
+- **Prune**: `skrills prune --suggest` lists skills that session history shows unused; `--apply` deletes them inside a snapshot, and refuses when the history is shorter than the threshold unless `--ignore-short-history` is given. Plugin, marketplace and mirror skills are never deleted.
+- **Custom adapters**: one TOML file in `~/.skrills/adapters/` makes another tool a `--from`/`--to` value for the sync commands. See [Custom Adapters](custom-adapters.md).
+- **Offline mode**: `SKRILLS_OFFLINE=1` or `--offline` makes the research and GitHub search tools serve cached answers, and refuses LLM skill generation and the subagent HTTP backends. Without it, a connectivity probe decides, skipped when a proxy is set. See [Offline Mode](runtime-tuning.md#offline-mode).
+- **Exit status**: `sync-all` and `mirror` exit non-zero when a sync phase fails, and print the phase's warnings.
+
 - **Cursor**: skills synced to Cursor keep the `name` and `description` frontmatter Cursor needs to load them. A mirrored plugin's `hooks/hooks.json` is rewritten to Cursor's hook layout. Top-level Claude hooks are no longer copied, because Cursor already loads them from `~/.claude/settings.json`. Agents with no write tool become `readonly`.
 - **Codex**: skills go to `~/.agents/skills`, the only user skills directory Codex documents, instead of `~/.codex/skills`. This covers `sync`, `mirror`, `sync-all`, the TUI, the `sync-from-claude` and `sync-all` MCP tools, and `create-skill` for a Codex-only install. Discovery and `skrills setup --universal` use `~/.agents/skills` in place of `~/.agent/skills`, which no tool loads. `sync-from-claude` now reports `warnings` instead of the `synced` name list.
 - **Copilot**: on macOS, sync and `skrills setup` write to `~/.copilot` (or `COPILOT_HOME`), where Copilot CLI reads, instead of `~/Library/Application Support/copilot`.

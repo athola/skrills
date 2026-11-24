@@ -1,7 +1,7 @@
 //! SQLite-based response cache for API results and PDF storage.
 
 use crate::{TomeError, TomeResult};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::path::PathBuf;
 
 /// Longest TTL `put` stores (ten years).
@@ -88,18 +88,15 @@ impl ResearchCache {
     /// Get a cached API response by key.
     pub fn get(&self, cache_key: &str) -> TomeResult<Option<String>> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
-        let result = conn.query_row(
+        conn.query_row(
             "SELECT response_json FROM api_cache
              WHERE cache_key = ?1
              AND (expires_at IS NULL OR expires_at > datetime('now'))",
             [cache_key],
             |row| row.get(0),
-        );
-        match result {
-            Ok(json) => Ok(Some(json)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(TomeError::Cache(e)),
-        }
+        )
+        .optional()
+        .map_err(TomeError::Cache)
     }
 
     /// Get the stored response for `cache_key` with its store time, ignoring
@@ -107,7 +104,7 @@ impl ResearchCache {
     /// caller say how stale.
     pub fn get_latest(&self, cache_key: &str) -> TomeResult<Option<CachedResponse>> {
         let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner());
-        let found = conn.query_row(
+        conn.query_row(
             "SELECT response_json, CAST(strftime('%s', created_at) AS INTEGER)
              FROM api_cache WHERE cache_key = ?1",
             [cache_key],
@@ -117,12 +114,9 @@ impl ResearchCache {
                     cached_at_unix: row.get::<_, i64>(1)?.max(0) as u64,
                 })
             },
-        );
-        match found {
-            Ok(hit) => Ok(Some(hit)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(TomeError::Cache(e)),
-        }
+        )
+        .optional()
+        .map_err(TomeError::Cache)
     }
 
     /// Store an API response in the cache.

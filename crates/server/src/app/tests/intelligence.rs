@@ -342,6 +342,16 @@ fn test_create_skill_tool_requires_description() {
 /// THEN it should accept them (in dry_run mode)
 #[test]
 fn test_create_skill_tool_accepts_valid_names() {
+    // Offline with HOME and the cache in a tempdir: the GitHub search then
+    // fails on the empty cache instead of reaching the network or the real
+    // research.db, which tests/offline.rs also uses.
+    let _guard = crate::test_support::env_guard();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_base = temp.path().join("cache");
+    let _home = crate::test_support::set_env_var("HOME", temp.path().to_str());
+    let _xdg = crate::test_support::set_env_var("XDG_CACHE_HOME", cache_base.to_str());
+    let _local = crate::test_support::set_env_var("LOCALAPPDATA", cache_base.to_str());
+    let _offline = crate::test_support::set_env_var("SKRILLS_OFFLINE", Some("1"));
     let service = SkillService::new_with_ttl(Vec::new(), Duration::from_secs(1)).unwrap();
 
     let valid_names = [
@@ -364,10 +374,9 @@ fn test_create_skill_tool_accepts_valid_names() {
         .cloned()
         .unwrap();
 
-        // Should not error on validation (may error on network, but that's ok)
+        // The offline search fails on the empty cache; only the name
+        // validation is checked here.
         let result = service.create_skill_tool_sync(args);
-        // In dry_run mode with github method, it makes a network call
-        // We just verify the name validation passed
         if let Err(e) = &result {
             let err_msg = e.to_string();
             assert!(

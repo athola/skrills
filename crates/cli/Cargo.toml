@@ -15,7 +15,8 @@ categories = ["command-line-utilities", "development-tools"]
 # Release binaries and `cargo install skrills` build with default features, so
 # every user-facing surface has to be listed here. The `dashboard` and `watch`
 # cfgs are evaluated in this crate; leaving them out compiles out
-# `skrills dashboard`, `cold-window --tui` and `serve --watch`.
+# `skrills dashboard`, `cold-window --tui`, `serve --watch` and
+# `validate --watch`.
 default = ["subagents", "http-transport", "dashboard", "watch"]
 subagents = ["skrills-server/subagents"]
 http-transport = ["skrills-server/http-transport", "dep:rcgen", "dep:x509-parser", "dep:axum"]

@@ -132,7 +132,9 @@ pub(super) fn parse_claude_sessions_with_limit(
     for (_, path) in sessions {
         match parse_claude_session_file(&path) {
             Ok(session_events) => events.extend(session_events),
-            Err(e) => debug!("Failed to parse session file {:?}: {}", path, e),
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "Skipping unreadable Claude session file")
+            }
         }
     }
 

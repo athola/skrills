@@ -43,4 +43,6 @@ pub use env::{
     extra_dirs_from_env, home_dir, load_manifest_settings, manifest_file, runtime_overrides_path,
     ManifestSettings,
 };
-pub use network::{check_connectivity, is_offline, is_online, NetworkStatus};
+pub use network::{
+    check_connectivity, is_offline, is_online, offline_source, NetworkStatus, OfflineSource,
+};

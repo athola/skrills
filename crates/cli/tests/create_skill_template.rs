@@ -238,8 +238,10 @@ fn rerunning_a_template_keeps_the_existing_skill_and_fails() {
         "--target-dir",
         skills_arg,
     ];
-    assert!(run_skrills(home.path(), &args).status.success());
+    let first = run_skrills(home.path(), &args);
+    assert!(first.status.success(), "{}", stderr(&first));
     let skill_path = skills.path().join("my-skill/SKILL.md");
+    assert!(skill_path.is_file(), "the first run wrote no SKILL.md");
     std::fs::write(&skill_path, "hand-edited").expect("edit");
 
     let second = run_skrills(home.path(), &args);

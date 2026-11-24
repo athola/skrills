@@ -51,14 +51,15 @@ struct SuggestReport<'a> {
     skipped: &'a [Skipped],
 }
 
-/// Handle the prune command.
-///
 /// `--suggest` (`apply == false`) only reports. `--apply` deletes the same
-/// candidates through a snapshot session so `sync-rollback` can restore them.
+/// candidates through a snapshot session so `sync-rollback` can restore them,
+/// and refuses when session history is too short to call a skill unused
+/// unless `ignore_short_history`.
 pub(crate) fn handle_prune_command(
     apply: bool,
     older_than_days: u32,
     yes: bool,
+    ignore_short_history: bool,
     skill_dirs: Vec<PathBuf>,
     format: OutputFormat,
 ) -> Result<()> {
@@ -73,11 +74,47 @@ pub(crate) fn handle_prune_command(
     let analytics = load_usage()?;
     let now = now_secs();
     let plan = plan(&skills, &analytics, now, older_than_days);
+    let history_start = history_start(&analytics);
 
     if !apply {
-        return print_suggestions(&plan, &analytics, now, older_than_days, format);
+        return print_suggestions(&plan, history_start, now, older_than_days, format);
     }
-    apply_plan(&plan, yes)
+    let caveat = short_history_caveat(history_start, now, older_than_days);
+    if let Some(caveat) = &caveat {
+        if !plan.candidates.is_empty() && !ignore_short_history {
+            bail!(
+                "{caveat} Nothing deleted; rerun with --ignore-short-history to delete anyway, \
+                 or lower --older-than-days"
+            );
+        }
+    }
+    // A snapshot is the only way back, so failing to take one stops the run
+    // (sync only warns, because a sync can be repeated; a deletion cannot).
+    let snapshot_root = skrills_sync::snapshot::default_root().ok_or_else(|| {
+        anyhow!("no home directory, so no snapshot can be taken; nothing deleted")
+    })?;
+    apply_plan(&plan, yes, caveat.as_deref(), &snapshot_root)
+}
+
+/// The oldest mined event, when one has a known time.
+fn history_start(analytics: &UsageAnalytics) -> Option<u64> {
+    analytics
+        .time_range
+        .as_ref()
+        .map(|range| range.start)
+        .filter(|&start| start > 0)
+}
+
+/// The warning that mined history starts after the cutoff, or `None` when it
+/// covers the whole window (or its start is unknown).
+fn short_history_caveat(history_start: Option<u64>, now: u64, days: u32) -> Option<String> {
+    let cutoff = now.saturating_sub(u64::from(days) * SECONDS_PER_DAY);
+    let start = history_start.filter(|&start| start > cutoff)?;
+    Some(format!(
+        "Mined session history only starts {}, which is less than {days} days ago; \
+         \"never used\" may just mean the skill predates it.",
+        rfc3339(start).map_or_else(|| start.to_string(), |t| t[..10].to_string())
+    ))
 }
 
 fn is_interactive() -> bool {
@@ -108,8 +145,8 @@ fn load_usage() -> Result<UsageAnalytics> {
 /// when none is recorded. Usage is keyed by directory name (analytics reduce
 /// every path, URI and `plugin:name` to it), so a skill matches under its
 /// directory name or its frontmatter name; the latest use under either counts.
-/// A use whose time could not be parsed (recorded as 0) proves the skill is
-/// used, so it is never stale.
+/// A use whose time could not be parsed (recorded as 0) under either name
+/// proves the skill is used, so it is never stale.
 fn plan(
     skills: &[SkillMeta],
     analytics: &UsageAnalytics,
@@ -126,14 +163,15 @@ fn plan(
 
     let mut plan = PrunePlan::default();
     for skill in skills {
-        let latest = [Some(skill_dir_name(skill)), skill.frontmatter_name.clone()]
+        let uses: Vec<u64> = [Some(skill_dir_name(skill)), skill.frontmatter_name.clone()]
             .into_iter()
             .flatten()
             .filter_map(|name| last_use.get(&name.to_ascii_lowercase()).copied())
-            .max();
+            .collect();
+        let latest = uses.iter().copied().max();
         let stale = match latest {
             None => true,
-            Some(time) => time != 0 && time < cutoff,
+            Some(time) => !uses.contains(&0) && time < cutoff,
         };
         if !stale {
             continue;
@@ -158,15 +196,53 @@ fn plan(
     plan
 }
 
+const PLUGIN_REASON: &str = "managed by a plugin; the next plugin update would restore it";
+const MIRROR_REASON: &str = "a sync mirror; the next sync would recreate it";
+
+/// The refusal for a path inside a plugin cache, a plugin marketplace or a
+/// skills mirror, judged by its components.
+fn managed_path_refusal(path: &Path) -> Option<&'static str> {
+    let names: Vec<&str> = path
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    let is = |name: &str, wanted: &str| name.eq_ignore_ascii_case(wanted);
+    if names
+        .windows(2)
+        .any(|w| is(w[0], "plugins") && (is(w[1], "cache") || is(w[1], "marketplaces")))
+    {
+        return Some(PLUGIN_REASON);
+    }
+    names
+        .iter()
+        .any(|name| is(name, "skills-mirror"))
+        .then_some(MIRROR_REASON)
+}
+
 /// Why `skill`'s directory must not be deleted, or `None` when it may be.
+///
+/// Plugin and mirror skills are recognized by the root's label and by the
+/// skill's own path, as given and resolved: `--skill-dir ~/.claude/plugins`
+/// labels its root as a plain Claude root, and `--skill-dir .` or a symlinked
+/// root hides the path, yet the plugin cache sits below them.
 fn refusal(skill: &SkillMeta, all_dirs: &[&Path]) -> Option<&'static str> {
     if matches!(skill.source, SkillSource::Cache | SkillSource::Marketplace) {
-        return Some("managed by a plugin; the next plugin update would restore it");
+        return Some(PLUGIN_REASON);
     }
     if matches!(skill.source, SkillSource::Mirror) {
-        return Some("a sync mirror; the next sync would recreate it");
+        return Some(MIRROR_REASON);
+    }
+    if let Some(reason) = managed_path_refusal(&skill.path) {
+        return Some(reason);
     }
     let dir = skill.path.parent()?;
+    if let Some(reason) = dir
+        .canonicalize()
+        .ok()
+        .and_then(|real| managed_path_refusal(&real))
+    {
+        return Some(reason);
+    }
     if skill.path.file_name().is_none_or(|f| f != "SKILL.md") {
         return Some("not a SKILL.md in its own directory under a skill root");
     }
@@ -205,16 +281,11 @@ fn dir_refusal(dir: &Path, root: &Path) -> Option<&'static str> {
 
 fn print_suggestions(
     plan: &PrunePlan,
-    analytics: &UsageAnalytics,
+    history_start: Option<u64>,
     now: u64,
     older_than_days: u32,
     format: OutputFormat,
 ) -> Result<()> {
-    let history_start = analytics
-        .time_range
-        .as_ref()
-        .map(|range| range.start)
-        .filter(|&start| start > 0);
     if format.is_json() {
         let report = SuggestReport {
             older_than_days,
@@ -251,14 +322,8 @@ fn render_text(plan: &PrunePlan, history_start: Option<u64>, now: u64, days: u32
             ));
         }
     }
-    if let Some(start) =
-        history_start.filter(|&start| start > now.saturating_sub(u64::from(days) * SECONDS_PER_DAY))
-    {
-        text.push_str(&format!(
-            "\nNote: mined session history only starts {}, which is less than {days} days ago; \
-             \"never used\" may just mean the skill predates it.\n",
-            rfc3339(start).map_or_else(|| start.to_string(), |t| t[..10].to_string())
-        ));
+    if let Some(caveat) = short_history_caveat(history_start, now, days) {
+        text.push_str(&format!("\nNote: {caveat}\n"));
     }
     text
 }
@@ -281,14 +346,24 @@ fn render_candidates(candidates: &[Candidate]) -> String {
         .collect()
 }
 
-/// Deletes `plan.candidates` inside a snapshot session, after confirmation
-/// unless `yes`. No candidates means no snapshot and no prompt.
-fn apply_plan(plan: &PrunePlan, yes: bool) -> Result<()> {
+/// Deletes `plan.candidates` inside a snapshot session under
+/// `snapshot_root`, after confirmation unless `yes`, and names the snapshot.
+/// No candidates means no snapshot and no prompt. `caveat`, when the history
+/// is short, is shown before the prompt.
+fn apply_plan(
+    plan: &PrunePlan,
+    yes: bool,
+    caveat: Option<&str>,
+    snapshot_root: &Path,
+) -> Result<()> {
     if plan.candidates.is_empty() {
         println!("Nothing to prune.");
         return Ok(());
     }
     print!("{}", render_candidates(&plan.candidates));
+    if let Some(caveat) = caveat {
+        eprintln!("Warning: {caveat}");
+    }
     if !yes {
         let confirmed = inquire::Confirm::new(&format!(
             "Delete these {} skill(s)? A snapshot is taken first.",
@@ -302,13 +377,13 @@ fn apply_plan(plan: &PrunePlan, yes: bool) -> Result<()> {
         }
     }
 
-    // A snapshot is the only way back, so failing to take one stops the run
-    // (sync only warns, because a sync can be repeated; a deletion cannot).
-    let snapshot_root = skrills_sync::snapshot::default_root().ok_or_else(|| {
-        anyhow!("no home directory, so no snapshot can be taken; nothing deleted")
-    })?;
-    let _session = skrills_sync::snapshot::begin(&snapshot_root)
+    let earlier = snapshot_names(snapshot_root);
+    let _session = skrills_sync::snapshot::begin(snapshot_root)
         .context("Could not take a snapshot; nothing deleted")?;
+    let snapshot = snapshot_names(snapshot_root)
+        .into_iter()
+        .find(|name| !earlier.contains(name))
+        .map_or_else(String::new, |name| format!(" into snapshot {name}"));
 
     let mut removed = 0_usize;
     for candidate in &plan.candidates {
@@ -329,8 +404,19 @@ fn apply_plan(plan: &PrunePlan, yes: bool) -> Result<()> {
         })?;
         removed += 1;
     }
-    println!("Removed {removed} skill(s). Undo with `skrills sync-rollback`.");
+    println!("Removed {removed} skill(s){snapshot}. Undo with `skrills sync-rollback`.");
     Ok(())
+}
+
+/// Names of the snapshots under `root`; an unreadable root lists none, which
+/// only costs the name in the closing line.
+fn snapshot_names(root: &Path) -> Vec<String> {
+    skrills_sync::snapshot::list(root)
+        .map(|found| found.into_iter().map(|snapshot| snapshot.name).collect())
+        .unwrap_or_else(|e| {
+            tracing::warn!(root = %root.display(), error = %e, "Could not list snapshots");
+            Vec::new()
+        })
 }
 
 #[cfg(test)]
@@ -426,6 +512,114 @@ mod tests {
         let plan = plan(&skills, &used(&[("undated", 0)]), NOW, 90);
 
         assert!(plan.candidates.is_empty());
+    }
+
+    #[test]
+    fn an_undated_use_under_either_name_keeps_the_skill_out_of_the_candidates() {
+        let root = tempfile::tempdir().unwrap();
+        let skills = [skill_in(
+            root.path(),
+            "dir-name",
+            SkillSource::Extra(0),
+            Some("front-name"),
+        )];
+        let analytics = used(&[("dir-name", 1_700_000_000), ("front-name", 0)]);
+
+        let plan = plan(&skills, &analytics, NOW, 90);
+
+        assert!(plan.candidates.is_empty(), "{plan:?}");
+    }
+
+    #[test]
+    fn a_skill_under_a_plugin_cache_or_mirror_path_is_refused_whatever_its_root_label() {
+        let root = tempfile::tempdir().unwrap();
+        let skills = [
+            skill_in(
+                &root.path().join("plugins/cache/v/p/skills"),
+                "cached",
+                SkillSource::Claude,
+                None,
+            ),
+            skill_in(
+                &root.path().join("plugins/marketplaces/v/skills"),
+                "market",
+                SkillSource::Extra(0),
+                None,
+            ),
+            skill_in(
+                &root.path().join("skills-mirror"),
+                "mirrored",
+                SkillSource::Codex,
+                None,
+            ),
+        ];
+        let skills = skills.map(|skill| SkillMeta {
+            root: root.path().to_path_buf(),
+            ..skill
+        });
+
+        let plan = plan(&skills, &used(&[("other", NOW)]), NOW, 90);
+
+        assert!(plan.candidates.is_empty(), "{plan:?}");
+        assert_eq!(plan.skipped.len(), 3, "{plan:?}");
+    }
+
+    /// A root that is a symlink to a plugin cache (or `--skill-dir .` run
+    /// from inside one) hides `plugins/cache` from the path as given.
+    #[cfg(unix)]
+    #[test]
+    fn a_plugin_cache_skill_reached_through_a_symlinked_root_is_refused() {
+        let real = tempfile::tempdir().unwrap();
+        let linked = tempfile::tempdir().unwrap();
+        let cache_skills = real.path().join("plugins/cache/acme/p/skills");
+        skill_in(&cache_skills, "cached", SkillSource::Extra(0), None);
+        let root = linked.path().join("root");
+        std::os::unix::fs::symlink(&cache_skills, &root).unwrap();
+        let skill = SkillMeta {
+            name: "cached/SKILL.md".into(),
+            path: root.join("cached/SKILL.md"),
+            source: SkillSource::Extra(0),
+            root: root.clone(),
+            hash: String::new(),
+            description: None,
+            frontmatter_name: None,
+        };
+
+        let plan = plan(&[skill], &used(&[("other", NOW)]), NOW, 90);
+
+        assert!(plan.candidates.is_empty(), "{plan:?}");
+        assert_eq!(plan.skipped[0].reason, PLUGIN_REASON);
+    }
+
+    /// The second candidate vanished between the plan and the delete: the
+    /// error says how far the run got, and the first deletion is in the
+    /// snapshot.
+    #[test]
+    fn a_candidate_refused_at_delete_time_reports_how_many_were_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let snapshots = tempfile::tempdir().unwrap();
+        let first = skill_in(root.path(), "a-first", SkillSource::Extra(0), None);
+        let candidate = |name: &str| Candidate {
+            name: name.to_string(),
+            path: root.path().join(name),
+            root: root.path().to_path_buf(),
+            last_used: None,
+        };
+        let plan = PrunePlan {
+            candidates: vec![candidate("a-first"), candidate("b-gone")],
+            skipped: Vec::new(),
+        };
+
+        let err = apply_plan(&plan, true, None, snapshots.path())
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("removed 1 of 2"), "{err}");
+        assert!(err.contains("b-gone"), "{err}");
+        assert!(!first.path.exists());
+        let taken = skrills_sync::snapshot::list(snapshots.path()).unwrap();
+        assert_eq!(taken.len(), 1);
+        assert!(taken[0].entries > 0);
     }
 
     #[test]
