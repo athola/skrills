@@ -78,7 +78,8 @@ The adapter uses Claude's formats, the plainest of the built-ins:
   spelling: `command`, `args`, `env` for stdio; `type: "http"`, `url`,
   `headers` for HTTP; `disabled: true` for a disabled server. Reading also
   accepts `enabled: false`. `sse` entries and entries sync cannot carry are
-  skipped.
+  skipped. When the tool's own file holds such an entry under a name the
+  source also has, sync leaves that entry as it is and the report says why.
 
 If your tool needs different file contents (renamed frontmatter keys, another
 server schema), a config file cannot express that. It needs a built-in adapter.
@@ -88,12 +89,18 @@ server schema), a config file cannot express that. It needs a built-in adapter.
 Sync writes into the paths in this file, so every path is held inside `root`.
 A path is rejected, when the file loads and again by `skrills doctor`, if it is
 absolute, contains `..`, or resolves outside `root` through a symlink. A
-symlinked directory that stays inside `root` is fine.
+symlink whose target does not exist yet is followed too, since a write would
+follow it. A symlinked directory that stays inside `root` is fine. Two keys
+that name the same path are rejected, since each kind would read the other's
+files.
 
 Snapshots work as for built-ins: files a sync overwrites or creates are
 recorded, and `skrills sync-rollback` restores or removes them. `--interactive`
-asks one question per category for custom targets, because the adapter rewrites
-those files on write.
+asks one question per category for custom targets. Rejecting a single item
+writes back the target's own copy, which an adapter allows only once a
+round-trip test shows that leaves the file as it was. The custom adapter has
+no such test, and it merges the instructions and MCP files rather than copying
+them.
 
 ## Validate with doctor
 
@@ -111,7 +118,7 @@ windsurf (/home/you/.skrills/adapters/windsurf.toml)
   i supports: skills, commands, agents, instructions, mcp_servers
   w root /home/you/.windsurf does not exist yet; sync creates it on the first write
 /home/you/.skrills/adapters/broken.toml: not usable
-  ! missing required key `root`
+  ! missing required key `name`
   ! `skills_dir` = `../elsewhere` leaves root: use a relative path without `..` that no symlink redirects out
 ```
 
@@ -121,7 +128,8 @@ Doctor checks:
 - required keys are missing
 - the name is a built-in's, is not a lowercase word, or is declared by another file
 - `root` is not absolute after `~` expansion (error) or does not exist (warning)
-- a directory or file leaves `root`
+- a directory or file leaves `root`, or two keys name the same path
+- the adapters directory cannot be read (one error line; the rest of the report still prints)
 
 A file with an error is not usable. Naming it in `--from` or `--to` fails with its
 path and problems, and an unknown name fails listing the built-in and configured
@@ -132,4 +140,7 @@ names.
 `skrills_sync::Platform` is unchanged. A side of a sync is a
 `skrills_sync::SyncEndpoint`, either `Builtin(Platform)` or `Custom(name)`;
 `sync_between_endpoints` and `create_endpoint_adapter` resolve it.
-`ConfigAdapter` implements the same `AgentAdapter` trait as the built-ins.
+`ConfigAdapter` implements the same `AgentAdapter` trait as the built-ins. It
+wraps an `AdapterConfig`, which only `AdapterConfig::from_toml` and
+`load_adapter` build, so every config it gets has passed the checks above. Its
+paths are read through methods such as `skills_dir()`.

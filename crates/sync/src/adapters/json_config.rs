@@ -185,49 +185,71 @@ pub(crate) fn read_servers_at(path: &Path, key: &str) -> Result<HashMap<String, 
     let mut servers = HashMap::new();
     for (name, entry) in entries {
         match decode_server(name, entry) {
-            Some(server) => {
+            Ok(server) => {
                 servers.insert(name.clone(), server);
             }
-            None => tracing::warn!(server = %name, "Skipping MCP entry sync cannot carry"),
+            Err(reason) => tracing::warn!(
+                server = %name,
+                path = %path.display(),
+                %reason,
+                "Skipping MCP entry sync cannot carry"
+            ),
         }
     }
     Ok(servers)
 }
 
-fn decode_server(name: &str, entry: &Value) -> Option<McpServer> {
-    let fields = entry.as_object()?;
+/// The entries under `key` of `document` that [`read_servers_at`] skips,
+/// with why. A writer must not merge over one: the target would read it as
+/// absent, and the merge would replace the settings sync cannot carry.
+pub(crate) fn undecodable_servers(document: &Value, key: &str) -> Vec<(String, String)> {
+    let Some(Value::Object(entries)) = document.get(key) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|(name, entry)| Some((name.clone(), decode_server(name, entry).err()?)))
+        .collect()
+}
+
+fn decode_server(name: &str, entry: &Value) -> std::result::Result<McpServer, String> {
+    let fields = entry
+        .as_object()
+        .ok_or_else(|| format!("it is {}, not an object", json_kind(entry)))?;
     if fields.get("type").and_then(Value::as_str) == Some("sse") {
-        return None;
+        return Err("sync carries only stdio and http servers, not `sse`".to_string());
     }
     let command = fields.get("command").and_then(Value::as_str);
     let url = fields.get("url").and_then(Value::as_str);
     if command.is_none() && url.is_none() {
-        return None;
+        return Err("it has neither a `command` nor a `url` string".to_string());
     }
-    let list = |key: &str| -> Option<Vec<String>> {
+    let list = |key: &str| -> std::result::Result<Vec<String>, String> {
+        let not_strings = || format!("`{key}` is not a list of strings");
         match fields.get(key) {
-            None => Some(Vec::new()),
+            None => Ok(Vec::new()),
             Some(Value::Array(items)) => items
                 .iter()
-                .map(|item| item.as_str().map(str::to_string))
+                .map(|item| item.as_str().map(str::to_string).ok_or_else(not_strings))
                 .collect(),
-            Some(_) => None,
+            Some(_) => Err(not_strings()),
         }
     };
-    let strings = |key: &str| -> Option<Option<HashMap<String, String>>> {
+    let strings = |key: &str| -> std::result::Result<Option<HashMap<String, String>>, String> {
+        let not_strings = || format!("`{key}` is not an object of strings");
         match fields.get(key) {
-            None => Some(None),
+            None => Ok(None),
             Some(Value::Object(map)) => map
                 .iter()
-                .map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
-                .collect::<Option<HashMap<_, _>>>()
+                .map(|(k, v)| Ok((k.clone(), v.as_str().ok_or_else(not_strings)?.to_string())))
+                .collect::<std::result::Result<HashMap<_, _>, String>>()
                 .map(Some),
-            Some(_) => None,
+            Some(_) => Err(not_strings()),
         }
     };
     let enabled = fields.get("disabled") != Some(&Value::Bool(true))
         && fields.get("enabled") != Some(&Value::Bool(false));
-    Some(McpServer {
+    Ok(McpServer {
         name: name.to_string(),
         transport: if url.is_some() {
             McpTransport::Http

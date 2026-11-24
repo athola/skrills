@@ -62,7 +62,8 @@ fn entries(dir: &Path, keep: fn(&std::fs::FileType) -> bool) -> Result<Vec<(Stri
     Ok(found)
 }
 
-fn item(name: String, path: &Path, modules: Vec<ModuleFile>) -> Option<Command> {
+/// The command read from one item file, or `None` when it cannot be read.
+fn read_command(name: String, path: &Path, modules: Vec<ModuleFile>) -> Option<Command> {
     let (content, modified) = read_item_file(path)?;
     Some(Command {
         name,
@@ -76,7 +77,7 @@ fn item(name: String, path: &Path, modules: Vec<ModuleFile>) -> Option<Command> 
     })
 }
 
-fn read_markdown_dir(dir: Option<&PathBuf>) -> Result<Vec<Command>> {
+fn read_markdown_dir(dir: Option<&Path>) -> Result<Vec<Command>> {
     let Some(dir) = dir else {
         return Ok(Vec::new());
     };
@@ -85,27 +86,27 @@ fn read_markdown_dir(dir: Option<&PathBuf>) -> Result<Vec<Command>> {
         .filter(|(_, path)| path.extension().is_some_and(|ext| ext == "md"))
         .filter_map(|(_, path)| {
             let name = path.file_stem()?.to_string_lossy().into_owned();
-            item(name, &path, Vec::new())
+            read_command(name, &path, Vec::new())
         })
         .collect())
 }
 
-fn write_markdown_dir(dir: Option<&PathBuf>, items: &[Command]) -> Result<WriteReport> {
+fn write_markdown_dir(dir: Option<&Path>, documents: &[Command]) -> Result<WriteReport> {
     let mut report = WriteReport::default();
     let Some(dir) = dir else {
         return Ok(report);
     };
-    if items.is_empty() {
+    if documents.is_empty() {
         return Ok(report);
     }
     crate::adapters::utils::create_dir_all(dir)?;
     let mut writer = BatchWriter::new(dir);
-    for entry in items {
+    for document in documents {
         writer.write_single(
-            &entry.name,
-            &sanitize_name(&entry.name),
+            &document.name,
+            &sanitize_name(&document.name),
             ".md",
-            &entry.content,
+            &document.content,
             &mut report,
         )?;
     }
@@ -114,20 +115,20 @@ fn write_markdown_dir(dir: Option<&PathBuf>, items: &[Command]) -> Result<WriteR
 
 impl AgentAdapter for ConfigAdapter {
     fn name(&self) -> &str {
-        &self.config.name
+        self.config.name()
     }
 
     fn config_root(&self) -> PathBuf {
-        self.config.root.clone()
+        self.config.root().to_path_buf()
     }
 
     fn read_support(&self) -> FieldSupport {
         FieldSupport {
-            skills: self.config.skills_dir.is_some(),
-            commands: self.config.commands_dir.is_some(),
-            agents: self.config.agents_dir.is_some(),
-            instructions: self.config.instructions_file.is_some(),
-            mcp_servers: self.config.mcp.is_some(),
+            skills: self.config.skills_dir().is_some(),
+            commands: self.config.commands_dir().is_some(),
+            agents: self.config.agents_dir().is_some(),
+            instructions: self.config.instructions_file().is_some(),
+            mcp_servers: self.config.mcp().is_some(),
             ..FieldSupport::default()
         }
     }
@@ -137,11 +138,11 @@ impl AgentAdapter for ConfigAdapter {
     }
 
     fn read_commands(&self, _include_marketplace: bool) -> Result<Vec<Command>> {
-        read_markdown_dir(self.config.commands_dir.as_ref())
+        read_markdown_dir(self.config.commands_dir())
     }
 
     fn read_mcp_servers(&self) -> Result<HashMap<String, McpServer>> {
-        match &self.config.mcp {
+        match self.config.mcp() {
             Some(mcp) => json_config::read_servers_at(&mcp.path, &mcp.servers_key),
             None => Ok(HashMap::new()),
         }
@@ -152,13 +153,13 @@ impl AgentAdapter for ConfigAdapter {
     }
 
     fn read_skills(&self) -> Result<Vec<Command>> {
-        let Some(dir) = &self.config.skills_dir else {
+        let Some(dir) = self.config.skills_dir() else {
             return Ok(Vec::new());
         };
         Ok(entries(dir, std::fs::FileType::is_dir)?
             .into_iter()
             .filter_map(|(name, folder)| {
-                item(
+                read_command(
                     name,
                     &folder.join("SKILL.md"),
                     collect_module_files(&folder),
@@ -172,32 +173,46 @@ impl AgentAdapter for ConfigAdapter {
     }
 
     fn read_agents(&self) -> Result<Vec<Command>> {
-        read_markdown_dir(self.config.agents_dir.as_ref())
+        read_markdown_dir(self.config.agents_dir())
     }
 
     fn read_instructions(&self) -> Result<Vec<Command>> {
-        match &self.config.instructions_file {
+        match self.config.instructions_file() {
             Some(path) => read_instructions_at(path),
             None => Ok(Vec::new()),
         }
     }
 
     fn write_commands(&self, commands: &[Command]) -> Result<WriteReport> {
-        write_markdown_dir(self.config.commands_dir.as_ref(), commands)
+        write_markdown_dir(self.config.commands_dir(), commands)
     }
 
     fn write_mcp_servers(&self, servers: &HashMap<String, McpServer>) -> Result<WriteReport> {
-        let Some(mcp) = &self.config.mcp else {
+        let Some(mcp) = self.config.mcp() else {
             return Ok(WriteReport::default());
         };
         let mut document = json_config::load_object(&mcp.path)?;
-        let report = json_config::merge_servers_at(
+        // An entry this adapter cannot read back looks absent to the
+        // conflict check and the interactive diff, so merging over it would
+        // replace settings sync does not carry without anyone seeing them.
+        let mut carried = servers.clone();
+        let mut warnings = Vec::new();
+        for (name, reason) in json_config::undecodable_servers(&document, &mcp.servers_key) {
+            if carried.remove(&name).is_some() {
+                warnings.push(format!(
+                    "Left MCP server `{name}` in {} as it was: sync cannot read it ({reason})",
+                    mcp.path.display()
+                ));
+            }
+        }
+        let mut report = json_config::merge_servers_at(
             &mut document,
             &mcp.servers_key,
-            servers,
+            &carried,
             Dialect::Claude,
-            &self.config.name,
+            self.config.name(),
         )?;
+        report.warnings.extend(warnings);
         if report.written > 0 {
             json_config::write_json_config(&mcp.path, &document)?;
         }
@@ -210,7 +225,7 @@ impl AgentAdapter for ConfigAdapter {
 
     fn write_skills(&self, skills: &[Command]) -> Result<WriteReport> {
         let mut report = WriteReport::default();
-        let Some(dir) = &self.config.skills_dir else {
+        let Some(dir) = self.config.skills_dir() else {
             return Ok(report);
         };
         if skills.is_empty() {
@@ -236,11 +251,11 @@ impl AgentAdapter for ConfigAdapter {
     }
 
     fn write_agents(&self, agents: &[Command]) -> Result<WriteReport> {
-        write_markdown_dir(self.config.agents_dir.as_ref(), agents)
+        write_markdown_dir(self.config.agents_dir(), agents)
     }
 
     fn write_instructions(&self, instructions: &[Command]) -> Result<WriteReport> {
-        match &self.config.instructions_file {
+        match self.config.instructions_file() {
             Some(path) => write_instructions_at(path, instructions),
             None => Ok(WriteReport::default()),
         }

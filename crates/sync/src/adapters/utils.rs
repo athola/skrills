@@ -297,23 +297,33 @@ pub(crate) fn create_dir_all(path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(path)
 }
 
-/// Where a write to `path` lands: the path itself, or the target of a symlink
-/// at `path`.
+/// Where a write to `path` lands: the path itself, or the end of the symlink
+/// chain at `path`.
+///
+/// A chain ending in a missing file resolves to that missing file, as opening
+/// it would, so every link in the chain survives the rename. A loop, or a
+/// chain longer than [`MAX_LINK_HOPS`], is an error.
 fn resolve_destination(path: &Path) -> std::io::Result<std::path::PathBuf> {
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => match std::fs::canonicalize(path) {
-            Ok(resolved) => Ok(resolved),
-            // A dangling link: write where it points, so the link survives.
-            Err(_) => {
-                let target = std::fs::read_link(path)?;
-                Ok(match path.parent() {
-                    Some(parent) if target.is_relative() => parent.join(target),
-                    _ => target,
-                })
-            }
-        },
-        _ => Ok(path.to_path_buf()),
+    let mut resolved = path.to_path_buf();
+    for _ in 0..MAX_LINK_HOPS {
+        match std::fs::symlink_metadata(&resolved) {
+            Ok(meta) if meta.file_type().is_symlink() => {}
+            _ => return Ok(resolved),
+        }
+        if let Ok(real) = std::fs::canonicalize(&resolved) {
+            return Ok(real);
+        }
+        // A dangling hop: follow it by hand, so the link survives.
+        let target = std::fs::read_link(&resolved)?;
+        resolved = match resolved.parent() {
+            Some(parent) if target.is_relative() => parent.join(target),
+            _ => target,
+        };
     }
+    Err(std::io::Error::other(format!(
+        "{} is a symlink loop or a chain of more than {MAX_LINK_HOPS} links",
+        path.display()
+    )))
 }
 
 /// [`atomic_write`] without telling the snapshot recorder. For the files the
@@ -380,8 +390,15 @@ pub(crate) fn atomic_write_unrecorded(
 
 /// [`atomic_write`] with the call shape of `std::fs::write`, for generated
 /// files (skills, commands, agents, rules) that need no backup.
+///
+/// A file that already holds `bytes` is left alone, so a sync that changes
+/// nothing records nothing and leaves no snapshot for a rollback to pick.
 pub(crate) fn write_file(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
-    atomic_write(path.as_ref(), bytes.as_ref(), false)
+    let (path, bytes) = (path.as_ref(), bytes.as_ref());
+    if std::fs::read(path).is_ok_and(|existing| existing == bytes) {
+        return Ok(());
+    }
+    atomic_write(path, bytes, false)
 }
 
 /// Removes one file, recording its content first so a snapshot can restore it.
@@ -506,33 +523,29 @@ pub(crate) fn remove_dir(path: &Path) -> std::io::Result<()> {
 /// `std::fs::copy` opens a destination symlink and writes into what it points
 /// to, so the resolved target is what gets recorded, as [`atomic_write`] does.
 pub(crate) fn copy(src: &Path, dest: &Path) -> std::io::Result<u64> {
-    let resolved = copy_destination(dest)?;
+    let resolved = resolve_destination(dest)?;
     crate::write_session::record_before_write(&resolved)?;
     let copied = std::fs::copy(src, dest)?;
     crate::write_session::record_after_copy(&resolved)?;
     Ok(copied)
 }
 
+/// Sets `path`'s permission bits to `mode`, recording its bytes and old mode
+/// first so a rollback can put the mode back. A mode-only change has no
+/// other trace in the snapshot.
+#[cfg(unix)]
+pub(crate) fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    // `set_permissions` follows links, so the file it changes is the one
+    // recorded.
+    let resolved = resolve_destination(path)?;
+    crate::write_session::record_before_write(&resolved)?;
+    std::fs::set_permissions(&resolved, std::fs::Permissions::from_mode(mode))?;
+    crate::write_session::record_after_copy(&resolved)
+}
+
 /// Most links the kernel follows before giving up with `ELOOP` on Linux.
 const MAX_LINK_HOPS: usize = 40;
-
-/// Where [`std::fs::copy`] writes through `dest`. Unlike the rename in
-/// [`atomic_write`], opening the file follows every link in a chain, so a
-/// chain ending in a missing file creates that file at its end, not at the
-/// first dangling hop [`resolve_destination`] stops at. A loop is left for
-/// the copy itself to report.
-fn copy_destination(dest: &Path) -> std::io::Result<std::path::PathBuf> {
-    let mut resolved = resolve_destination(dest)?;
-    for _ in 0..MAX_LINK_HOPS {
-        match std::fs::symlink_metadata(&resolved) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                resolved = resolve_destination(&resolved)?;
-            }
-            _ => break,
-        }
-    }
-    Ok(resolved)
-}
 
 /// Writes a user-owned config file (`settings.json`, `CLAUDE.md`, `mcp.json`,
 /// `config.toml`, ...): no-op when the content is unchanged, otherwise keeps a
@@ -1090,21 +1103,47 @@ mod tests {
         assert_eq!(dirs, [tmp.path().join("one"), deep.clone()]);
     }
 
+    /// `first` -> `second` -> missing: the write used to stop at `second`
+    /// and rename over it, breaking the chain. It now follows the chain as
+    /// `copy` does and creates the missing file at its end.
     #[cfg(unix)]
     #[test]
-    fn atomic_write_through_a_link_to_a_missing_link_records_the_link_it_replaces() {
-        // `first` -> `second` -> missing: the write lands on `second`, which
-        // is itself a link and is replaced by a regular file.
+    fn atomic_write_through_a_chain_ending_in_a_missing_file_keeps_every_link() {
         let tmp = tempfile::tempdir().unwrap();
         let first = tmp.path().join("first");
         let second = tmp.path().join("second");
+        let missing = tmp.path().join("missing");
         std::os::unix::fs::symlink(&second, &first).unwrap();
-        std::os::unix::fs::symlink(tmp.path().join("missing"), &second).unwrap();
+        std::os::unix::fs::symlink(&missing, &second).unwrap();
         let entries = recorded_by(&tmp, || atomic_write(&first, b"new", false).unwrap());
-        assert!(std::fs::symlink_metadata(&second).unwrap().is_file());
+        assert!(std::fs::symlink_metadata(&first).unwrap().is_symlink());
+        assert!(std::fs::symlink_metadata(&second).unwrap().is_symlink());
+        assert_eq!(std::fs::read(&missing).unwrap(), b"new");
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].path, second);
-        assert_eq!(entries[0].kind, crate::snapshot::Kind::Symlink);
+        assert_eq!(entries[0].path, missing);
+        assert_eq!(entries[0].prior, crate::snapshot::Prior::Absent);
+    }
+
+    /// A loop has no end to write to; renaming over one of its links would
+    /// replace the user's link with a file.
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_and_copy_into_a_symlink_loop_fail_and_keep_the_links() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b, src) = (
+            tmp.path().join("a"),
+            tmp.path().join("b"),
+            tmp.path().join("src"),
+        );
+        std::os::unix::fs::symlink(&b, &a).unwrap();
+        std::os::unix::fs::symlink(&a, &b).unwrap();
+        std::fs::write(&src, b"x").unwrap();
+
+        assert!(atomic_write(&a, b"new", false).is_err());
+        assert!(copy(&src, &a).is_err());
+
+        assert!(std::fs::symlink_metadata(&a).unwrap().is_symlink());
+        assert!(std::fs::symlink_metadata(&b).unwrap().is_symlink());
     }
 
     #[cfg(unix)]

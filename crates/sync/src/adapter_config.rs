@@ -71,6 +71,14 @@ pub enum ConfigProblem {
         /// The value as written.
         path: String,
     },
+    /// Two keys name one path, so each kind would read the other's files.
+    #[error("`{key}` names the same path as `{other}`; give each kind its own")]
+    SharedPath {
+        /// The later key in the file's key order.
+        key: &'static str,
+        /// The earlier key it collides with.
+        other: &'static str,
+    },
 }
 
 #[derive(Deserialize)]
@@ -102,25 +110,56 @@ pub struct McpLocation {
 }
 
 /// A validated adapter file. Every path is absolute and inside `root`.
+///
+/// The fields are private so [`AdapterConfig::from_toml`], which runs the
+/// containment checks, is the only way to build one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdapterConfig {
-    /// The name used on the command line.
-    pub name: String,
-    /// The tool's config directory, `~` expanded.
-    pub root: PathBuf,
-    /// Skill folders (`<name>/SKILL.md`).
-    pub skills_dir: Option<PathBuf>,
-    /// Slash commands, one markdown file each.
-    pub commands_dir: Option<PathBuf>,
-    /// Agents, one markdown file each.
-    pub agents_dir: Option<PathBuf>,
-    /// A single instructions markdown file.
-    pub instructions_file: Option<PathBuf>,
-    /// The MCP servers file.
-    pub mcp: Option<McpLocation>,
+    name: String,
+    root: PathBuf,
+    skills_dir: Option<PathBuf>,
+    commands_dir: Option<PathBuf>,
+    agents_dir: Option<PathBuf>,
+    instructions_file: Option<PathBuf>,
+    mcp: Option<McpLocation>,
 }
 
 impl AdapterConfig {
+    /// The name used on the command line.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The tool's config directory, `~` expanded.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Skill folders (`<name>/SKILL.md`).
+    pub fn skills_dir(&self) -> Option<&Path> {
+        self.skills_dir.as_deref()
+    }
+
+    /// Slash commands, one markdown file each.
+    pub fn commands_dir(&self) -> Option<&Path> {
+        self.commands_dir.as_deref()
+    }
+
+    /// Agents, one markdown file each.
+    pub fn agents_dir(&self) -> Option<&Path> {
+        self.agents_dir.as_deref()
+    }
+
+    /// A single instructions markdown file.
+    pub fn instructions_file(&self) -> Option<&Path> {
+        self.instructions_file.as_deref()
+    }
+
+    /// The MCP servers file.
+    pub fn mcp(&self) -> Option<&McpLocation> {
+        self.mcp.as_ref()
+    }
+
     /// Parses and validates `text`, expanding `~` against `home`. Returns
     /// every problem found, not just the first.
     pub fn from_toml(text: &str, home: &Path) -> Result<Self, Vec<ConfigProblem>> {
@@ -192,6 +231,22 @@ impl AdapterConfig {
                 }
             }
         };
+
+        let placed = [
+            ("skills_dir", skills_dir.as_ref()),
+            ("commands_dir", commands_dir.as_ref()),
+            ("agents_dir", agents_dir.as_ref()),
+            ("instructions_file", instructions_file.as_ref()),
+            ("mcp.path", mcp.as_ref().map(|location| &location.path)),
+        ];
+        for (index, (key, path)) in placed.iter().enumerate() {
+            let earlier = placed[..index]
+                .iter()
+                .find(|(_, other_path)| path.is_some() && other_path == path);
+            if let Some((other, _)) = earlier {
+                problems.push(ConfigProblem::SharedPath { key, other });
+            }
+        }
 
         match (problems.is_empty(), root) {
             (true, Some(root)) => Ok(Self {
@@ -269,22 +324,60 @@ fn contained(root: &Path, relative: &str) -> Option<PathBuf> {
     resolves_inside(root, &joined).then_some(joined)
 }
 
-/// Whether the deepest part of `path` that exists resolves inside `root`.
-/// A root that does not exist has nothing to follow, so it passes.
+/// Whether `path` resolves inside `root` once every symlink on it is
+/// followed, a dangling one included, since a write follows it too. A root
+/// that does not exist has nothing to follow, so it passes; one that cannot
+/// be resolved for another reason (a link loop, no permission) does not.
 fn resolves_inside(root: &Path, path: &Path) -> bool {
-    let Ok(real_root) = root.canonicalize() else {
-        return true;
-    };
-    let mut probe = path;
-    loop {
-        if let Ok(real) = probe.canonicalize() {
-            return real.starts_with(&real_root);
-        }
-        match probe.parent() {
-            Some(parent) => probe = parent,
-            None => return true,
-        }
+    match root.canonicalize() {
+        Ok(real_root) => lands_inside(&real_root, path, MAX_LINK_HOPS),
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
     }
+}
+
+/// Links followed by hand before a chain counts as a loop, as the kernel's
+/// limit on Linux.
+const MAX_LINK_HOPS: usize = 40;
+
+/// Whether `path` lands inside `real_root`: the deepest part of it that
+/// exists resolves there, and the missing rest does not climb out with `..`.
+fn lands_inside(real_root: &Path, path: &Path, hops_left: usize) -> bool {
+    for probe in path.ancestors() {
+        let meta = match std::fs::symlink_metadata(probe) {
+            Ok(meta) => meta,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                continue
+            }
+            Err(_) => return false,
+        };
+        let Ok(missing) = path.strip_prefix(probe) else {
+            return false;
+        };
+        if let Ok(real) = probe.canonicalize() {
+            return real.starts_with(real_root)
+                && !missing
+                    .components()
+                    .any(|component| component == Component::ParentDir);
+        }
+        // A dangling link, or a loop: follow it by hand.
+        if !meta.file_type().is_symlink() || hops_left == 0 {
+            return false;
+        }
+        let Ok(target) = std::fs::read_link(probe) else {
+            return false;
+        };
+        let next = match probe.parent() {
+            Some(parent) if target.is_relative() => parent.join(target),
+            _ => target,
+        };
+        return lands_inside(real_root, &next.join(missing), hops_left - 1);
+    }
+    false
 }
 
 /// One file in the adapters directory and what loading it gave.
@@ -352,7 +445,22 @@ pub fn load_adapter_files(home: &Path) -> crate::Result<Vec<AdapterFile>> {
 
 /// The configured adapter called `name`, or an error that lists the built-in
 /// platforms and the configured adapters.
+///
+/// A built-in or malformed `name` is refused first, with the rule it breaks:
+/// [`crate::SyncEndpoint::Custom`] can hold any string, and no adapter file
+/// can declare such a name.
 pub fn load_adapter(name: &str, home: &Path) -> crate::Result<AdapterConfig> {
+    if name.parse::<Platform>().is_ok() {
+        return Err(anyhow!(
+            "'{name}' is a built-in platform, not a configured adapter"
+        ));
+    }
+    if !is_valid_name(name) {
+        return Err(anyhow!(
+            "Unknown adapter: {}",
+            ConfigProblem::InvalidName(name.to_string())
+        ));
+    }
     let files = load_adapter_files(home)?;
     if let Some(config) = files
         .iter()

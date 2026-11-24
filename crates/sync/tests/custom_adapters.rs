@@ -50,13 +50,19 @@ fn a_full_config_resolves_every_path_under_the_expanded_root() {
     let config = parse(WINDSURF, home.path()).unwrap();
 
     let root = home.path().join(".windsurf");
-    assert_eq!(config.name, "windsurf");
-    assert_eq!(config.root, root);
-    assert_eq!(config.skills_dir, Some(root.join("skills")));
-    assert_eq!(config.commands_dir, Some(root.join("workflows")));
-    assert_eq!(config.agents_dir, Some(root.join("agents")));
-    assert_eq!(config.instructions_file, Some(root.join("rules.md")));
-    let mcp = config.mcp.unwrap();
+    assert_eq!(config.name(), "windsurf");
+    assert_eq!(config.root(), root);
+    assert_eq!(config.skills_dir(), Some(root.join("skills").as_path()));
+    assert_eq!(
+        config.commands_dir(),
+        Some(root.join("workflows").as_path())
+    );
+    assert_eq!(config.agents_dir(), Some(root.join("agents").as_path()));
+    assert_eq!(
+        config.instructions_file(),
+        Some(root.join("rules.md").as_path())
+    );
+    let mcp = config.mcp().unwrap();
     assert_eq!(mcp.path, root.join("mcp_config.json"));
     assert_eq!(mcp.servers_key, "mcpServers");
 }
@@ -139,7 +145,7 @@ fn a_bare_tilde_root_is_the_home_directory() {
 
     let config = parse("name = \"x\"\nroot = \"~\"\n", home.path()).unwrap();
 
-    assert_eq!(config.root, home.path());
+    assert_eq!(config.root(), home.path());
 }
 
 #[test]
@@ -348,6 +354,201 @@ fn a_category_dir_that_is_a_symlink_out_of_the_root_is_rejected() {
     );
 }
 
+/// `canonicalize` fails on a dangling link, and the check fell back to the
+/// link's parent, which is inside the root. The write then followed the link
+/// and put the MCP file, with its env and header secrets, outside the root.
+#[cfg(unix)]
+#[test]
+fn an_mcp_path_that_is_a_dangling_link_out_of_root_is_rejected() {
+    let home = tempfile::tempdir().unwrap();
+    let outside = home.path().join("elsewhere");
+    let root = home.path().join("tool");
+    fs::create_dir_all(&outside).unwrap();
+    fs::create_dir_all(&root).unwrap();
+    std::os::unix::fs::symlink(outside.join("leak.json"), root.join("mcp.json")).unwrap();
+
+    let found = problems(
+        &format!(
+            "name = \"x\"\nroot = \"{}\"\n[mcp]\npath = \"mcp.json\"\nservers_key = \"mcpServers\"\n",
+            root.display()
+        ),
+        home.path(),
+    );
+
+    assert!(
+        found.iter().any(|p| matches!(
+            p,
+            ConfigProblem::PathEscapesRoot {
+                key: "mcp.path",
+                ..
+            }
+        )),
+        "{found:?}"
+    );
+    assert!(!outside.join("leak.json").exists());
+}
+
+/// The parent link points at a directory that does not exist yet, so only
+/// the root itself canonicalized and the check passed.
+#[cfg(unix)]
+#[test]
+fn a_category_dir_below_a_symlinked_parent_that_leaves_the_root_is_rejected() {
+    let home = tempfile::tempdir().unwrap();
+    let outside = home.path().join("elsewhere");
+    let root = home.path().join("tool");
+    fs::create_dir_all(&root).unwrap();
+    std::os::unix::fs::symlink(outside.join("later"), root.join("data")).unwrap();
+
+    let found = problems(
+        &format!(
+            "name = \"x\"\nroot = \"{}\"\nskills_dir = \"data/skills\"\n",
+            root.display()
+        ),
+        home.path(),
+    );
+
+    assert!(
+        matches!(
+            found.as_slice(),
+            [ConfigProblem::PathEscapesRoot {
+                key: "skills_dir",
+                ..
+            }]
+        ),
+        "{found:?}"
+    );
+    assert!(!outside.exists());
+}
+
+/// A dangling link whose target climbs back out through `..` below a
+/// missing directory looks inside the root to a walk of what exists.
+#[cfg(unix)]
+#[test]
+fn a_dangling_link_whose_target_climbs_out_through_a_missing_dir_is_rejected() {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join("tool");
+    fs::create_dir_all(&root).unwrap();
+    std::os::unix::fs::symlink("missing/../../elsewhere/rules.md", root.join("rules.md")).unwrap();
+
+    let found = problems(
+        &format!(
+            "name = \"x\"\nroot = \"{}\"\ninstructions_file = \"rules.md\"\n",
+            root.display()
+        ),
+        home.path(),
+    );
+
+    assert!(
+        found.iter().any(|p| matches!(
+            p,
+            ConfigProblem::PathEscapesRoot {
+                key: "instructions_file",
+                ..
+            }
+        )),
+        "{found:?}"
+    );
+}
+
+/// A dangling link that stays inside the root (a dotfiles layout whose
+/// target is written on the first sync) is fine.
+#[cfg(unix)]
+#[test]
+fn a_dangling_link_that_stays_inside_the_root_is_accepted() {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join("tool");
+    fs::create_dir_all(root.join("dotfiles")).unwrap();
+    std::os::unix::fs::symlink("dotfiles/mcp.json", root.join("mcp.json")).unwrap();
+
+    let config = parse(
+        &format!(
+            "name = \"x\"\nroot = \"{}\"\n[mcp]\npath = \"mcp.json\"\nservers_key = \"mcpServers\"\n",
+            root.display()
+        ),
+        home.path(),
+    );
+
+    assert!(config.is_ok(), "{config:?}");
+}
+
+/// Only a root that does not exist yet has nothing to follow. Any other
+/// failure to resolve it (a link loop, no permission) used to pass.
+#[cfg(unix)]
+#[test]
+fn a_root_that_cannot_be_resolved_rejects_its_paths() {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join("tool");
+    std::os::unix::fs::symlink(&root, &root).unwrap();
+
+    let found = problems(
+        &format!(
+            "name = \"x\"\nroot = \"{}\"\nskills_dir = \"skills\"\n",
+            root.display()
+        ),
+        home.path(),
+    );
+
+    assert!(
+        found.iter().any(|p| matches!(
+            p,
+            ConfigProblem::PathEscapesRoot {
+                key: "skills_dir",
+                ..
+            }
+        )),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_root_that_does_not_exist_yet_accepts_its_paths() {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join("not-yet");
+
+    let config = parse(
+        &format!(
+            "name = \"x\"\nroot = \"{}\"\nskills_dir = \"skills\"\n",
+            root.display()
+        ),
+        home.path(),
+    );
+
+    assert!(config.is_ok(), "{config:?}");
+}
+
+/// Two kinds in one place read each other's files back as their own: every
+/// agent would also sync as a command, and an MCP file holding instructions
+/// is neither valid JSON nor the user's rules.
+#[test]
+fn two_keys_naming_one_path_are_both_rejected() {
+    let home = tempfile::tempdir().unwrap();
+    let cases = [
+        (
+            "commands_dir = \"md\"\nagents_dir = \"md\"\n",
+            ("agents_dir", "commands_dir"),
+        ),
+        (
+            "instructions_file = \"x.json\"\n[mcp]\npath = \"x.json\"\nservers_key = \"k\"\n",
+            ("mcp.path", "instructions_file"),
+        ),
+        (
+            "skills_dir = \"a\"\ncommands_dir = \"./a\"\n",
+            ("commands_dir", "skills_dir"),
+        ),
+    ];
+    for (lines, (key, other)) in cases {
+        let found = problems(
+            &format!("name = \"x\"\nroot = \"/tmp/x\"\n{lines}"),
+            home.path(),
+        );
+        assert_eq!(
+            found,
+            vec![ConfigProblem::SharedPath { key, other }],
+            "{lines}"
+        );
+    }
+}
+
 // --- registry ---
 
 #[test]
@@ -370,7 +571,7 @@ fn only_toml_files_are_adapters_and_each_keeps_its_path() {
         files[0].path,
         adapters_dir(home.path()).join("windsurf.toml")
     );
-    assert_eq!(files[0].outcome.as_ref().unwrap().name, "windsurf");
+    assert_eq!(files[0].outcome.as_ref().unwrap().name(), "windsurf");
 }
 
 #[test]
@@ -508,6 +709,44 @@ fn a_configured_name_whose_file_is_invalid_names_the_file_and_the_problem() {
 
     assert!(err.contains("windsurf.toml"), "{err}");
     assert!(err.contains("skills_dir"), "{err}");
+}
+
+/// `Custom` can be built directly with any string. A built-in name or a
+/// path used to fail later as an unknown adapter, which hid the reason.
+#[test]
+fn a_custom_endpoint_with_a_built_in_or_malformed_name_says_why_it_is_refused() {
+    let _guard = skrills_test_utils::env_guard();
+    let home = tempfile::tempdir().unwrap();
+    let _home = skrills_test_utils::set_env_var("HOME", Some(home.path().to_str().unwrap()));
+
+    let refusal = |name: &str| {
+        create_endpoint_adapter(&SyncEndpoint::Custom(name.into()))
+            .err()
+            .expect("refused")
+            .to_string()
+    };
+
+    let builtin = refusal("claude");
+    assert!(builtin.contains("built-in platform"), "{builtin}");
+    let path = refusal("../x");
+    assert!(path.contains("must be lowercase letters"), "{path}");
+}
+
+#[test]
+fn a_custom_source_defaults_to_claude_and_lists_every_built_in_as_another_target() {
+    let custom = SyncEndpoint::Custom("windsurf".into());
+
+    assert_eq!(custom.default_target(), claude());
+    assert_eq!(
+        custom.other_targets(),
+        Platform::ALL
+            .into_iter()
+            .map(SyncEndpoint::Builtin)
+            .collect::<Vec<_>>()
+    );
+    assert!(!SyncEndpoint::Builtin(Platform::Cursor)
+        .other_targets()
+        .contains(&SyncEndpoint::Builtin(Platform::Cursor)));
 }
 
 #[test]
@@ -668,6 +907,116 @@ fn malformed_sse_and_incomplete_mcp_entries_are_skipped_and_the_rest_kept() {
         servers["remote"].url.as_deref(),
         Some("https://example.com/mcp")
     );
+}
+
+/// The target entry read as absent, so the merge replaced its `command`,
+/// `args` and `env` with the source's, and nothing said why.
+#[test]
+fn an_undecodable_target_mcp_entry_is_named_in_the_report_and_not_overwritten() {
+    let home = tempfile::tempdir().unwrap();
+    let config =
+        "name = \"x\"\nroot = \"~/.x\"\n[mcp]\npath = \"m.json\"\nservers_key = \"mcpServers\"\n";
+    let adapter = ConfigAdapter::new(parse(config, home.path()).unwrap());
+    let path = home.path().join(".x/m.json");
+    let mine = serde_json::json!({"command": "/bin/mine", "env": {"PORT": 80}});
+    put(
+        &path,
+        &serde_json::json!({"mcpServers": {"api": mine}}).to_string(),
+    );
+    let source = tempfile::tempdir().unwrap();
+    put(
+        &source.path().join(".claude.json"),
+        r#"{"mcpServers": {"api": {"command": "/bin/theirs"}, "fresh": {"command": "/bin/fresh"}}}"#,
+    );
+    let servers = skrills_sync::ClaudeAdapter::with_root(source.path().to_path_buf())
+        .read_mcp_servers()
+        .unwrap();
+
+    let report = adapter.write_mcp_servers(&servers).unwrap();
+
+    let written: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(written["mcpServers"]["api"], mine);
+    assert_eq!(written["mcpServers"]["fresh"]["command"], "/bin/fresh");
+    assert_eq!(report.written, 1);
+    let warning = report
+        .warnings
+        .iter()
+        .find(|w| w.contains("`api`"))
+        .unwrap_or_else(|| panic!("no warning names `api`: {:?}", report.warnings));
+    assert!(warning.contains(&path.display().to_string()), "{warning}");
+    assert!(
+        warning.contains("`env` is not an object of strings"),
+        "{warning}"
+    );
+}
+
+/// Coverage for decoder branches the other MCP tests do not reach.
+#[test]
+fn enabled_false_is_read_as_disabled_and_non_list_args_are_skipped() {
+    let home = tempfile::tempdir().unwrap();
+    let config =
+        "name = \"x\"\nroot = \"~/.x\"\n[mcp]\npath = \"m.json\"\nservers_key = \"mcpServers\"\n";
+    let adapter = ConfigAdapter::new(parse(config, home.path()).unwrap());
+    put(
+        &home.path().join(".x/m.json"),
+        r#"{"mcpServers": {
+            "off": {"command": "/bin/off", "enabled": false},
+            "bad-args": {"command": "/bin/x", "args": "--flag"}
+        }}"#,
+    );
+
+    let servers = adapter.read_mcp_servers().unwrap();
+
+    assert_eq!(servers.keys().collect::<Vec<_>>(), vec!["off"]);
+    assert!(!servers["off"].enabled);
+}
+
+#[test]
+fn an_empty_servers_key_is_a_missing_key() {
+    let home = tempfile::tempdir().unwrap();
+
+    let found = problems(
+        "name = \"x\"\nroot = \"/tmp/x\"\n[mcp]\npath = \"m.json\"\nservers_key = \"\"\n",
+        home.path(),
+    );
+
+    assert_eq!(found, vec![ConfigProblem::MissingKey("mcp.servers_key")]);
+}
+
+/// Coverage: a linked file could be any file on disk, and a hidden one is
+/// tool state, so neither is read as an item.
+#[cfg(unix)]
+#[test]
+fn a_custom_adapter_does_not_read_linked_or_hidden_items() {
+    let home = tempfile::tempdir().unwrap();
+    let adapter = ConfigAdapter::new(parse(WINDSURF, home.path()).unwrap());
+    let root = home.path().join(".windsurf");
+    let outside = home.path().join("outside");
+    put(&outside.join("secret.md"), "secret\n");
+    put(&outside.join("linked/SKILL.md"), "secret\n");
+    put(&root.join("workflows/real.md"), "# Real\n");
+    put(&root.join("workflows/.hidden.md"), "# Hidden\n");
+    std::os::unix::fs::symlink(outside.join("secret.md"), root.join("workflows/link.md")).unwrap();
+    put(&root.join("skills/real/SKILL.md"), "real\n");
+    put(&root.join("skills/.hidden/SKILL.md"), "hidden\n");
+    std::os::unix::fs::symlink(outside.join("linked"), root.join("skills/linked")).unwrap();
+
+    let commands: Vec<String> = adapter
+        .read_commands(false)
+        .unwrap()
+        .into_iter()
+        .map(|command| command.name)
+        .collect();
+    let skills: Vec<String> = adapter
+        .read_skills()
+        .unwrap()
+        .into_iter()
+        .map(|skill| skill.name)
+        .collect();
+
+    assert_eq!(commands, vec!["real"]);
+    assert_eq!(skills, vec!["real"]);
 }
 
 #[test]
@@ -863,11 +1212,22 @@ fn rejecting_every_change_interactively_leaves_a_custom_target_untouched() {
     let decider: Arc<dyn skrills_sync::ItemDecider> =
         Arc::new(|_: &ItemChange| Ok(Decision::Reject));
 
-    let _report =
+    let report =
         sync_between_endpoints_with_decider(&claude(), &windsurf(), &params, decider).unwrap();
 
     assert_eq!(fs::read_to_string(&existing).unwrap(), "# Mine\n");
     assert!(!home.path().join(".windsurf/skills").exists());
+    for (category, phase) in [("skills", &report.skills), ("commands", &report.commands)] {
+        assert_eq!(phase.written, 0, "{category}");
+        assert!(
+            phase
+                .skipped
+                .iter()
+                .any(|reason| matches!(reason, SkipReason::Declined { .. })),
+            "{category}: {:?}",
+            phase.skipped
+        );
+    }
 }
 
 #[test]
@@ -884,11 +1244,16 @@ fn accepting_every_change_interactively_writes_to_a_custom_target() {
     let decider: Arc<dyn skrills_sync::ItemDecider> =
         Arc::new(|_: &ItemChange| Ok(Decision::Accept));
 
-    let _report =
+    let report =
         sync_between_endpoints_with_decider(&claude(), &windsurf(), &params, decider).unwrap();
 
     assert!(home
         .path()
         .join(".windsurf/skills/alpha/SKILL.md")
         .is_file());
+    assert_eq!(
+        fs::read_to_string(home.path().join(".windsurf/workflows/hello.md")).unwrap(),
+        "# Hello\n"
+    );
+    assert_eq!((report.skills.written, report.commands.written), (1, 1));
 }

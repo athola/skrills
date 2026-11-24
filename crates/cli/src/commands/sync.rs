@@ -215,7 +215,9 @@ pub(crate) fn source_skill_root(from: Platform, home: &Path) -> PathBuf {
 pub(crate) fn endpoint_skill_root(from: &SyncEndpoint, home: &Path) -> Result<Option<PathBuf>> {
     match from {
         SyncEndpoint::Builtin(platform) => Ok(Some(source_skill_root(*platform, home))),
-        SyncEndpoint::Custom(name) => Ok(skrills_sync::load_adapter(name, home)?.skills_dir),
+        SyncEndpoint::Custom(name) => Ok(skrills_sync::load_adapter(name, home)?
+            .skills_dir()
+            .map(Path::to_path_buf)),
     }
 }
 

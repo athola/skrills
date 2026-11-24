@@ -148,20 +148,27 @@ fn doctor_report_with_paths(
 /// The report section for `~/.skrills/adapters/*.toml`: for each file its
 /// path and name, the categories it supports, `!` lines for what stops it
 /// from loading, and `w` lines for what does not. Empty when there are no
-/// adapter files.
+/// adapter files. A directory that cannot be read is one `!` line, so the
+/// rest of the report still prints.
 fn adapter_report_lines(home: &Path) -> Result<Vec<String>> {
-    let files = skrills_sync::load_adapter_files(home)?;
-    if files.is_empty() {
-        return Ok(Vec::new());
-    }
     let mut lines = vec![format!(
         "== custom adapters ({}) ==",
         skrills_sync::adapters_dir(home).display()
     )];
+    let files = match skrills_sync::load_adapter_files(home) {
+        Ok(files) => files,
+        Err(e) => {
+            lines.push(format!("  ! {e}"));
+            return Ok(lines);
+        }
+    };
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
     for file in files {
         match file.outcome {
             Ok(config) => {
-                lines.push(format!("{} ({})", config.name, file.path.display()));
+                lines.push(format!("{} ({})", config.name(), file.path.display()));
                 let categories = config.categories();
                 lines.push(if categories.is_empty() {
                     "  i supports: nothing (no category is configured)".to_string()
@@ -539,5 +546,22 @@ args = ["--flag"]
 
         assert_eq!(err.to_string(), "doctor found 1 problem(s)");
         assert!(adapter_lines(temp.path()).contains("broken.toml"));
+    }
+
+    /// An adapters directory that could not be read aborted the whole report,
+    /// so the Codex checks above it were never printed.
+    #[test]
+    fn an_unreadable_adapters_directory_is_a_problem_line_not_an_abort() {
+        let temp = tempdir().unwrap();
+        let dir = skrills_sync::adapters_dir(temp.path());
+        fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        // A file where the directory should be fails `read_dir` for certain.
+        fs::write(&dir, "not a directory").unwrap();
+
+        let lines = adapter_report_lines(temp.path()).unwrap();
+
+        let joined = lines.join("\n");
+        assert_eq!(problem_count(&lines), 1, "{joined}");
+        assert!(joined.contains(&dir.display().to_string()), "{joined}");
     }
 }

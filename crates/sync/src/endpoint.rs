@@ -13,8 +13,9 @@ pub enum SyncEndpoint {
     /// One of the built-in platforms.
     Builtin(Platform),
     /// An adapter from `~/.skrills/adapters/<name>.toml`, by lowercase name.
-    /// Whether it exists is checked when an adapter is created, since
-    /// parsing a command line must not read the disk.
+    /// Whether the name is valid and the adapter exists is checked when an
+    /// adapter is created ([`crate::load_adapter`]), since parsing a command
+    /// line must not read the disk.
     Custom(String),
 }
 
