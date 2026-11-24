@@ -299,8 +299,8 @@ pub enum Commands {
         #[arg(long)]
         to: Option<SyncEndpoint>,
     },
-    /// Restores the files the last sync changed from its snapshot in
-    /// `~/.skrills/snapshots`.
+    /// Restores the files a sync or `prune --apply` changed from its
+    /// snapshot in `~/.skrills/snapshots` (default: the most recent one).
     SyncRollback {
         /// List snapshots, newest first, instead of restoring one.
         #[arg(long, conflicts_with = "snapshot")]

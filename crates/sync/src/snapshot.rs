@@ -8,13 +8,14 @@
 //! module names, lists, prunes and restores the directories it leaves behind.
 //!
 //! The directory name is the UTC start time as `YYYYMMDDTHHMMSSZ`, with `-N`
-//! appended when two syncs start in the same second. Names sort in time
-//! order, and retention reads the age from the name rather than the
-//! filesystem, so copying or restoring a snapshot directory cannot make it
+//! appended when two syncs start in the same second. Names give the start
+//! time only to the second; [`list`] orders a second's snapshots by `N`, so
+//! `-10` counts as newer than `-2`. Retention reads the age from the name
+//! rather than the filesystem, so copying or restoring a snapshot directory cannot make it
 //! look new. A directory whose name does not parse is not ours and is never
 //! listed, rolled back or pruned.
 
-use crate::adapters::utils::{atomic_write, hash_content, remove_dir, remove_file};
+use crate::adapters::utils::{hash_content, remove_dir, remove_file, replace_file_unrecorded};
 use crate::write_session::{is_active, WriteSession};
 use crate::Result;
 use anyhow::{anyhow, bail, Context};
@@ -36,7 +37,9 @@ const SECONDS_PER_DAY: u64 = 86_400;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Prior {
-    /// A regular file; its bytes are in `blobs/<prior_hash>`.
+    /// Something existed. For [`Kind::File`] its bytes are in
+    /// `blobs/<prior_hash>`; a link keeps only its target and a special file
+    /// nothing.
     File,
     /// Nothing. Rollback deletes the file the sync created.
     Absent,
@@ -64,8 +67,10 @@ pub struct Entry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link_target: Option<PathBuf>,
     /// What the sync left at the path, from the last after-line for it.
-    /// `None` when the manifest has none (an older manifest, or a write that
-    /// failed); such a path is restored without checking what is there now.
+    /// `None` when the manifest has none: the write failed, or recording its
+    /// result did. Unless a later snapshot says what skrills left there, such
+    /// a path is restored only while it still holds its prior state, and is
+    /// otherwise kept as changed since the sync.
     #[serde(skip)]
     pub after: Option<After>,
 }
@@ -151,10 +156,13 @@ pub struct RollbackReport {
     /// Paths skipped because rollback cannot recreate what was there: a
     /// special file, or a symlink on a platform without Unix links.
     pub not_restorable: Vec<PathBuf>,
-    /// Paths that no longer hold what the sync left, nor what a later sync
-    /// left, so someone changed them since; they are kept as they are. [`force_rollback`] restores
-    /// them too.
+    /// Paths that hold neither what the sync left, nor what a later sync
+    /// left, nor what was there before, so someone changed them since; they
+    /// are kept as they are. [`force_rollback`] restores them too.
     pub changed_since_sync: Vec<PathBuf>,
+    /// Paths rollback tried to restore and could not, each with the reason.
+    /// Everything else in the report was done anyway.
+    pub failed: Vec<(PathBuf, String)>,
 }
 
 /// `~/.skrills/snapshots`, or `None` when no home directory is known.
@@ -253,7 +261,9 @@ pub fn begin_default() -> Option<WriteSession> {
 /// For commands outside this crate that delete user files (`skrills prune`):
 /// the sync crate's own write helpers are crate-private, and a raw
 /// `std::fs::remove_dir_all` would leave nothing to roll back. Outside a
-/// session it only removes the tree.
+/// session it only removes the tree. Only files and links are recorded, so
+/// rollback brings back each directory that held one, but not an empty
+/// subdirectory.
 pub fn remove_recorded_tree(path: &Path) -> std::io::Result<()> {
     crate::adapters::utils::remove_tree(path)
 }
@@ -304,12 +314,22 @@ pub fn list(root: &Path) -> Result<Vec<SnapshotInfo>> {
             entries,
         });
     }
-    snapshots.sort_by(|a, b| (b.taken_at, &b.name).cmp(&(a.taken_at, &a.name)));
+    snapshots.sort_by_key(|snapshot| {
+        std::cmp::Reverse((snapshot.taken_at, same_second_index(&snapshot.name)))
+    });
     Ok(snapshots)
 }
 
+/// The `N` of a `-N` name suffix, 0 without one, so `-10` counts as newer than `-2`.
+fn same_second_index(name: &str) -> u64 {
+    name.get(16..)
+        .and_then(|suffix| suffix.strip_prefix('-'))
+        .map_or(0, |n| n.parse().unwrap_or(u64::MAX))
+}
+
 /// Deletes snapshots under `root` taken more than `keep` before `now`, and
-/// returns how many went. One that cannot be deleted is logged and left.
+/// returns how many went. One whose sync is still running is kept, whatever
+/// its age; one that cannot be deleted is logged and left.
 pub fn prune(root: &Path, now: SystemTime, keep: Duration) -> Result<usize> {
     let mut pruned = 0;
     for snapshot in list(root)? {
@@ -317,7 +337,17 @@ pub fn prune(root: &Path, now: SystemTime, keep: Duration) -> Result<usize> {
         if age <= keep {
             continue;
         }
-        match crate::adapters::utils::remove_tree_unrecorded(&root.join(&snapshot.name)) {
+        let dir = root.join(&snapshot.name);
+        match try_claim(&dir, false) {
+            // Released before the delete: Windows cannot remove an open file.
+            Ok(Claim::Free(lock)) => drop(lock),
+            Ok(Claim::InUse) => continue,
+            Err(e) => {
+                tracing::warn!(snapshot = %snapshot.name, error = %e, "Could not check an expired snapshot");
+                continue;
+            }
+        }
+        match crate::adapters::utils::remove_tree_unrecorded(&dir) {
             Ok(()) => pruned += 1,
             Err(e) => tracing::warn!(
                 snapshot = %snapshot.name,
@@ -329,21 +359,30 @@ pub fn prune(root: &Path, now: SystemTime, keep: Duration) -> Result<usize> {
     Ok(pruned)
 }
 
-/// Restores `name`, or the newest snapshot when `name` is `None`.
+/// Restores `name`, or the newest snapshot whose sync has finished when
+/// `name` is `None`. A named snapshot whose sync is still running is
+/// refused.
 ///
-/// Every manifest entry is checked before the first file changes, so a
-/// manifest naming a path outside what a sync could have written (relative,
-/// or containing `..`) refuses the whole rollback instead of half of it.
+/// The manifest and saved contents are checked before the first file
+/// changes: a path outside what a sync could have written (relative, or
+/// containing `..`), an inconsistent entry, or saved content that is missing
+/// or no longer matches its hash refuses the whole rollback instead of half
+/// of it. A failure the check cannot foresee (an I/O error, or a directory
+/// the user filled where a file was) stops only that entry: it is listed in
+/// [`RollbackReport::failed`] and the rest is still restored.
+///
 /// Entries are undone newest first, so a path a sync replaced with a
-/// directory, or the reverse, comes back in the order it was lost.
-/// Directories the sync created go last, deepest first, once the files in
-/// them are gone; one that still holds anything is left and reported.
+/// directory, or the reverse, comes back in the order it was lost. The
+/// directories a sync created under such a path are removed with it; the
+/// other directories it created go last, deepest first, once the files in
+/// them are gone, and one that still holds anything is left and reported.
 ///
-/// A path that no longer holds what the sync left there was changed since,
-/// and is kept and listed in [`RollbackReport::changed_since_sync`]. When
-/// an older snapshot is named, a path a newer sync rewrote is checked
-/// against what the newest such sync left as well, so skrills' own later
-/// changes are restored and only someone else's are kept.
+/// A path that holds neither what the sync left there nor what it held
+/// before was changed since, and is kept and listed in
+/// [`RollbackReport::changed_since_sync`]. When an older snapshot is named,
+/// a path a newer sync rewrote is checked against what the newest such sync
+/// left as well, so skrills' own later changes are restored and only someone
+/// else's are kept.
 pub fn rollback(root: &Path, name: Option<&str>) -> Result<RollbackReport> {
     rollback_checked(root, name, false)
 }
@@ -356,14 +395,9 @@ pub fn force_rollback(root: &Path, name: Option<&str>) -> Result<RollbackReport>
 
 fn rollback_checked(root: &Path, name: Option<&str>, force: bool) -> Result<RollbackReport> {
     let mut snapshots = list(root)?;
-    let position = match name {
-        Some(wanted) => snapshots
-            .iter()
-            .position(|snapshot| snapshot.name == wanted)
-            .ok_or_else(|| anyhow!("no snapshot named {wanted} in {}", root.display()))?,
-        None if snapshots.is_empty() => bail!("no snapshots in {}", root.display()),
-        None => 0,
-    };
+    // Held until the rollback is done, so pruning in another process leaves
+    // this snapshot alone meanwhile.
+    let (position, _claim) = claim_snapshot(root, &snapshots, name)?;
     let left_by_later_syncs = later_after_states(root, &snapshots[..position]);
     let chosen = snapshots.swap_remove(position);
     let dir = root.join(&chosen.name);
@@ -373,80 +407,198 @@ fn rollback_checked(root: &Path, name: Option<&str>, force: bool) -> Result<Roll
         .map(|entry| checked_blob(&dir, entry))
         .collect::<Result<Vec<_>>>()?;
 
-    let (mut restored, mut removed) = (0, 0);
+    let mut report = RollbackReport {
+        snapshot: chosen.name,
+        restored: 0,
+        removed: 0,
+        dirs_removed: 0,
+        left_in_place: Vec::new(),
+        not_restorable: Vec::new(),
+        changed_since_sync: Vec::new(),
+        failed: Vec::new(),
+    };
     let mut created_dirs = Vec::new();
-    let mut not_restorable = Vec::new();
-    let mut changed_since_sync = Vec::new();
     for (entry, blob) in entries.iter().zip(&blobs).rev() {
-        if entry.kind == Kind::Dir {
-            created_dirs.push(entry.path.as_path());
-            continue;
+        match entry.kind {
+            Kind::Dir => {
+                created_dirs.push(entry.path.as_path());
+                continue;
+            }
+            Kind::Special => {
+                tracing::warn!(path = %entry.path.display(), "Cannot recreate a special file");
+                report.not_restorable.push(entry.path.clone());
+                continue;
+            }
+            Kind::File | Kind::Symlink => {}
         }
         let left_by_skrills: Vec<&After> =
             [entry.after.as_ref(), left_by_later_syncs.get(&entry.path)]
                 .into_iter()
                 .flatten()
                 .collect();
-        if !force && !left_by_skrills.is_empty() {
-            let now = current_state(&entry.path)?;
-            if !left_by_skrills
-                .iter()
-                .any(|left| now.as_ref() == Some(*left))
-            {
-                changed_since_sync.push(entry.path.clone());
-                continue;
-            }
-        }
-        match entry.kind {
-            Kind::Dir => continue,
-            Kind::Special => {
-                tracing::warn!(path = %entry.path.display(), "Cannot recreate a special file");
-                not_restorable.push(entry.path.clone());
-                continue;
-            }
-            Kind::Symlink => {
-                #[cfg(unix)]
-                {
-                    restore_link(entry)?;
-                    restored += 1;
-                }
-                #[cfg(not(unix))]
-                not_restorable.push(entry.path.clone());
-                continue;
-            }
-            Kind::File => {}
-        }
-        match blob {
-            Some(blob) => {
-                restore_file(entry, blob)?;
-                restored += 1;
-            }
-            None => {
-                if delete_created(&entry.path)? {
-                    removed += 1;
-                }
-            }
+        let undone = undo_entry(
+            entry,
+            blob.as_deref(),
+            &left_by_skrills,
+            force,
+            &mut created_dirs,
+            &mut report,
+        );
+        if let Err(e) = undone {
+            report.failed.push((entry.path.clone(), format!("{e:#}")));
         }
     }
     created_dirs.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
-    let mut dirs_removed = 0;
-    let mut left_in_place = Vec::new();
     for dir in created_dirs {
-        if remove_created_dir(dir)? {
-            dirs_removed += 1;
-        } else if dir.symlink_metadata().is_ok() {
-            left_in_place.push(dir.to_path_buf());
+        match remove_created_dir(dir) {
+            Ok(true) => report.dirs_removed += 1,
+            Ok(false) if dir.symlink_metadata().is_ok() => {
+                report.left_in_place.push(dir.to_path_buf());
+            }
+            Ok(false) => {}
+            Err(e) => report.failed.push((dir.to_path_buf(), format!("{e:#}"))),
         }
     }
-    Ok(RollbackReport {
-        snapshot: chosen.name,
-        restored,
-        removed,
-        dirs_removed,
-        left_in_place,
-        not_restorable,
-        changed_since_sync,
-    })
+    Ok(report)
+}
+
+/// Whether a snapshot's sync is still running, as [`try_claim`] found it.
+enum Claim {
+    /// Nobody is writing it. The lock is `None` when there is no manifest
+    /// to lock or the filesystem has no locks.
+    Free(Option<std::fs::File>),
+    /// A running sync still holds its manifest, or (for an exclusive claim)
+    /// a rollback is reading it.
+    InUse,
+}
+
+/// Locks the manifest in `dir`, which [`WriteSession`] holds exclusively for
+/// its whole life. The OS releases that lock when the process ends, so a
+/// sync that was killed leaves a snapshot that is free at once, and
+/// snapshots written before the lock existed need no marker.
+///
+/// A rollback claims `shared`, because Windows locks are mandatory and an
+/// exclusive lock would stop its own reads of the manifest; pruning claims
+/// exclusively, so it also leaves alone a snapshot being rolled back.
+fn try_claim(dir: &Path, shared: bool) -> Result<Claim> {
+    let path = dir.join(MANIFEST_FILE);
+    let manifest = match std::fs::File::open(&path) {
+        Ok(manifest) => manifest,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Claim::Free(None)),
+        Err(e) => return Err(e).with_context(|| format!("Failed to open {}", path.display())),
+    };
+    let locked = if shared {
+        manifest.try_lock_shared()
+    } else {
+        manifest.try_lock()
+    };
+    match locked {
+        Ok(()) => Ok(Claim::Free(Some(manifest))),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(Claim::InUse),
+        Err(std::fs::TryLockError::Error(e)) if e.kind() == std::io::ErrorKind::Unsupported => {
+            Ok(Claim::Free(None))
+        }
+        Err(std::fs::TryLockError::Error(e)) => {
+            Err(e).with_context(|| format!("Failed to lock {}", path.display()))
+        }
+    }
+}
+
+/// The index in `snapshots` of the one to roll back, and its lock: `name`,
+/// or the newest whose sync has finished.
+fn claim_snapshot(
+    root: &Path,
+    snapshots: &[SnapshotInfo],
+    name: Option<&str>,
+) -> Result<(usize, Option<std::fs::File>)> {
+    if let Some(wanted) = name {
+        let position = snapshots
+            .iter()
+            .position(|snapshot| snapshot.name == wanted)
+            .ok_or_else(|| anyhow!("no snapshot named {wanted} in {}", root.display()))?;
+        return match try_claim(&root.join(wanted), true)? {
+            Claim::Free(lock) => Ok((position, lock)),
+            Claim::InUse => bail!(
+                "snapshot {wanted} belongs to a sync that is still running; roll it back once that sync ends"
+            ),
+        };
+    }
+    if snapshots.is_empty() {
+        bail!("no snapshots in {}", root.display());
+    }
+    for (position, snapshot) in snapshots.iter().enumerate() {
+        if let Claim::Free(lock) = try_claim(&root.join(&snapshot.name), true)? {
+            return Ok((position, lock));
+        }
+    }
+    bail!(
+        "every snapshot in {} belongs to a sync that is still running",
+        root.display()
+    )
+}
+
+/// Puts one file or link entry back, or lists it as changed since the sync.
+/// Counts go into `report`; an error is this entry's alone.
+fn undo_entry(
+    entry: &Entry,
+    blob: Option<&Path>,
+    left_by_skrills: &[&After],
+    force: bool,
+    created_dirs: &mut Vec<&Path>,
+    report: &mut RollbackReport,
+) -> Result<()> {
+    if !force && !holds_what_skrills_left(entry, left_by_skrills)? {
+        report.changed_since_sync.push(entry.path.clone());
+        return Ok(());
+    }
+    if entry.kind == Kind::Symlink {
+        #[cfg(unix)]
+        {
+            report.dirs_removed += restore_link(entry, created_dirs)?;
+            report.restored += 1;
+        }
+        #[cfg(not(unix))]
+        report.not_restorable.push(entry.path.clone());
+        return Ok(());
+    }
+    match blob {
+        Some(blob) => {
+            report.dirs_removed += restore_file(entry, blob, created_dirs)?;
+            report.restored += 1;
+        }
+        None => {
+            if delete_created(&entry.path)? {
+                report.removed += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether `entry`'s path holds what a sync of skrills left there
+/// (`left_by_skrills`), or still holds what it held before the sync. With no
+/// after-state on record (recording it failed), only the prior state counts,
+/// so an edit made since is kept rather than overwritten unseen.
+fn holds_what_skrills_left(entry: &Entry, left_by_skrills: &[&After]) -> Result<bool> {
+    if entry.kind == Kind::Symlink {
+        if let (Ok(target), Some(prior)) = (
+            std::fs::read_link(&entry.path),
+            entry.link_target.as_deref(),
+        ) {
+            if target == prior {
+                return Ok(true);
+            }
+        }
+    }
+    let Some(now) = current_state(&entry.path)? else {
+        return Ok(false);
+    };
+    let prior = match (entry.prior, entry.kind) {
+        (Prior::Absent, _) => Some(After::Absent),
+        (Prior::File, Kind::File) => entry.prior_hash.clone().map(After::File),
+        (Prior::File, _) => None,
+    };
+    Ok(prior.as_ref() == Some(&now) || left_by_skrills.contains(&&now))
 }
 
 /// The newest after-state per path across `newer`, the snapshots taken
@@ -576,6 +728,12 @@ fn checked_blob(dir: &Path, entry: &Entry) -> Result<Option<PathBuf>> {
         );
     }
     if entry.prior == Prior::Absent {
+        if matches!(entry.kind, Kind::Symlink | Kind::Special) {
+            bail!(
+                "manifest entry for {} is a link or special file recorded as absent",
+                entry.path.display()
+            );
+        }
         return Ok(None);
     }
     match entry.kind {
@@ -605,58 +763,73 @@ fn checked_blob(dir: &Path, entry: &Entry) -> Result<Option<PathBuf>> {
             entry.path.display()
         );
     }
+    // Checked here as well as on restore, so a corrupt blob refuses the
+    // rollback before anything changes rather than halfway through it.
+    let bytes =
+        std::fs::read(&blob).with_context(|| format!("Failed to read {}", blob.display()))?;
+    if hash_content(&bytes) != hash {
+        bail!("saved content of {} is corrupt", entry.path.display());
+    }
     Ok(Some(blob))
 }
 
-fn restore_file(entry: &Entry, blob: &Path) -> Result<()> {
+/// Writes the prior bytes and mode back to the path itself, replacing a
+/// symlink there rather than writing through it. Returns how many created
+/// directories it removed to make room.
+fn restore_file(entry: &Entry, blob: &Path, created_dirs: &mut Vec<&Path>) -> Result<usize> {
     let bytes =
         std::fs::read(blob).with_context(|| format!("Failed to read {}", blob.display()))?;
     if Some(hash_content(&bytes).as_str()) != entry.prior_hash.as_deref() {
         bail!("saved content of {} is corrupt", entry.path.display());
     }
-    // A sync that replaced this file with a directory has had its own files
-    // removed already; what is left must be empty, or it is the user's.
-    if std::fs::symlink_metadata(&entry.path).is_ok_and(|meta| meta.is_dir()) {
-        remove_dir(&entry.path).with_context(|| {
-            format!(
-                "{} is now a directory that is not empty",
-                entry.path.display()
-            )
-        })?;
-    }
-    atomic_write(&entry.path, &bytes, false)
+    let dirs_removed = clear_directory_in_the_way(&entry.path, created_dirs)?;
+    replace_file_unrecorded(&entry.path, &bytes, entry.mode)
         .with_context(|| format!("Failed to restore {}", entry.path.display()))?;
-    #[cfg(unix)]
-    if let Some(mode) = entry.mode {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&entry.path, std::fs::Permissions::from_mode(mode))
-            .with_context(|| format!("Failed to restore the mode of {}", entry.path.display()))?;
+    Ok(dirs_removed)
+}
+
+/// Removes a directory a sync put where `path` held a file or link, so the
+/// file or link can come back. The sync's own files in it are gone by now,
+/// so the directories it created under `path` are removed first, deepest
+/// first, and taken off `created_dirs`; what is left must be empty, or it
+/// is the user's and the restore fails. Returns how many directories went.
+fn clear_directory_in_the_way(path: &Path, created_dirs: &mut Vec<&Path>) -> Result<usize> {
+    if !std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()) {
+        return Ok(0);
     }
-    Ok(())
+    let mut below: Vec<&Path> = created_dirs
+        .iter()
+        .copied()
+        .filter(|dir| dir.starts_with(path) && *dir != path)
+        .collect();
+    created_dirs.retain(|dir| !below.contains(dir));
+    below.sort_by_key(|dir| std::cmp::Reverse(dir.components().count()));
+    let mut removed = 0;
+    for dir in below {
+        if remove_created_dir(dir)? {
+            removed += 1;
+        }
+    }
+    remove_dir(path)
+        .with_context(|| format!("{} is now a directory that is not empty", path.display()))?;
+    Ok(removed)
 }
 
 /// Puts back a symlink the sync removed or replaced, pointing exactly where it
-/// pointed before.
+/// pointed before. Returns how many created directories it removed to make
+/// room.
 #[cfg(unix)]
-fn restore_link(entry: &Entry) -> Result<()> {
+fn restore_link(entry: &Entry, created_dirs: &mut Vec<&Path>) -> Result<usize> {
     let target = entry.link_target.as_deref().ok_or_else(|| {
         anyhow!(
             "manifest entry for {} is a symlink with no link target",
             entry.path.display()
         )
     })?;
-    // As for a file: an empty directory in its place is the sync's leftover,
-    // a full one is the user's.
-    if std::fs::symlink_metadata(&entry.path).is_ok_and(|meta| meta.is_dir()) {
-        remove_dir(&entry.path).with_context(|| {
-            format!(
-                "{} is now a directory that is not empty",
-                entry.path.display()
-            )
-        })?;
-    }
+    let dirs_removed = clear_directory_in_the_way(&entry.path, created_dirs)?;
     crate::adapters::utils::replace_with_symlink(&entry.path, target)
-        .with_context(|| format!("Failed to restore the link {}", entry.path.display()))
+        .with_context(|| format!("Failed to restore the link {}", entry.path.display()))?;
+    Ok(dirs_removed)
 }
 
 /// Deletes a file the sync created. Returns whether there was one to delete.
@@ -1313,8 +1486,9 @@ mod tests {
         drop(session);
         std::fs::write(link.join("users-own.txt"), b"keep").unwrap();
 
-        let err = rollback(&root, None).unwrap_err();
-        assert!(format!("{err:#}").contains("not empty"), "{err:#}");
+        let report = rollback(&root, None).unwrap();
+        assert_eq!(report.failed.len(), 1, "{report:?}");
+        assert!(report.failed[0].1.contains("not empty"), "{report:?}");
         assert!(link.join("users-own.txt").exists());
     }
 
@@ -1433,27 +1607,6 @@ mod tests {
     }
 
     #[test]
-    fn rollback_of_a_manifest_without_after_hashes_restores_whatever_is_there() {
-        let tmp = tempfile::tempdir().unwrap();
-        let target = tmp.path().join("t");
-        std::fs::write(&target, b"edited by anyone").unwrap();
-        let root = tmp.path().join("snaps");
-        let dir = snapshot_with_manifest(
-            &root,
-            &format!(
-                "{{\"path\":{},\"prior\":\"file\",\"prior_hash\":\"{}\"}}\n",
-                serde_json::to_string(target.to_str().unwrap()).unwrap(),
-                hash_content(b"old")
-            ),
-        );
-        std::fs::write(dir.join(BLOB_DIR).join(hash_content(b"old")), b"old").unwrap();
-
-        let report = rollback(&root, None).unwrap();
-        assert_eq!(std::fs::read(&target).unwrap(), b"old");
-        assert!(report.changed_since_sync.is_empty());
-    }
-
-    #[test]
     fn rollback_restores_the_previous_backup_and_the_config() {
         let tmp = tempfile::tempdir().unwrap();
         let config = tmp.path().join("settings.json");
@@ -1555,8 +1708,10 @@ mod tests {
         drop(session);
         std::fs::write(path.join("users-own.txt"), b"keep").unwrap();
 
-        let err = rollback(&root, None).unwrap_err();
-        assert!(format!("{err:#}").contains("not empty"), "{err:#}");
+        let report = rollback(&root, None).unwrap();
+        assert_eq!(report.failed.len(), 1, "{report:?}");
+        assert_eq!(report.failed[0].0, path);
+        assert!(report.failed[0].1.contains("not empty"), "{report:?}");
         assert_eq!(std::fs::read(path.join("users-own.txt")).unwrap(), b"keep");
     }
 
@@ -1836,7 +1991,9 @@ mod tests {
         let dir = snapshot_with_manifest(&root, &manifest);
 
         assert_eq!(read_manifest(&dir).unwrap().len(), 1);
-        assert_eq!(rollback(&root, None).unwrap().removed, 1);
+        // Forced: the entry has no after-line, so a plain rollback would keep
+        // the file as changed since the sync.
+        assert_eq!(force_rollback(&root, None).unwrap().removed, 1);
     }
 
     #[test]
@@ -1878,5 +2035,350 @@ mod tests {
         assert_eq!(line["path"], target.to_str().unwrap());
         assert_eq!(line["prior"], "file");
         assert_eq!(line["prior_hash"], hash_content(b"before"));
+    }
+
+    /// Three files rewritten by one sync, in the order `a`, `b`, `c`.
+    fn sync_rewriting_three_files(base: &Path, root: &Path) -> [PathBuf; 3] {
+        let paths = ["a", "b", "c"].map(|name| base.join(name));
+        for (path, name) in paths.iter().zip(["a", "b", "c"]) {
+            std::fs::write(path, format!("{name} before")).unwrap();
+        }
+        let session = begin_at(root, at(SAMPLE)).unwrap();
+        for path in &paths {
+            write_file(path, b"after").unwrap();
+        }
+        drop(session);
+        paths
+    }
+
+    /// Replaces `path` with a directory holding a file of the user's.
+    fn replace_with_a_full_directory(path: &Path) {
+        std::fs::remove_file(path).unwrap();
+        std::fs::create_dir(path).unwrap();
+        std::fs::write(path.join("users-own.txt"), b"keep").unwrap();
+    }
+
+    #[test]
+    fn rollback_that_fails_partway_says_which_paths_it_already_restored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        let [a, b, c] = sync_rewriting_three_files(tmp.path(), &root);
+        replace_with_a_full_directory(&b);
+
+        let report = force_rollback(&root, None).unwrap();
+
+        assert_eq!(report.restored, 2, "{report:?}");
+        assert_eq!(std::fs::read(&a).unwrap(), b"a before");
+        assert_eq!(std::fs::read(&c).unwrap(), b"c before");
+        assert_eq!(report.failed.len(), 1, "{report:?}");
+        assert_eq!(report.failed[0].0, b);
+        assert!(report.failed[0].1.contains("not empty"), "{report:?}");
+        assert_eq!(std::fs::read(b.join("users-own.txt")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn rollback_with_a_corrupt_saved_file_changes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        let paths = sync_rewriting_three_files(tmp.path(), &root);
+        let blob = root
+            .join("20261113T142530Z")
+            .join(BLOB_DIR)
+            .join(hash_content(b"b before"));
+        std::fs::write(&blob, b"tampered").unwrap();
+
+        let err = rollback(&root, None).unwrap_err();
+
+        assert!(err.to_string().contains("corrupt"), "{err}");
+        assert!(
+            err.to_string().contains(paths[1].to_str().unwrap()),
+            "{err}"
+        );
+        for path in &paths {
+            assert_eq!(std::fs::read(path).unwrap(), b"after", "{}", path.display());
+        }
+    }
+
+    #[test]
+    fn rollback_rerun_after_a_partial_failure_does_not_call_restored_paths_changed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        let [a, b, c] = sync_rewriting_three_files(tmp.path(), &root);
+        replace_with_a_full_directory(&b);
+        force_rollback(&root, None).unwrap();
+
+        let report = rollback(&root, None).unwrap();
+
+        assert!(!report.changed_since_sync.contains(&a), "{report:?}");
+        assert!(!report.changed_since_sync.contains(&c), "{report:?}");
+        assert_eq!(report.changed_since_sync, std::slice::from_ref(&b));
+    }
+
+    #[test]
+    fn rollback_refuses_a_link_or_special_entry_recorded_as_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        for kind in ["symlink", "special"] {
+            let line = format!(
+                "{{\"path\":{},\"prior\":\"absent\",\"kind\":\"{kind}\",\"link_target\":\"x\"}}\n",
+                serde_json::to_string(tmp.path().join("l").to_str().unwrap()).unwrap()
+            );
+            snapshot_with_manifest(&root, &line);
+            let err = rollback(&root, None).unwrap_err();
+            assert!(
+                err.to_string().contains("recorded as absent"),
+                "{kind}: {err}"
+            );
+        }
+    }
+
+    /// A manifest entry for `target` with prior bytes `old` and no
+    /// after-line, as a sync leaves it when recording the after-state failed.
+    fn entry_without_an_after_line(root: &Path, target: &Path) {
+        let dir = snapshot_with_manifest(
+            root,
+            &format!(
+                "{{\"path\":{},\"prior\":\"file\",\"prior_hash\":\"{}\"}}\n",
+                serde_json::to_string(target.to_str().unwrap()).unwrap(),
+                hash_content(b"old")
+            ),
+        );
+        std::fs::write(dir.join(BLOB_DIR).join(hash_content(b"old")), b"old").unwrap();
+    }
+
+    #[test]
+    fn rollback_keeps_an_edit_to_a_path_whose_after_line_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("t");
+        std::fs::write(&target, b"edited by anyone").unwrap();
+        let root = tmp.path().join("snaps");
+        entry_without_an_after_line(&root, &target);
+
+        let report = rollback(&root, None).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"edited by anyone");
+        assert_eq!(report.changed_since_sync, std::slice::from_ref(&target));
+
+        force_rollback(&root, None).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+    }
+
+    #[test]
+    fn rollback_does_not_report_a_path_without_an_after_line_that_holds_its_prior_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("t");
+        std::fs::write(&target, b"old").unwrap();
+        let root = tmp.path().join("snaps");
+        entry_without_an_after_line(&root, &target);
+
+        let report = rollback(&root, None).unwrap();
+        assert!(report.changed_since_sync.is_empty(), "{report:?}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"old");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn force_rollback_replaces_a_link_at_the_path_instead_of_writing_through_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("settings.json");
+        std::fs::write(&config, b"{\"token\":1}").unwrap();
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let root = tmp.path().join("snaps");
+        let session = begin_at(&root, at(SAMPLE)).unwrap();
+        write_file(&config, b"{}").unwrap();
+        drop(session);
+        let dotfiles = tmp.path().join("dotfiles-settings.json");
+        std::fs::write(&dotfiles, b"dotfiles").unwrap();
+        std::fs::set_permissions(&dotfiles, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::remove_file(&config).unwrap();
+        std::os::unix::fs::symlink(&dotfiles, &config).unwrap();
+
+        force_rollback(&root, None).unwrap();
+
+        let mode = |p: &Path| std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(std::fs::read(&dotfiles).unwrap(), b"dotfiles");
+        assert_eq!(mode(&dotfiles), 0o644);
+        assert!(std::fs::symlink_metadata(&config).unwrap().is_file());
+        assert_eq!(std::fs::read(&config).unwrap(), b"{\"token\":1}");
+        assert_eq!(mode(&config), 0o600);
+    }
+
+    #[test]
+    fn rollback_restores_a_file_the_sync_replaced_with_a_nested_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("asset");
+        std::fs::write(&path, b"was a file").unwrap();
+        let root = tmp.path().join("snaps");
+        let session = begin_at(&root, at(SAMPLE)).unwrap();
+        crate::adapters::utils::remove_file(&path).unwrap();
+        write_file(path.join("sub").join("deeper").join("inner.txt"), b"x").unwrap();
+        drop(session);
+
+        let report = rollback(&root, None).unwrap();
+        assert!(report.failed.is_empty(), "{report:?}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"was a file");
+        assert_eq!(report.dirs_removed, 2, "{report:?}");
+    }
+
+    /// A finished snapshot at [`SAMPLE`], and a session a minute later that
+    /// has recorded a change and is still open.
+    fn finished_and_open_snapshot(base: &Path, root: &Path) -> (PathBuf, WriteSession) {
+        let target = base.join("t.txt");
+        std::fs::write(&target, b"v1").unwrap();
+        let first = begin_at(root, at(SAMPLE)).unwrap();
+        write_file(&target, b"v2").unwrap();
+        drop(first);
+        let open = begin_at(root, at(SAMPLE + 60)).unwrap();
+        write_file(&target, b"v3").unwrap();
+        (target, open)
+    }
+
+    #[test]
+    fn rollback_skips_a_snapshot_whose_session_is_still_open() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        let (_target, open) = finished_and_open_snapshot(tmp.path(), &root);
+
+        let report = rollback(&root, None);
+        drop(open);
+
+        assert_eq!(report.unwrap().snapshot, "20261113T142530Z");
+    }
+
+    #[test]
+    fn rollback_refuses_a_named_snapshot_whose_session_is_still_open() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        let (target, open) = finished_and_open_snapshot(tmp.path(), &root);
+
+        let refused = rollback(&root, Some("20261113T142630Z"));
+        drop(open);
+
+        let err = refused.unwrap_err();
+        assert!(err.to_string().contains("still running"), "{err}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"v3");
+    }
+
+    #[test]
+    fn retention_zero_does_not_prune_an_open_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        let (_target, open) = finished_and_open_snapshot(tmp.path(), &root);
+
+        let pruned = prune(&root, at(SAMPLE + 86_400), Duration::ZERO);
+        let open_survived = root.join("20261113T142630Z").is_dir();
+        drop(open);
+
+        assert_eq!(pruned.unwrap(), 1);
+        assert!(open_survived);
+        assert!(!root.join("20261113T142530Z").exists());
+    }
+
+    #[test]
+    fn rollback_with_only_an_open_session_says_its_sync_is_still_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        let target = tmp.path().join("t.txt");
+        std::fs::write(&target, b"v1").unwrap();
+        let open = begin_at(&root, at(SAMPLE)).unwrap();
+        write_file(&target, b"v2").unwrap();
+
+        let refused = rollback(&root, None);
+        drop(open);
+
+        let err = refused.unwrap_err();
+        assert!(err.to_string().contains("still running"), "{err}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"v2");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_entry_without_an_after_line_is_checked_against_its_prior_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let link = tmp.path().join("l");
+        let root = tmp.path().join("snaps");
+        snapshot_with_manifest(
+            &root,
+            &format!(
+                "{{\"path\":{},\"prior\":\"file\",\"kind\":\"symlink\",\"link_target\":\"there\"}}\n",
+                serde_json::to_string(link.to_str().unwrap()).unwrap()
+            ),
+        );
+
+        let report = rollback(&root, None).unwrap();
+        assert_eq!(report.changed_since_sync, std::slice::from_ref(&link));
+        assert!(std::fs::symlink_metadata(&link).is_err());
+
+        force_rollback(&root, None).unwrap();
+        assert_eq!(std::fs::read_link(&link).unwrap(), Path::new("there"));
+
+        let report = rollback(&root, None).unwrap();
+        assert!(report.changed_since_sync.is_empty(), "{report:?}");
+        assert_eq!(report.restored, 1);
+    }
+
+    #[test]
+    fn pruning_leaves_a_snapshot_that_a_rollback_holds() {
+        let tmp = tempfile::tempdir().unwrap();
+        drop_a_recorded_change(tmp.path(), at(SAMPLE));
+        let root = tmp.path().join("snaps");
+        let Claim::Free(held) = try_claim(&root.join("20261113T142530Z"), true).unwrap() else {
+            panic!("a finished snapshot is free");
+        };
+
+        let pruned = prune(&root, at(SAMPLE + 86_400), Duration::ZERO);
+        drop(held);
+
+        assert_eq!(pruned.unwrap(), 0);
+        assert!(root.join("20261113T142530Z").is_dir());
+    }
+
+    #[test]
+    fn a_closed_session_is_rolled_back_and_pruned_as_usual() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        let (_target, open) = finished_and_open_snapshot(tmp.path(), &root);
+        drop(open);
+
+        assert_eq!(rollback(&root, None).unwrap().snapshot, "20261113T142630Z");
+        assert_eq!(
+            prune(&root, at(SAMPLE + 86_400), Duration::ZERO).unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn snapshots_from_the_same_second_list_in_numeric_suffix_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        for name in [
+            "20261113T142530Z-10",
+            "20261113T142530Z",
+            "20261113T142530Z-2",
+        ] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+        let names: Vec<_> = list(&root).unwrap().into_iter().map(|s| s.name).collect();
+        assert_eq!(
+            names,
+            [
+                "20261113T142530Z-10",
+                "20261113T142530Z-2",
+                "20261113T142530Z"
+            ]
+        );
+    }
+
+    #[test]
+    fn prune_keeps_a_snapshot_exactly_at_the_retention_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("snaps");
+        std::fs::create_dir_all(root.join("20261113T142530Z")).unwrap();
+        let keep = Duration::from_secs(30 * 86_400);
+        assert_eq!(prune(&root, at(SAMPLE) + keep, keep).unwrap(), 0);
+        assert_eq!(
+            prune(&root, at(SAMPLE) + keep + Duration::from_secs(1), keep).unwrap(),
+            1
+        );
     }
 }

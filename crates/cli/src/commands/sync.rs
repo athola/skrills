@@ -507,6 +507,16 @@ pub(crate) fn handle_sync_rollback_command(
             dir.display()
         );
     }
+    for (path, reason) in &report.failed {
+        println!("Not restored, failed: {}: {reason}", path.display());
+    }
+    if !report.failed.is_empty() {
+        return Err(anyhow!(
+            "rollback of {} is incomplete: {} path(s) could not be restored; the rest above was done",
+            report.snapshot,
+            report.failed.len()
+        ));
+    }
     Ok(())
 }
 

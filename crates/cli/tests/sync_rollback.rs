@@ -163,13 +163,16 @@ fn sync_rollback_of_an_older_snapshot_undoes_a_later_syncs_rewrite_without_force
     let home = tempfile::tempdir().unwrap();
     seed_codex_skill(home.path());
     let sync_to_claude = ["sync-all", "--from", "codex", "--to", "claude"];
-    skrills(home.path(), &sync_to_claude);
+    let output = skrills(home.path(), &sync_to_claude);
+    assert!(output.status.success(), "{}", stderr(&output));
     fs::write(
         home.path().join(".codex/skills/cli-test/SKILL.md"),
         "---\nname: cli-test\ndescription: CLI test skill\n---\n# Changed at the source\n",
     )
     .unwrap();
-    skrills(home.path(), &sync_to_claude);
+    let output = skrills(home.path(), &sync_to_claude);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(snapshot_names(home.path()).len(), 2);
     let synced = home.path().join(".claude/skills/cli-test/SKILL.md");
     assert!(fs::read_to_string(&synced)
         .unwrap()
@@ -189,6 +192,9 @@ fn sync_rollback_force_and_list_conflict() {
     let home = tempfile::tempdir().unwrap();
     let output = skrills(home.path(), &["sync-rollback", "--list", "--force"]);
     assert!(!output.status.success());
+    let shown = stderr(&output);
+    assert!(shown.contains("cannot be used with"), "{shown}");
+    assert!(shown.contains("--force"), "{shown}");
 }
 
 #[test]
@@ -321,6 +327,41 @@ fn sync_rollback_list_and_a_snapshot_name_conflict() {
         &["sync-rollback", "--list", "20260101T000000Z"],
     );
     assert!(!output.status.success());
+    let shown = stderr(&output);
+    assert!(shown.contains("cannot be used with"), "{shown}");
+    assert!(shown.contains("--list"), "{shown}");
+}
+
+#[test]
+fn sync_rollback_that_fails_partway_prints_what_it_did_and_exits_non_zero() {
+    let home = tempfile::tempdir().unwrap();
+    seed_codex_skill(home.path());
+    let existing = home.path().join(".claude/skills/cli-test/SKILL.md");
+    fs::create_dir_all(existing.parent().unwrap()).unwrap();
+    fs::write(
+        &existing,
+        "---\nname: cli-test\ndescription: mine\n---\n# Mine\n",
+    )
+    .unwrap();
+    let output = skrills(
+        home.path(),
+        &["sync-all", "--from", "codex", "--to", "claude"],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    fs::remove_file(&existing).unwrap();
+    fs::create_dir(&existing).unwrap();
+    fs::write(existing.join("users-own.txt"), "keep").unwrap();
+
+    let output = skrills(home.path(), &["sync-rollback", "--force"]);
+
+    assert!(!output.status.success());
+    let printed = stdout(&output);
+    assert!(printed.contains("Rolled back"), "{printed}");
+    assert!(printed.contains("Not restored, failed"), "{printed}");
+    assert!(printed.contains("SKILL.md"), "{printed}");
+    let shown = stderr(&output);
+    assert!(shown.contains("1 path(s) could not be restored"), "{shown}");
+    assert!(existing.join("users-own.txt").exists());
 }
 
 #[test]

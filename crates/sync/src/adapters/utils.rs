@@ -437,6 +437,63 @@ pub(crate) fn replace_with_symlink(path: &Path, target: &Path) -> std::io::Resul
     renamed
 }
 
+/// Puts `bytes` at `path` itself with permission bits `mode`, for rollback.
+///
+/// Unlike [`atomic_write`], a symlink at `path` is replaced, not written
+/// through, and the temp file is created `0o600` and given `mode` before the
+/// rename, so the content is never readable under looser bits. `mode` is
+/// ignored off Unix; `None` keeps the umask default. Nothing is recorded:
+/// rollback runs outside a session.
+pub(crate) fn replace_file_unrecorded(
+    path: &Path,
+    bytes: &[u8],
+    mode: Option<u32>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    std::fs::create_dir_all(&parent)?;
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = parent.join(format!(
+        ".{file_name}.skrills-tmp-{}-{}",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let written = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(if mode.is_some() { 0o600 } else { 0o666 });
+        }
+        let mut file = options.open(&tmp)?;
+        #[cfg(unix)]
+        if let Some(mode) = mode {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        }
+        #[cfg(not(unix))]
+        let _ = mode;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        // The write error is the one worth reporting; a leftover temp file
+        // is hidden and is removed here when it can be.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
 /// Removes an empty directory. Nothing is recorded: a directory that holds
 /// no file has nothing a rollback needs to bring back, and the OS refuses a
 /// non-empty one.

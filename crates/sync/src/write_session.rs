@@ -63,6 +63,7 @@ impl WriteSession {
         );
         create_private_dir(dir)?;
         let manifest = open_manifest(&dir.join(MANIFEST_FILE))?;
+        lock_for_the_session(&manifest)?;
         ACTIVE.with(|active| {
             *active.borrow_mut() = Some(Recorder {
                 dir: dir.to_path_buf(),
@@ -115,6 +116,21 @@ fn open_manifest(path: &Path) -> std::io::Result<std::fs::File> {
         options.mode(0o600);
     }
     options.open(path)
+}
+
+/// Holds an exclusive lock on the manifest until the session ends, so a
+/// rollback or prune in another process leaves the snapshot alone while the
+/// sync is still writing it. The OS drops the lock with the process, so a
+/// sync that was killed leaves a snapshot that can be rolled back at once.
+/// A filesystem without locks still gets a snapshot, only an unguarded one.
+fn lock_for_the_session(manifest: &std::fs::File) -> std::io::Result<()> {
+    match manifest.lock() {
+        Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
+            tracing::warn!(error = %e, "Cannot lock the snapshot manifest; a rollback could pick it while this sync runs");
+            Ok(())
+        }
+        locked => locked,
+    }
 }
 
 /// Stores `path`'s prior state before a write or removal changes it. Does
@@ -172,24 +188,40 @@ fn record_after(
 /// absent afterwards. A `path` that is already gone records nothing; the
 /// removal reports that itself.
 pub(crate) fn record_tree_before_remove(path: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut recorded = Vec::new();
     if !is_active() {
-        return Ok(recorded);
+        return Ok(Vec::new());
     }
-    // A root that is a symlink is recorded as the link: removing the tree
-    // unlinks it and leaves what it points to alone.
-    for entry in WalkDir::new(path)
+    record_walk(tree_walk(path))
+}
+
+/// A root that is a symlink is walked as the link: removing the tree unlinks
+/// it and leaves what it points to alone.
+fn tree_walk(path: &Path) -> walkdir::IntoIter {
+    WalkDir::new(path)
         .follow_links(false)
         .follow_root_links(false)
         .sort_by_file_name()
-    {
+        .into_iter()
+}
+
+fn record_walk(
+    walk: impl Iterator<Item = walkdir::Result<walkdir::DirEntry>>,
+) -> std::io::Result<Vec<PathBuf>> {
+    let mut recorded = Vec::new();
+    for entry in walk {
         let entry = match entry {
             Ok(entry) => entry,
+            // The root is gone: nothing to record, and the removal reports
+            // that itself. Something below it vanishing mid-walk took its
+            // contents with it, but its siblings are still to be recorded.
             Err(e)
                 if e.io_error()
                     .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
             {
-                return Ok(recorded);
+                if e.depth() == 0 {
+                    return Ok(recorded);
+                }
+                continue;
             }
             Err(e) => return Err(e.into()),
         };
@@ -246,9 +278,20 @@ pub(crate) fn record_dirs_before_create(dir: &Path) -> std::io::Result<()> {
 }
 
 /// `path` made absolute, refused when it holds `..`, which would let a
-/// manifest name a path outside what the sync wrote.
+/// manifest name a path outside what the sync wrote, or is not UTF-8, which
+/// the JSON manifest cannot hold. Both refusals come before anything is
+/// stored, so no blob is left without its manifest line.
 fn checked_path(path: &Path) -> std::io::Result<PathBuf> {
     let path = std::path::absolute(path)?;
+    if path.to_str().is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "cannot snapshot {}: its name is not valid UTF-8, which a snapshot manifest cannot record",
+                path.display()
+            ),
+        ));
+    }
     if path.components().any(|part| part == Component::ParentDir) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -595,6 +638,47 @@ mod tests {
         record_tree_before_remove(&tmp.path().join("gone")).unwrap();
         drop(session);
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn a_subdir_vanishing_mid_walk_does_not_stop_recording_its_siblings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tree = tmp.path().join("tree");
+        std::fs::create_dir_all(tree.join("a-vanishes")).unwrap();
+        std::fs::write(tree.join("a-vanishes/gone"), b"g").unwrap();
+        std::fs::write(tree.join("b-sibling"), b"b").unwrap();
+        let (session, dir) = session_in(tmp.path());
+        // Delete the subdirectory once the walk has listed the root and
+        // before it opens the subdirectory, as another process could.
+        let vanishing = tree.join("a-vanishes");
+        let walk = tree_walk(&tree).inspect(|entry| {
+            if entry.as_ref().is_ok_and(|entry| entry.depth() == 0) {
+                std::fs::remove_dir_all(&vanishing).unwrap();
+            }
+        });
+        let recorded = record_walk(walk).unwrap();
+        drop(session);
+
+        assert_eq!(recorded, [tree.join("b-sibling")]);
+        assert_eq!(read_manifest(&dir).unwrap().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_path_that_is_not_utf8_is_refused_before_anything_is_stored() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let (_session, dir) = session_in(tmp.path());
+        let name = std::ffi::OsStr::from_bytes(b"bad-\xff-name");
+
+        let err = record_before_write(&tmp.path().join(name)).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("not valid UTF-8"), "{err}");
+        assert!(std::fs::read_to_string(dir.join(MANIFEST_FILE))
+            .unwrap()
+            .is_empty());
+        assert!(!dir.join(BLOB_DIR).exists());
     }
 
     #[test]

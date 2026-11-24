@@ -162,9 +162,10 @@ skrills sync-status --from claude
 
 ### sync-rollback
 
-Every `sync-all`, `mirror`, `sync-agents` and MCP sync snapshots what it is
-about to overwrite or delete, so a bad sync can be undone (`sync-pull` writes
-nothing yet, so it takes no snapshot):
+Every `sync`, `sync-all`, `sync-commands`, `sync-mcp-servers`,
+`sync-preferences`, `sync-agents`, `mirror`, TUI sync, MCP sync and
+`prune --apply` snapshots what it is about to overwrite or delete, so a bad
+run can be undone (`sync-pull` writes nothing yet, so it takes no snapshot):
 
 ```bash
 skrills sync-rollback            # Restore the most recent snapshot
@@ -195,14 +196,28 @@ the sync. `--force` restores those files too, discarding the later change.
 Rolling back an older snapshot also accepts what the newest later sync left
 at a path, so files skrills itself rewrote since are restored without
 `--force`; only content that matches neither is kept as your change.
-Snapshots taken before this check existed have no such record and are
-restored as before. A config file's `.skrills-bak` backup is part of the
+A path with no such record (recording it failed) is restored only while it
+still holds what it held before the sync; anything else there is kept as
+changed since the sync. A path already back in its prior state is never
+reported as changed, so rerunning a rollback is safe. A config file's
+`.skrills-bak` backup is part of the
 snapshot: rollback puts back the previous backup, or removes one the sync
-created. A manifest path that
-is not absolute or contains `..` refuses the whole rollback. Directories a
+created. A manifest path that is not absolute or contains `..`, or saved
+content that is missing or no longer matches its hash, refuses the whole
+rollback before anything changes. Directories a
 sync created are removed after the files, deepest first, but only when they
 are empty; one you have since put files in is left and named in the output.
-The snapshot is kept after a rollback.
+A file the sync turned into a directory comes back once that directory is
+empty again. Restoring a file replaces a symlink you put at its path rather
+than writing through it, and the file never has looser permissions than
+its saved mode. When one path cannot be restored, the rest still are; the
+output names each failed path and `sync-rollback` exits non-zero. The
+snapshot is kept after a rollback.
+
+While a sync is still writing its snapshot, `sync-rollback` skips it and
+picks the newest finished one, refuses it by name, and pruning leaves it
+alone. A sync that was killed releases its snapshot at once, so it can be
+rolled back.
 
 Snapshots older than 30 days are pruned at the start of the next sync. Set
 `SKRILLS_SNAPSHOT_RETENTION_DAYS` to change the period.
